@@ -85,6 +85,14 @@ class ModelState(ModelStateBase):
   inputs: dict[str, np.ndarray]
   prev_desire: np.ndarray
 
+  # Artifact-layout defaults, describing the pre-format_version pkl. Declared on
+  # the class so every construction path has them, including the split init and
+  # tests that build a state without loading a combined pkl.
+  _policy_takes_warped: bool = False
+  _warp_input_keys: tuple[str, ...] | None = None
+  _policy_input_keys: tuple[str, ...] | None = None
+  _declared_frame_skip: int | None = None
+
   def __init__(self, cam_w: int, cam_h: int):
     ModelStateBase.__init__(self)
 
@@ -115,8 +123,24 @@ class ModelState(ModelStateBase):
 
     metadata = jits['metadata']
 
-    self._run_policy = jits[(cam_w, cam_h)]['run_policy']
-    self._warp_enqueue = jits[(cam_w, cam_h)]['warp_enqueue']
+    # Two artifact layouts. The published OpenPilot experiments (format_version 1,
+    # e.g. the RDF checkpoints) share one policy across camera resolutions, so it
+    # sits at the top level, jits[(w, h)] is the warp JIT itself, and the policy
+    # takes the warp result as an explicit `warped` input. Mirrors the loader in
+    # commaai/openpilot rdf-driving selfdrive/modeld/modeld.py.
+    self._policy_takes_warped = 'run_policy' in jits
+    if self._policy_takes_warped:
+      self._run_policy = jits['run_policy']
+      self._warp_enqueue = jits[(cam_w, cam_h)]
+      self._warp_input_keys = tuple(jits['warp_input_keys'])
+      self._policy_input_keys = tuple(jits['policy_input_keys'])
+      self._declared_frame_skip = jits.get('frame_skip')
+    else:
+      self._run_policy = jits[(cam_w, cam_h)]['run_policy']
+      self._warp_enqueue = jits[(cam_w, cam_h)]['warp_enqueue']
+      self._warp_input_keys = None
+      self._policy_input_keys = None
+      self._declared_frame_skip = None
 
     captured = getattr(self._run_policy, 'captured', None)
     if captured is not None:
@@ -132,9 +156,11 @@ class ModelState(ModelStateBase):
       self._combined_model_type = 'supercombo'
       self._vision_input_names = [key for key in model_metadata['input_shapes'] if 'img' in key]
       from openpilot.sunnypilot.modeld_v2.compile_modeld import make_supercombo_input_queues
-      frame_skip = derive_frame_skip({}, model_metadata['input_shapes'])
+      # Prefer the value the artifact states over one inferred from its shapes.
+      frame_skip = self._declared_frame_skip or derive_frame_skip({}, model_metadata['input_shapes'])
       self.input_queues, self.numpy_inputs = make_supercombo_input_queues(model_metadata['input_shapes'],
-                                                                          frame_skip, device=self.QUEUE_DEV, use_packed=use_packed)
+                                                                          frame_skip, device=self.QUEUE_DEV, use_packed=use_packed,
+                                                                          full_feature_history=self._policy_takes_warped)
     else:
       vision_metadata = metadata['vision']
       policy_keys = [k for k in metadata if k != 'vision']
@@ -182,9 +208,21 @@ class ModelState(ModelStateBase):
 
     yuv_size = self.frame_buf_params[self._road_key][3]
     self._warp_enqueue(
-      **self.input_queues,
+      **self._warp_queue_inputs(),
       frame=Tensor(np.zeros(yuv_size, dtype=np.uint8), device=self.WARP_DEV).contiguous().realize(),
       big_frame=Tensor(np.zeros(yuv_size, dtype=np.uint8), device=self.WARP_DEV).contiguous().realize())
+
+  def _warp_queue_inputs(self) -> dict:
+    """Queue tensors the warp JIT accepts, which it declares for format_version 1."""
+    if self._warp_input_keys is None:
+      return self.input_queues
+    return {k: self.input_queues[k] for k in self._warp_input_keys}
+
+  def _policy_queue_inputs(self) -> dict:
+    """Queue tensors the policy JIT accepts, which it declares for format_version 1."""
+    if self._policy_input_keys is None:
+      return self.input_queues
+    return {k: self.input_queues[k] for k in self._policy_input_keys if k in self.input_queues}
 
 
   @property
@@ -222,11 +260,20 @@ class ModelState(ModelStateBase):
     self.numpy_inputs['tfm'][:, :] = transforms[road_key].reshape(3, 3)
     self.numpy_inputs['big_tfm'][:, :] = transforms[wide_key].reshape(3, 3)
 
-    if prepare_only:
-      self._warp_enqueue(**self.input_queues, frame=self.full_frames[road_key], big_frame=self.full_frames[wide_key])
-      return None
+    if self._policy_takes_warped:
+      # Warp runs even when the policy is skipped: it advances the image history
+      # the next evaluation reads, so dropping it would corrupt the queue.
+      warped = self._warp_enqueue(**self._warp_queue_inputs(),
+                                  frame=self.full_frames[road_key], big_frame=self.full_frames[wide_key])
+      if prepare_only:
+        return None
+      raw_outputs, = self._run_policy(**self._policy_queue_inputs(), warped=warped)
+    else:
+      if prepare_only:
+        self._warp_enqueue(**self.input_queues, frame=self.full_frames[road_key], big_frame=self.full_frames[wide_key])
+        return None
 
-    raw_outputs = self._run_policy(**self.input_queues, frame=self.full_frames[road_key], big_frame=self.full_frames[wide_key])
+      raw_outputs = self._run_policy(**self.input_queues, frame=self.full_frames[road_key], big_frame=self.full_frames[wide_key])
 
     if self._combined_model_type == 'supercombo':
       model_output = raw_outputs.numpy().flatten()

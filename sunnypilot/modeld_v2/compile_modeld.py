@@ -79,8 +79,29 @@ def get_policy_npy_shapes(input_shapes: dict, is_supercombo: bool = False) -> tu
   return shapes, sizes
 
 
+def _feat_q_len(features_buffer: tuple, frame_skip: int, full_feature_history: bool) -> int:
+  """Length of the feature history queue.
+
+  Two conventions, decided by whether the compiled policy expects the current
+  frame's feature to already be in the buffer:
+
+    * sunnypilot-compiled models keep the current feature in `features_buffer`,
+      so the queue spans the gaps between its entries: (N - 1) * skip + 1.
+    * format_version 1 artifacts (comma's rdf-driving) hold past features only
+      and let the model append the current one, so the queue is N * skip. See
+      make_input_queues in commaai/openpilot rdf-driving compile_modeld.py.
+
+  Getting this wrong is not a silent numeric error: the JIT was captured against
+  one exact shape and raises "args mismatch in JIT" on the other.
+  """
+  if full_feature_history:
+    return frame_skip * features_buffer[1]
+  return frame_skip * (features_buffer[1] - 1) + 1
+
+
 def generate_queues_and_npy(input_shapes: dict, frame_skip: int, device: str = Device.DEFAULT,
-                            is_supercombo: bool = False, use_packed: bool = True) -> tuple[dict, dict]:
+                            is_supercombo: bool = False, use_packed: bool = True,
+                            full_feature_history: bool = False) -> tuple[dict, dict]:
   road_key, _ = _detect_vision_keys(input_shapes)
   if not road_key:
     raise ValueError("Vision road key missing from input shapes.")
@@ -119,7 +140,8 @@ def generate_queues_and_npy(input_shapes: dict, frame_skip: int, device: str = D
     }
 
     if features_buffer:
-      queues['feat_q'] = Tensor(np.zeros((frame_skip * (features_buffer[1] - 1) + 1, features_buffer[0], features_buffer[2]),
+      queues['feat_q'] = Tensor(np.zeros((_feat_q_len(features_buffer, frame_skip, full_feature_history),
+                                          features_buffer[0], features_buffer[2]),
                          dtype=np.float32), device=device).contiguous().realize()
 
     queues.update({key: Tensor(value, device='NPY').realize() for key, value in npy_arrays.items() if key in ('tfm', 'big_tfm')})
@@ -142,7 +164,8 @@ def generate_queues_and_npy(input_shapes: dict, frame_skip: int, device: str = D
     }
 
     if features_buffer:
-      queues['feat_q'] = Tensor(np.zeros((frame_skip * (features_buffer[1] - 1) + 1, features_buffer[0], features_buffer[2]),
+      queues['feat_q'] = Tensor(np.zeros((_feat_q_len(features_buffer, frame_skip, full_feature_history),
+                                          features_buffer[0], features_buffer[2]),
                          dtype=np.float32), device=device).contiguous().realize()
 
     queues.update({key: Tensor(value, device='NPY').realize() for key, value in npy_arrays.items()})
@@ -157,8 +180,10 @@ def make_split_input_queues(vision_input_shapes: dict, policy_input_shapes: dict
 
 
 def make_supercombo_input_queues(input_shapes: dict, frame_skip: int,
-                                 device: str = Device.DEFAULT, use_packed: bool = True) -> tuple[dict, dict]:
-  return generate_queues_and_npy(input_shapes, frame_skip, device, is_supercombo=True, use_packed=use_packed)
+                                 device: str = Device.DEFAULT, use_packed: bool = True,
+                                 full_feature_history: bool = False) -> tuple[dict, dict]:
+  return generate_queues_and_npy(input_shapes, frame_skip, device, is_supercombo=True, use_packed=use_packed,
+                                 full_feature_history=full_feature_history)
 
 
 def create_jit_runner(vision_runner, policy_runners: list, nv12: NV12Frame, model_size: tuple[int, int],
