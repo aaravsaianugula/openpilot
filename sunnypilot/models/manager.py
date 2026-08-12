@@ -19,6 +19,7 @@ from openpilot.system.hardware.hw import Paths
 from cereal import messaging, custom
 from openpilot.sunnypilot.models.contracts import validate_artifact_url
 from openpilot.sunnypilot.models.fetcher import ModelFetcher
+from openpilot.sunnypilot.models.openpilot_experimental import DEFAULT_BUNDLE_INDEX
 from openpilot.sunnypilot.models.helpers import get_active_bundle, validate_active_bundle, verify_file
 
 
@@ -263,6 +264,28 @@ class ModelManagerSP:
     """Main entry point for downloading a model bundle"""
     asyncio.run(self._download_bundle(model_bundle, destination_path))
 
+  def _seed_default_bundle(self) -> None:
+    """Request the branch default on a device whose driver has not picked a model.
+
+    Queues an ordinary download, so the existing path applies: the bundle only
+    becomes active once its artifact is fetched and matches its pinned digest.
+    Until then, and after any failure, no active bundle exists and the stock
+    model keeps running - the device is never left without a working model.
+
+    Retried each poll until it activates, because a device that has never been
+    online should still land on the default once it is. It stops for good the
+    moment the driver chooses anything, including "Default" (stock), so this
+    never overrides an explicit choice.
+    """
+    if self.params.get_bool("ModelManager_UserChoseModel") or self.active_bundle is not None:
+      return
+    if self.params.get("ModelManager_DownloadIndex") is not None:
+      return
+    if not any(bundle.index == DEFAULT_BUNDLE_INDEX for bundle in self.available_models):
+      return  # catalog not fetched yet
+    cloudlog.info(f"Seeding branch default model bundle {DEFAULT_BUNDLE_INDEX}")
+    self.params.put("ModelManager_DownloadIndex", DEFAULT_BUNDLE_INDEX)
+
   def main_thread(self) -> None:
     """Main thread for model management"""
     rk = Ratekeeper(1, print_delay_threshold=None)
@@ -272,6 +295,7 @@ class ModelManagerSP:
         self.available_models = self.model_fetcher.get_available_bundles()
         validate_active_bundle(self.params, self.available_models)
         self.active_bundle = get_active_bundle(self.params)
+        self._seed_default_bundle()
 
         if (index_to_download := self.params.get("ModelManager_DownloadIndex")) is not None:
           if model_to_download := next((model for model in self.available_models if model.index == index_to_download), None):

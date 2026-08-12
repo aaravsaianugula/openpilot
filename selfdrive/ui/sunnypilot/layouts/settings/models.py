@@ -190,9 +190,13 @@ class ModelsLayout(Widget):
       return
     selected_ref = self.model_dialog.selection_ref
     if selected_ref == "Default":
+      # Records that the driver chose, so the branch stops seeding its own
+      # default over the top of this. Picking "Default" is a choice too.
+      ui_state.params.put_bool("ModelManager_UserChoseModel", True)
       ui_state.params.remove("ModelManager_ActiveBundle")
       self._show_reset_params_dialog()
     elif selected_bundle := next((bundle for bundle in self.model_manager.availableBundles if bundle.ref == selected_ref), None):
+      ui_state.params.put_bool("ModelManager_UserChoseModel", True)
       ui_state.params.put("ModelManager_DownloadIndex", selected_bundle.index)
       if self.model_manager.activeBundle and selected_bundle.generation != self.model_manager.activeBundle.generation:
         self._show_reset_params_dialog()

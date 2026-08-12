@@ -115,10 +115,14 @@ class ModelsLayoutMici(NavScroller):
     self._show_selection_view(folder_buttons, self._reset_main_view)
 
   def _select_model(self, bundle):
+    ui_state.params.put_bool("ModelManager_UserChoseModel", True)
     ui_state.params.put("ModelManager_DownloadIndex", bundle.index)
     self._reset_main_view()
 
   def _select_default(self):
+    # Records that the driver chose, so the branch stops seeding its own default
+    # over the top of this. Picking "Default" is a choice too.
+    ui_state.params.put_bool("ModelManager_UserChoseModel", True)
     ui_state.params.remove("ModelManager_ActiveBundle")
     self._reset_main_view()
 
