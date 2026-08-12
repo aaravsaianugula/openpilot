@@ -9,14 +9,21 @@ Detection cannot happen inside modeld.py: by the time it runs, `import tinygrad`
 has already bound a module, and the wrong one cannot be swapped out afterwards.
 """
 
+import os
 import sys
 
-from openpilot.sunnypilot.models.helpers import get_active_bundle
-from openpilot.sunnypilot.models.runtime_abi import runtime_pythonpath_entry
+# Resolve the repo root from this file rather than trusting the caller's
+# PYTHONPATH. The launcher may run before the environment is set up, and an
+# ImportError here would silently fall back to the wrong tinygrad.
+BASEDIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+if BASEDIR not in sys.path:
+  sys.path.insert(0, BASEDIR)
 
 
 def main() -> int:
   try:
+    from openpilot.sunnypilot.models.helpers import get_active_bundle
+    from openpilot.sunnypilot.models.runtime_abi import runtime_pythonpath_entry
     entry = runtime_pythonpath_entry(get_active_bundle())
   except Exception as e:
     # Never block modeld from starting; the repo default is the safe fallback.
