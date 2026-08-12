@@ -75,7 +75,9 @@ def test_v18_rdf_bundle_parses_declared_chunks(tmp_path, monkeypatch):
   monkeypatch.setattr("openpilot.sunnypilot.models.fetcher.cloudlog.warning", lambda *_args, **_kwargs: None)
   bundles = ModelParser.parse_models(rdf_catalog_fixture())
 
-  assert len(bundles) == 6
+  # Derived, not hardcoded: parse_models applies the experimental overlay, so the
+  # count moves whenever a checkpoint is added.
+  assert len(bundles) == len(rdf_catalog_fixture()["bundles"]) + len(OPENPILOT_EXPERIMENTAL_BUNDLES)
   bundle = next(bundle for bundle in bundles if bundle.ref == RDF_REF)
   artifact = bundle.models[0].artifact
   assert bundle.index == 73

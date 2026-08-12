@@ -19,3 +19,6 @@
 [submodule "sunnypilot/neural_network_data"]
   path = sunnypilot/neural_network_data
   url = https://github.com/sunnypilot/neural-network-data.git
+[submodule "tinygrad_rdf"]
+	path = tinygrad_rdf_repo
+	url = https://github.com/tinygrad/tinygrad.git

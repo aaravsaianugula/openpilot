@@ -1,9 +1,25 @@
-"""Verified small-model additions sourced from official OpenPilot experiments."""
+"""Verified small-model additions sourced from official OpenPilot experiments.
+
+Each bundle pins the exact SHA-256 the publisher attests to for the artifact and
+declares which tinygrad ABI the published pickle needs. The ABI was established by
+reading the published pickles, not inferred from the OpenPilot source ref: No-PP's
+source ref pins a pre-rename tinygrad, yet its pickle is post-rename because the
+publisher compiled it with a newer checkout.
+"""
 
 from copy import deepcopy
 
+from openpilot.sunnypilot.models.runtime_abi import RDF_ABI
 
+
+# Tinygrad revision the upstream sunnypilot v18 catalog is compiled against. The
+# overlay refuses to apply to a catalog declaring anything else.
 TINYGRAD_REF = "2fecac4e4ac32fe369c41f8400b6e7b9adb18683"
+
+# Tinygrad revision the artifacts below are compiled against (comma's rdf-driving
+# pin). Served by the `tinygrad_rdf_repo` checkout; see models/runtime_abi.py.
+RDF_TINYGRAD_REF = "8611fe22a7fcc7d1928bbde19ded66277cb12f3e"
+
 RESOURCE_BASE = "https://raw.githubusercontent.com/firestar5683/StarPilot-Resources/Models"
 
 DEEP_MODEL16_REF = "f02d134f40f5e7be22b182af21b438915a47600e"
@@ -19,6 +35,9 @@ MASTER_FOLDER_REFS = {GYHU_REF, RDF1_REF}
 
 
 def _artifact(name: str, sha256: str) -> dict:
+  # Chunks carry no hash of their own: the publisher attests to the reassembled
+  # file, and `sha256` here is verified against that. A self-computed per-chunk
+  # digest would add no assurance, so the field is left off rather than stubbed.
   return {
     "file_name": name,
     "download_uri": {
@@ -26,14 +45,15 @@ def _artifact(name: str, sha256: str) -> dict:
       "sha256": sha256,
     },
     "chunks": [
-      {"file_name": f"{name}.p00", "sha256": ""},
-      {"file_name": f"{name}.p01", "sha256": ""},
+      {"file_name": f"{name}.p00"},
+      {"file_name": f"{name}.p01"},
     ],
   }
 
 
 def _bundle(*, index: int, short_name: str, display_name: str, ref: str, source_sha256: str,
-            source_size: int, artifact_name: str, artifact_sha256: str, lat: str, long: str) -> dict:
+            source_size: int, artifact_name: str, artifact_sha256: str, lat: str, long: str,
+            runtime_abi: str = RDF_ABI) -> dict:
   return {
     "short_name": short_name,
     "display_name": display_name,
@@ -41,6 +61,7 @@ def _bundle(*, index: int, short_name: str, display_name: str, ref: str, source_
     "ref": ref,
     "source_sha256": source_sha256,
     "source_size": source_size,
+    "runtime_abi": runtime_abi,
     "environment": "development",
     "runner": "tinygrad",
     "index": index,
@@ -121,7 +142,23 @@ OPENPILOT_EXPERIMENTAL_BUNDLES = (
     lat=".1",
     long=".3",
   ),
+  _bundle(
+    index=1006,
+    short_name="RDF6",
+    display_name="RDF Checkpoint 6 (OpenPilot 35703097)",
+    ref="35703097905a122c9f3ddf0d12889b4873d7e2a2",
+    source_sha256="c7db331ca0d4f1e185ee463f19c8f3ceca3e7eb1ccd58a35e348844b710dd0cd",
+    source_size=96_635_310,
+    artifact_name="rdf63_driving_tinygrad.pkl",
+    artifact_sha256="f98b7b2d0777f67a1855c209c2d4b00840f6e9dd5d4240bd41a4cf214973453e",
+    lat=".1",
+    long=".3",
+  ),
 )
+
+# The checkpoint the branch selects by default. RDF6 is newer but community
+# reports on it are worse than RDF5, so newer is not made the default for free.
+DEFAULT_BUNDLE_INDEX = 1005
 
 
 def apply_openpilot_experimental_overlay(catalog: dict) -> dict:

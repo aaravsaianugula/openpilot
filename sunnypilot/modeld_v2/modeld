@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
+
+# A tinygrad model pickle only unpickles under the tinygrad it was compiled
+# against, so resolve the matching checkout before modeld.py imports tinygrad.
+# Empty output means the checkout already on the path is the correct one.
+RUNTIME="$("$DIR/select_tinygrad_runtime.py")"
+if [ -n "$RUNTIME" ]; then
+  export PYTHONPATH="$RUNTIME${PYTHONPATH:+:$PYTHONPATH}"
+fi
+
 exec "$DIR/modeld.py" "$@"

@@ -33,7 +33,9 @@ class ModelParser:
   def _parse_chunk(chunk_data) -> custom.ModelManagerSP.Chunk:
     chunk = custom.ModelManagerSP.Chunk()
     chunk.fileName = chunk_data.get("file_name")
-    chunk.sha256 = chunk_data.get("sha256")
+    # Optional: a chunk may carry no digest of its own when the publisher only
+    # attests to the reassembled file. capnp Text rejects None, so normalise.
+    chunk.sha256 = chunk_data.get("sha256") or ""
     return chunk
 
   @staticmethod

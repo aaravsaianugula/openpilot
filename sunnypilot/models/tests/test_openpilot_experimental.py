@@ -2,7 +2,10 @@ import copy
 
 import pytest
 
-from openpilot.sunnypilot.models.openpilot_experimental import apply_openpilot_experimental_overlay
+from openpilot.sunnypilot.models.openpilot_experimental import (DEFAULT_BUNDLE_INDEX,
+                                                               OPENPILOT_EXPERIMENTAL_BUNDLES,
+                                                               apply_openpilot_experimental_overlay)
+from openpilot.sunnypilot.models.runtime_abi import RDF_ABI, rdf_abi_refs
 
 
 DEEP_REF = "f02d134f40f5e7be22b182af21b438915a47600e"
@@ -43,6 +46,13 @@ EXPECTED_EXPERIMENTS = {
     "rdf53_driving_tinygrad.pkl",
     "ef350dee3c5d74c213d6bbcc673f92f73036bb6b5111e6c4ce4b4df6c6a2c756",
     "567e028c11989ceace7952c8efbcd60c10d5ba726a87f4b61d25632855a18b02",
+    ".1",
+    ".3",
+  ),
+  "35703097905a122c9f3ddf0d12889b4873d7e2a2": (
+    "rdf63_driving_tinygrad.pkl",
+    "f98b7b2d0777f67a1855c209c2d4b00840f6e9dd5d4240bd41a4cf214973453e",
+    "c7db331ca0d4f1e185ee463f19c8f3ceca3e7eb1ccd58a35e348844b710dd0cd",
     ".1",
     ".3",
   ),
@@ -100,6 +110,29 @@ def test_overlay_is_idempotent_and_does_not_duplicate_rdf1():
   assert twice == once
   assert len(refs) == len(set(refs))
   assert refs.count(RDF1_REF) == 1
+
+
+def test_every_experiment_declares_the_rdf_tinygrad_abi():
+  # Established by reading the published pickles: all six reference `_TinyJit`,
+  # so all six need the post-rename checkout. Guards against a new entry being
+  # added without an ABI decision, which would crash modeld at load time.
+  for bundle in OPENPILOT_EXPERIMENTAL_BUNDLES:
+    assert bundle["runtime_abi"] == RDF_ABI, bundle["short_name"]
+  assert rdf_abi_refs() == {bundle["ref"] for bundle in OPENPILOT_EXPERIMENTAL_BUNDLES}
+
+
+def test_default_bundle_is_rdf5():
+  by_index = {bundle["index"]: bundle for bundle in OPENPILOT_EXPERIMENTAL_BUNDLES}
+  assert by_index[DEFAULT_BUNDLE_INDEX]["short_name"] == "RDF5"
+
+
+def test_chunks_carry_no_placeholder_digest():
+  # The publisher attests to the reassembled file only. An empty-string digest
+  # would read as a check while `manager` skips it, so the key must be absent.
+  for bundle in OPENPILOT_EXPERIMENTAL_BUNDLES:
+    for chunk in bundle["models"][0]["artifact"]["chunks"]:
+      assert "sha256" not in chunk
+    assert bundle["models"][0]["artifact"]["download_uri"]["sha256"]
 
 
 @pytest.mark.parametrize("catalog", [None, [], "catalog"])
