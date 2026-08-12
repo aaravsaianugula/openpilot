@@ -61,3 +61,24 @@ Some clients may have intermittent access to updated JSONs. The runtime check en
 | JSON file renaming              | Isolates bundles by selector generation to handle full recompiles     |
 
 This layered strategy ensures safe evolution of the model selection system while maintaining backward compatibility and runtime protection against stale or incompatible bundles.
+
+## OpenPilot experimental small models
+
+This branch keeps the live Sunnypilot v18 catalog as its primary model catalog and adds a small local overlay for published official OpenPilot experiments that are missing from that catalog.
+
+The currently exposed small-model lineup is:
+
+* OpenPilot Model16 Deep
+* Rebel Legion
+* Get Your Hopes Up
+* Rebellious Hope
+* No-PP
+* RDF checkpoints 1, 2, 3, 4, and 5
+
+Model behavior is identified by an exact `commaai/openpilot` commit and source-model SHA-256. Existing v18 artifacts continue to use Sunnypilot's published catalog. No-PP and RDF checkpoints 2 through 5 use QCOM Tinygrad artifacts from the `firestar5683/StarPilot-Resources` `Models` branch because commaai publishes the source ONNX models but not a multi-model download catalog. Those runtime artifacts are accepted only when the SHA-256 of the complete reconstructed file matches the pinned value.
+
+RDF checkpoint numbering is chronological community terminology. Official OpenPilot commit messages identify training checkpoints rather than naming releases "RDF v1" through "RDF v5". No checkpoint is automatically preferred or made the default.
+
+The `nostd` OpenPilot branch is intentionally not exposed because no hash-pinned, comma-ready artifact was found. Adding a source ONNX entry without a compatible runtime artifact would create a selector option that cannot run.
+
+Downloads and model selection are offroad operations. All experiments use the existing v18 combined-model runtime; there is no separate RL runner or Tinygrad checkout.

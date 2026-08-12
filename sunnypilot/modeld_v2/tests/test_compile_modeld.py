@@ -8,6 +8,7 @@ See the LICENSE.md file in the root directory for more details.
 import numpy as np
 import pytest
 
+import openpilot.sunnypilot.modeld_v2.compile_modeld as compile_modeld
 from openpilot.sunnypilot.modeld_v2.compile_modeld import derive_frame_skip, _detect_desire_key
 
 
@@ -144,6 +145,27 @@ class TestDetectDesireKey:
   def test_returns_none_when_no_desire(self):
     shapes = {'features_buffer': (1, 99, 512), 'traffic_convention': (1, 2)}
     assert _detect_desire_key(shapes) is None
+
+
+class TestPackedRdfQueues:
+  def test_exposes_action_and_recurrence_views(self):
+    generate_queues_and_npy = getattr(compile_modeld, 'generate_queues_and_npy', None)
+    assert generate_queues_and_npy is not None
+
+    shapes = {
+      'img': (1, 12, 16, 32),
+      'big_img': (1, 12, 16, 32),
+      'desire_pulse': (1, 25, 8),
+      'traffic_convention': (1, 2),
+      'action_t': (1, 2),
+      'features_buffer': (1, 24, 512),
+    }
+    queues, numpy_inputs = generate_queues_and_npy(shapes, frame_skip=4, device='NPY', is_supercombo=True)
+
+    assert numpy_inputs['action_t'].shape == (1, 2)
+    assert numpy_inputs['prev_feat'].shape == (1, 512)
+    assert 'packed_npy_inputs' in queues
+    assert queues['feat_q'].shape == (93, 1, 512)
 
 
 class TestOutputSlicePreservation:

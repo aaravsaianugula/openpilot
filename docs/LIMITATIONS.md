@@ -56,3 +56,11 @@ Many factors can impact the performance of openpilot DM, causing it to be unable
 * The driver facing camera is obstructed, covered, or damaged.
 
 The list above does not represent an exhaustive list of situations that may interfere with proper operation of openpilot components. A driver should not rely on openpilot DM to assess their level of attention.
+
+## Limitations of experimental driving models
+
+OpenPilot experimental model branches and RDF checkpoints are opt-in development models. A newer checkpoint is not necessarily safer or better for a particular vehicle, route, or driving style. Community reports about lane position, stopping distance, stopped-lead behavior, and speed convergence are anecdotal and sometimes conflict.
+
+The model selector and host tests verify catalog identity, artifact integrity, runtime contracts, and deterministic code behavior. They do not prove that a model keeps the vehicle centered, stops at the intended location, or behaves safely on a physical road. In particular, the reported right-hugging behavior has not been reproduced or isolated on this Elantra branch.
+
+Before using a newly added model in controlled driving, verify it while parked on the target comma device, confirm the complete artifact hash, confirm sustained nominal 20 Hz inference without queue or process errors, and review a deterministic recorded-route comparison. Keep the stock model available for offroad recovery. Never download, select, or switch a driving model while the vehicle is onroad.

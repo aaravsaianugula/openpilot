@@ -6,12 +6,84 @@ See the LICENSE.md file in the root directory for more details.
 """
 
 import pickle
+import sys
+import types
 import pytest
+
+
+def _install_windows_test_stubs():
+  if sys.platform != 'win32':
+    return
+
+  for name in ('fcntl', 'termios'):
+    sys.modules.setdefault(name, types.ModuleType(name))
+
+  params_pyx = types.ModuleType('openpilot.common.params_pyx')
+
+  class Params:
+    def __init__(self, *args, **kwargs):
+      pass
+
+    def get(self, key, block=False, return_default=False):
+      if key == 'LagdValueCache':
+        return 0.0
+      raise RuntimeError(f'test-only Params stub does not provide {key}')
+
+  class ParamKeyFlag:
+    ALL = 0
+
+  class ParamKeyType:
+    STRING = 0
+
+  class UnknownKeyName(Exception):
+    pass
+
+  params_pyx.Params = Params
+  params_pyx.ParamKeyFlag = ParamKeyFlag
+  params_pyx.ParamKeyType = ParamKeyType
+  params_pyx.UnknownKeyName = UnknownKeyName
+  sys.modules.setdefault('openpilot.common.params_pyx', params_pyx)
+
+  class Noop:
+    def __init__(self, *args, **kwargs):
+      pass
+
+  class MultiplePublishersError(Exception):
+    pass
+
+  class IpcError(Exception):
+    pass
+
+  ipc_pyx = types.ModuleType('msgq.ipc_pyx')
+  for name in ('Context', 'Poller', 'SubSocket', 'PubSocket', 'SocketEventHandle'):
+    setattr(ipc_pyx, name, Noop)
+  ipc_pyx.MultiplePublishersError = MultiplePublishersError
+  ipc_pyx.IpcError = IpcError
+  ipc_pyx.toggle_fake_events = lambda *args, **kwargs: None
+  ipc_pyx.set_fake_prefix = lambda *args, **kwargs: None
+  ipc_pyx.get_fake_prefix = lambda: ''
+  ipc_pyx.delete_fake_prefix = lambda *args, **kwargs: None
+  ipc_pyx.wait_for_one_event = lambda *args, **kwargs: False
+  sys.modules.setdefault('msgq.ipc_pyx', ipc_pyx)
+
+  visionipc_pyx = types.ModuleType('msgq.visionipc.visionipc_pyx')
+  for name in ('VisionBuf', 'VisionIpcClient', 'VisionIpcServer', 'VisionStreamType'):
+    setattr(visionipc_pyx, name, Noop)
+  visionipc_pyx.get_endpoint_name = lambda *args, **kwargs: ''
+  sys.modules.setdefault('msgq.visionipc.visionipc_pyx', visionipc_pyx)
+
+
+_install_windows_test_stubs()
 
 import openpilot.sunnypilot.models.helpers as helpers
 import openpilot.sunnypilot.modeld_v2.modeld as modeld_module
 from openpilot.sunnypilot.modeld_v2.constants import ModelConstants
 from openpilot.sunnypilot.models.split_model_constants import SplitModelConstants
+
+
+@pytest.fixture(autouse=sys.platform == 'win32')
+def _disable_windows_cloudlog_ipc(monkeypatch):
+  monkeypatch.setattr(modeld_module.cloudlog, 'warning', lambda *_args, **_kwargs: None)
 
 
 class DummyOverride:
@@ -92,7 +164,12 @@ def _make_supercombo_metadata(input_shapes, output_slices):
 
 
 SPLIT_VISION_INPUT_SHAPES = {'img': (1, 12, 128, 256), 'big_img': (1, 12, 128, 256)}
-SPLIT_POLICY_INPUT_SHAPES = {'features_buffer': (1, 25, 512), 'desire_pulse': (1, 25, 8), 'traffic_convention': (1, 2)}
+SPLIT_POLICY_INPUT_SHAPES = {
+  'features_buffer': (1, 25, 512),
+  'desire_pulse': (1, 25, 8),
+  'traffic_convention': (1, 2),
+  'action_t': (1, 2),
+}
 SPLIT_VISION_SLICES = {'hidden_state': slice(0, 512), 'pose': slice(512, 524)}
 SPLIT_POLICY_SLICES = {'plan': slice(0, 495), 'meta': slice(495, 550)}
 

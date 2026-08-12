@@ -60,9 +60,9 @@ class TestModelStateCombinedInit:
 
 class TestStockEquivalence:
 
-  def test_split_queue_keys_match_stock(self, model_state_factory):
+  def test_split_logical_inputs_match_stock_and_legacy_queues_remain_supported(self, model_state_factory):
     from openpilot.selfdrive.modeld.compile_modeld import make_input_queues
-    from openpilot.sunnypilot.modeld_v2.compile_modeld import derive_frame_skip
+    from openpilot.sunnypilot.modeld_v2.compile_modeld import derive_frame_skip, make_split_input_queues
 
     state = model_state_factory(ARCHETYPES['vision_policy_split'])
 
@@ -70,12 +70,14 @@ class TestStockEquivalence:
     stock_queues, stock_npy = make_input_queues(SPLIT_VISION_INPUT_SHAPES, SPLIT_POLICY_INPUT_SHAPES, frame_skip,
                                                 device='NPY')
 
-    # TODO-SP: remove action_t skip once SP adds prerequisite for deep models (action_t input queue)
-    skip_keys = {'action_t'}
-    assert set(state.input_queues.keys()) == set(stock_queues.keys()) - skip_keys, \
-      f"Queue keys differ: v2={set(state.input_queues.keys())}, stock={set(stock_queues.keys())}"
-    assert set(state.numpy_inputs.keys()) == set(stock_npy.keys()) - skip_keys, \
+    assert set(state.numpy_inputs.keys()) == set(stock_npy.keys()), \
       f"Npy keys differ: v2={set(state.numpy_inputs.keys())}, stock={set(stock_npy.keys())}"
+    assert 'packed_npy_inputs' in state.input_queues
+
+    legacy_queues, legacy_npy = make_split_input_queues(SPLIT_VISION_INPUT_SHAPES, SPLIT_POLICY_INPUT_SHAPES,
+                                                        frame_skip, device='NPY', use_packed=False)
+    assert set(legacy_queues.keys()) == set(stock_queues.keys())
+    assert set(legacy_npy.keys()) == set(stock_npy.keys())
 
   def test_split_queue_keys_work_with_desire_key(self, model_state_factory):
     from openpilot.sunnypilot.modeld_v2.compile_modeld import derive_frame_skip, make_split_input_queues

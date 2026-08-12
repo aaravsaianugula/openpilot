@@ -199,4 +199,3 @@ class ModelsLayoutMici(NavScroller):
       self.current_model_info.info_header.set_text(tr("progress") + self._download_progress)
       self.current_model_info.info_header._shimmer = True
       self.current_model_info.info_text.set_text(f"{progress/count:.2f}%")
-
