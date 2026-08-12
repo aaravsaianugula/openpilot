@@ -133,6 +133,11 @@ def test_chunked_download_reads_explicit_remote_parts_into_local_chunk_layout(tm
     monkeypatch.setattr("openpilot.sunnypilot.models.fetcher.Paths.model_root", lambda: str(local_dir))
     monkeypatch.setattr("openpilot.sunnypilot.models.fetcher.cloudlog.info", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("openpilot.sunnypilot.models.fetcher.cloudlog.warning", lambda *_args, **_kwargs: None)
+    # This case covers chunk reassembly, not the download trust boundary, and it
+    # serves parts over plain HTTP from a loopback port. Opt out explicitly here
+    # rather than admitting loopback into APPROVED_ARTIFACT_HOSTS for everyone;
+    # test_contracts.py is what holds that boundary.
+    monkeypatch.setattr(model_manager, "validate_artifact_url", lambda url: url)
     artifact = ModelParser._parse_artifact({
       "file_name": artifact_name,
       "download_uri": {

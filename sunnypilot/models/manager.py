@@ -17,6 +17,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.system.hardware.hw import Paths
 
 from cereal import messaging, custom
+from openpilot.sunnypilot.models.contracts import validate_artifact_url
 from openpilot.sunnypilot.models.fetcher import ModelFetcher
 from openpilot.sunnypilot.models.helpers import get_active_bundle, validate_active_bundle, verify_file
 
@@ -109,7 +110,9 @@ class ModelManagerSP:
 
     async with aiohttp.ClientSession() as session:
       for i, chunk in enumerate(artifact.chunks):
-        chunk_url = _chunk_url(base_url, chunk.fileName, i, num_chunks)
+        # Re-checked per chunk: names are resolved with urljoin, so an absolute
+        # chunk name would otherwise redirect the fetch to an arbitrary host.
+        chunk_url = validate_artifact_url(_chunk_url(base_url, chunk.fileName, i, num_chunks))
         chunk_path = get_chunk_name(base_path, i, num_chunks)
         chunk_downloaded = 0
         async with session.get(chunk_url) as response:
@@ -145,6 +148,13 @@ class ModelManagerSP:
     full_path = os.path.join(destination_path, filename)
 
     try:
+      validate_artifact_url(url)
+      # A downloaded artifact is unpickled by the model runtime, so refuse to
+      # fetch one that nothing can attest to. Chunked artifacts may carry either
+      # a whole-file digest or per-chunk digests; with neither there is nothing
+      # to check the bytes against.
+      if len(artifact.chunks) > 0 and not expected_hash and not any(chunk.sha256 for chunk in artifact.chunks):
+        raise ValueError(f"No digest to verify {filename} against")
       is_cached = await verify_file(full_path, expected_hash) if expected_hash else False
       if not expected_hash and len(artifact.chunks) > 0:
         from openpilot.common.file_chunker import get_chunk_name
