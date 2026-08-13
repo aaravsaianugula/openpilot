@@ -160,7 +160,7 @@ class ModelState(ModelStateBase):
       frame_skip = self._declared_frame_skip or derive_frame_skip({}, model_metadata['input_shapes'])
       self.input_queues, self.numpy_inputs = make_supercombo_input_queues(model_metadata['input_shapes'],
                                                                           frame_skip, device=self.QUEUE_DEV, use_packed=use_packed,
-                                                                          full_feature_history=self._policy_takes_warped)
+                                                                          openpilot_layout=self._policy_takes_warped)
     else:
       vision_metadata = metadata['vision']
       policy_keys = [k for k in metadata if k != 'vision']

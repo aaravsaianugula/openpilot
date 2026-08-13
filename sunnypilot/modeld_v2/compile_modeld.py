@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 
@@ -61,14 +61,38 @@ def derive_frame_skip(vision_input_shapes: dict, policy_input_shapes: dict) -> i
   return 1 if not features_buffer or features_buffer[1] >= 99 else 4
 
 
-def get_policy_npy_shapes(input_shapes: dict, is_supercombo: bool = False) -> tuple[dict, list[int]]:
+def get_policy_npy_shapes(input_shapes: dict, is_supercombo: bool = False,
+                          openpilot_layout: bool = False) -> tuple[dict, list[int]]:
+  """Named views into the single packed float buffer the policy receives.
+
+  Insertion order IS the wire format: the buffer is split at offsets baked into
+  the JIT when it was captured, and nothing re-derives them at load time. So the
+  order here must match whoever compiled the artifact being run, or every field
+  after the first lands in the wrong bytes -- silently, since the buffer is the
+  right total size either way.
+
+  `openpilot_layout` selects comma's order (desire, traffic_convention, action_t,
+  prev_feat) used by the format_version 1 artifacts; the default is the order
+  sunnypilot compiles its own models with.
+  """
   desire_key = _detect_desire_key(input_shapes)
   shapes = {}
   if desire_key:
     shapes['desire'] = (input_shapes[desire_key][2],)
 
-  if is_supercombo and 'features_buffer' in input_shapes:
-    fb = input_shapes['features_buffer']
+  fb = input_shapes.get('features_buffer')
+
+  if openpilot_layout:
+    # See get_policy_npy_shapes in commaai/openpilot rdf-driving compile_modeld.py.
+    for key in ('traffic_convention', 'action_t'):
+      if key in input_shapes:
+        shapes[key] = tuple(input_shapes[key])
+    if fb is not None:
+      shapes['prev_feat'] = (fb[0], fb[2])
+    sizes = [int(np.prod(size)) for size in shapes.values()]
+    return shapes, sizes
+
+  if is_supercombo and fb is not None:
     shapes['prev_feat'] = (fb[0], fb[2])
 
   for key, shape in input_shapes.items():
@@ -79,7 +103,7 @@ def get_policy_npy_shapes(input_shapes: dict, is_supercombo: bool = False) -> tu
   return shapes, sizes
 
 
-def _feat_q_len(features_buffer: tuple, frame_skip: int, full_feature_history: bool) -> int:
+def _feat_q_len(features_buffer: tuple, frame_skip: int, openpilot_layout: bool) -> int:
   """Length of the feature history queue.
 
   Two conventions, decided by whether the compiled policy expects the current
@@ -94,14 +118,14 @@ def _feat_q_len(features_buffer: tuple, frame_skip: int, full_feature_history: b
   Getting this wrong is not a silent numeric error: the JIT was captured against
   one exact shape and raises "args mismatch in JIT" on the other.
   """
-  if full_feature_history:
+  if openpilot_layout:
     return frame_skip * features_buffer[1]
   return frame_skip * (features_buffer[1] - 1) + 1
 
 
 def generate_queues_and_npy(input_shapes: dict, frame_skip: int, device: str = Device.DEFAULT,
                             is_supercombo: bool = False, use_packed: bool = True,
-                            full_feature_history: bool = False) -> tuple[dict, dict]:
+                            openpilot_layout: bool = False) -> tuple[dict, dict]:
   road_key, _ = _detect_vision_keys(input_shapes)
   if not road_key:
     raise ValueError("Vision road key missing from input shapes.")
@@ -123,7 +147,8 @@ def generate_queues_and_npy(input_shapes: dict, frame_skip: int, device: str = D
       'big_tfm': np.zeros((3, 3), dtype=np.float32)
     }
 
-    shapes, sizes = get_policy_npy_shapes(input_shapes, is_supercombo=is_supercombo)
+    shapes, sizes = get_policy_npy_shapes(input_shapes, is_supercombo=is_supercombo,
+                                          openpilot_layout=openpilot_layout)
     packed_npy_inputs = np.zeros(sum(sizes), dtype=np.float32)
 
     split_indices = np.cumsum(sizes[:-1]) if len(sizes) > 1 else []
@@ -140,7 +165,7 @@ def generate_queues_and_npy(input_shapes: dict, frame_skip: int, device: str = D
     }
 
     if features_buffer:
-      queues['feat_q'] = Tensor(np.zeros((_feat_q_len(features_buffer, frame_skip, full_feature_history),
+      queues['feat_q'] = Tensor(np.zeros((_feat_q_len(features_buffer, frame_skip, openpilot_layout),
                                           features_buffer[0], features_buffer[2]),
                          dtype=np.float32), device=device).contiguous().realize()
 
@@ -164,7 +189,7 @@ def generate_queues_and_npy(input_shapes: dict, frame_skip: int, device: str = D
     }
 
     if features_buffer:
-      queues['feat_q'] = Tensor(np.zeros((_feat_q_len(features_buffer, frame_skip, full_feature_history),
+      queues['feat_q'] = Tensor(np.zeros((_feat_q_len(features_buffer, frame_skip, openpilot_layout),
                                           features_buffer[0], features_buffer[2]),
                          dtype=np.float32), device=device).contiguous().realize()
 
@@ -181,9 +206,9 @@ def make_split_input_queues(vision_input_shapes: dict, policy_input_shapes: dict
 
 def make_supercombo_input_queues(input_shapes: dict, frame_skip: int,
                                  device: str = Device.DEFAULT, use_packed: bool = True,
-                                 full_feature_history: bool = False) -> tuple[dict, dict]:
+                                 openpilot_layout: bool = False) -> tuple[dict, dict]:
   return generate_queues_and_npy(input_shapes, frame_skip, device, is_supercombo=True, use_packed=use_packed,
-                                 full_feature_history=full_feature_history)
+                                 openpilot_layout=openpilot_layout)
 
 
 def create_jit_runner(vision_runner, policy_runners: list, nv12: NV12Frame, model_size: tuple[int, int],
