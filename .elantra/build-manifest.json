@@ -1,0 +1,17 @@
+{
+  "sunnypilot_upstream_sha": "b742b96c4482aced861525c33c55e1374aa8bb0c",
+  "sunnypilot_upstream_date": "2026-08-25",
+  "sunnypilot_upstream_subject": "[MICI] ui: four-state eGPU icon for non-default big models (#1945)",
+  "upstream_ci_conclusion": "success",
+  "upstream_ci_checked": 21,
+  "upstream_ci_url": "https://github.com/sunnypilot/sunnypilot/commit/b742b96c4482aced861525c33c55e1374aa8bb0c/checks",
+  "opendbc_sha": "69e2e548fa6591da11b4962bccedcee3af66b027",
+  "opendbc_repo": "aaravsaianugula/opendbc",
+  "elantra_platforms": [
+    "HYUNDAI_ELANTRA_2024",
+    "HYUNDAI_ELANTRA_HEV_2024"
+  ],
+  "previous_master_sha": "b5590367c41f2fd02d20296acc51e3970aaabc17",
+  "rollback_branch": "master-previous",
+  "synced_at_utc": "2026-08-25T21:33:12Z"
+}
