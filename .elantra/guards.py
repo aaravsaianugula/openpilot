@@ -23,6 +23,12 @@ import re
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from overlay import (
+    FORK_TINYGRAD, NV_IFACE_REGISTRY, NV_SENTINELS, OVERLAY_ADDED, OVERLAY_HOOKS,
+    OVERLAY_MODIFIED,
+)
+
 PLATFORMS = ("HYUNDAI_ELANTRA_2024", "HYUNDAI_ELANTRA_HEV_2024")
 
 # The two halves of the CN7 2024 LFAHDA_MFC widening. These must always agree: the dbc says
@@ -179,24 +185,8 @@ def guard_torque(opendbc: Path) -> None:
 def guard_superproject(repo: Path) -> None:
     print("\n[superproject] submodule wiring")
     gitmodules = read(repo / ".gitmodules")
-    check("opendbc submodule points at the Elantra-enabled fork",
-          "aaravsaianugula/opendbc" in gitmodules,
-          "the .gitmodules overlay did not apply -- the build would use stock opendbc and the car would not be supported")
     check("opendbc submodule path is still opendbc_repo", "path = opendbc_repo" in gitmodules)
-
-    # Every file the panel needs must have survived the rebuild. A dropped overlay file is
-    # an ImportError on the car's settings screen, and the sync would otherwise publish it
-    # happily because the *diff* still applied cleanly.
-    ui_dir = repo / "openpilot/selfdrive/ui/sunnypilot/mici/layouts"
-    for name in ("port_updates.py", "port_manifest.py"):
-        check(f"UI overlay file {name} present", (ui_dir / name).is_file(),
-              "the settings panel would fail to import on the device")
-    settings = ui_dir / "settings.py"
-    if settings.is_file():
-        text = settings.read_text(encoding="utf-8", errors="replace")
-        check("port panel is registered in the mici settings",
-              "ElantraPortLayoutMici" in text and "port_btn" in text,
-              "the panel exists but nothing opens it")
+    check("tinygrad submodule path is still tinygrad_repo", "path = tinygrad_repo" in gitmodules)
 
     manifest_path = repo / ".elantra/build-manifest.json"
     if manifest_path.is_file():
@@ -207,6 +197,125 @@ def guard_superproject(repo: Path) -> None:
         check("manifest lists both Elantra platforms",
               set(PLATFORMS).issubset(set(manifest.get("elantra_platforms", []))))
 
+        # The tinygrad keys only exist in manifests written after eGPU support landed. A
+        # checkout of an older build is not a regression, so note it rather than failing --
+        # but once a manifest claims eGPU support, the keys that describe it are mandatory,
+        # so a later sync cannot quietly stop recording which tinygrad it pinned.
+        if "egpu" not in manifest:
+            print("  note  this manifest predates eGPU support; tinygrad keys not checked")
+        else:
+            for key in ("tinygrad_sha", "tinygrad_repo", "tinygrad_upstream_sha"):
+                check("manifest carries " + key, key in manifest)
+
+
+def _overlay_present(target: Path) -> bool:
+    """A registered path counts as present if it is a file, or a directory holding one.
+
+    The empty-directory case is the interesting one: `git checkout <ref> -- <dir>` can leave
+    one behind after a rename upstream, and "the directory exists" would call that a pass.
+    """
+    if target.is_file():
+        return True
+    if target.is_dir():
+        return any(p.is_file() for p in target.rglob("*") if "__pycache__" not in p.parts)
+    return False
+
+
+def guard_overlay_present(repo: Path) -> None:
+    """Every path sync.py restores really is in the rebuilt tree.
+
+    Generic on purpose. The named guards say what particular files *mean*; this one says the
+    registry is not lying. Without it, adding a path to OVERLAY_ADDED and never checking it is
+    how an overlay file gets restored one Monday and silently dropped the Monday after a
+    rename upstream -- the sync would publish it happily, because the diff still applied.
+    """
+    print("\n[overlay] every registered overlay path survived the rebuild")
+    check("the overlay registry is not empty", bool(OVERLAY_ADDED),
+          "OVERLAY_ADDED is empty -- the sync would restore nothing at all")
+    for path in OVERLAY_ADDED:
+        check("overlay path " + path + " present", _overlay_present(repo / path),
+              "registered in OVERLAY_ADDED, restored by sync.py, and not in the built tree")
+
+
+def guard_overlay_hooks(repo: Path) -> None:
+    """Every upstream file we modify still carries the modification.
+
+    `git apply -3` can succeed and land a change somewhere useless if upstream moved the code
+    around it, and more mundanely someone can hand-edit master and drop a line. This asserts
+    the *effect* of the overlay rather than the fact that a patch applied.
+    """
+    print("\n[overlay] upstream files we modify still carry our hooks")
+    # If OVERLAY_MODIFIED grows and nobody adds a hook, this guard quietly stops covering the
+    # new file. Assert the two registries are the same set so that cannot happen unnoticed.
+    drift = sorted(set(OVERLAY_MODIFIED) ^ set(OVERLAY_HOOKS))
+    check("every overlay-modified file has a hook", not drift,
+          "OVERLAY_MODIFIED and OVERLAY_HOOKS have drifted: " + ", ".join(drift))
+    for path in sorted(OVERLAY_HOOKS):
+        target = repo / path
+        if not target.is_file():
+            check(path + " exists", False, "an overlay-modified file is missing entirely")
+            continue
+        text = target.read_text(encoding="utf-8", errors="replace")
+        for hook in OVERLAY_HOOKS[path]:
+            check(path + ": " + hook, hook in text,
+                  "the overlay applied but our change is not in the file")
+
+
+def _defined(source: str) -> set[tuple[str, str]]:
+    out: set[tuple[str, str]] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ClassDef):
+            out.add(("class", node.name))
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            out.add(("def", node.name))
+    return out
+
+
+def _class_list_attr(source: str, cls: str, attr: str) -> list[str] | None:
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ClassDef) and node.name == cls:
+            for stmt in node.body:
+                if isinstance(stmt, ast.Assign) and any(
+                        isinstance(t, ast.Name) and t.id == attr for t in stmt.targets):
+                    if isinstance(stmt.value, ast.List | ast.Tuple):
+                        return [e.id for e in stmt.value.elts if isinstance(e, ast.Name)]
+                    return []
+            return []
+    return None
+
+
+def guard_tinygrad(repo: Path, tinygrad: Path | None) -> None:
+    """The eGPU half of the overlay: the submodule points at our tinygrad, and it is patched.
+
+    Three separate claims, because any two can hold while the third fails:
+      * .gitmodules names our fork    -- else the device clones stock tinygrad
+      * the tree is actually here     -- else there is nothing to check
+      * the NV classes are defined    -- else it clones fine and the eGPU never initialises
+    """
+    print("\n[tinygrad] NV-USB eGPU patch")
+    gitmodules = read(repo / ".gitmodules")
+    check("tinygrad submodule points at the patched fork", FORK_TINYGRAD in gitmodules,
+          "the device would clone stock tinygrad and the eGPU would never come up")
+
+    if tinygrad is None:
+        print("  note  no tinygrad checkout given; the pin's contents were not inspected")
+        return
+
+    for rel, wanted in NV_SENTINELS.items():
+        defined = _defined(read(tinygrad / rel))
+        for kind, name in wanted:
+            check(rel + ": " + kind + " " + name + " defined", (kind, name) in defined,
+                  "the NV-USB delta did not survive the replay onto sunnypilot's tinygrad pin")
+
+    # A class that exists and is never registered is a class that never runs.
+    rel, cls, attr, want = NV_IFACE_REGISTRY
+    ifaces = _class_list_attr(read(tinygrad / rel), cls, attr)
+    check(cls + "." + attr + " exists", ifaces is not None,
+          "the NV device class was restructured upstream -- this guard no longer checks anything")
+    if ifaces is not None:
+        check(want + " is registered in " + cls + "." + attr, want in ifaces,
+              "the USB backend is defined but nothing will ever select it; found " + str(ifaces))
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
@@ -215,6 +324,8 @@ def main() -> int:
                     help="path to the opendbc checkout carrying the Elantra delta")
     ap.add_argument("--repo", type=Path, default=None,
                     help="path to the sunnypilot superproject (optional)")
+    ap.add_argument("--tinygrad", type=Path, default=None,
+                    help="path to the rebuilt tinygrad checkout (optional)")
     args = ap.parse_args()
 
     opendbc = args.opendbc.resolve()
@@ -233,7 +344,11 @@ def main() -> int:
     guard_car_list(opendbc)
     guard_torque(opendbc)
     if args.repo:
-        guard_superproject(args.repo.resolve())
+        repo = args.repo.resolve()
+        guard_superproject(repo)
+        guard_overlay_present(repo)
+        guard_overlay_hooks(repo)
+        guard_tinygrad(repo, args.tinygrad.resolve() if args.tinygrad else None)
 
     print("\n" + "-" * 60)
     if _failures:

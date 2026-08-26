@@ -35,6 +35,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from overlay import (
+    FORK_TINYGRAD, NV_DELTA_PATHS, OVERLAY_ADDED, OVERLAY_GITLINKS, OVERLAY_MODIFIED,
+    TINYGRAD_BRANCH, TINYGRAD_PORT_BRANCH, UPSTREAM_TINYGRAD,
+)
+
 UPSTREAM_REPO = "sunnypilot/sunnypilot"
 FORK_REPO = "aaravsaianugula/openpilot"
 UPSTREAM_OPENDBC = "sunnypilot/opendbc"
@@ -52,22 +58,6 @@ OPENDBC_BRANCH = "elantra"
 # stops matching is caught rather than silently reducing coverage.
 PLATFORMS = ("HYUNDAI_ELANTRA_2024", "HYUNDAI_ELANTRA_HEV_2024")
 
-# Overlay files that are entirely ours. Restored wholesale, so they cannot conflict.
-OVERLAY_ADDED = [
-    ".elantra",
-    ".github/workflows/elantra-sync.yaml",
-    "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_updates.py",
-    "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_manifest.py",
-]
-
-# Upstream files we modify. Kept deliberately tiny -- this is the only conflict surface in
-# the whole design, so every line here has to earn its place.
-OVERLAY_MODIFIED = [
-    ".gitmodules",
-    "openpilot/common/params_keys.h",
-    "openpilot/system/updated/updated.py",
-    "openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py",
-]
 
 # check-run conclusions that mean "this commit is not safe to ship".
 BAD_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "stale"}
@@ -298,6 +288,149 @@ def build_opendbc(workdir: Path, dry_run: bool) -> str:
     return new_sha
 
 
+# --- tinygrad side ------------------------------------------------------------------------
+
+def upstream_gitlink(repo: str, ref: str, path: str) -> tuple[str, str]:
+    """(gitlink sha, submodule url) for one submodule at one commit, over the API.
+
+    build_tinygrad has to know which tinygrad the *target* upstream commit pins, and it runs
+    before the superproject is cloned. The contents endpoint answers both halves in one call,
+    and reports the url as git resolved it -- so a sunnypilot that repoints tinygrad at a
+    different fork is visible here rather than three steps later.
+    """
+    data = gh_json(f"repos/{repo}/contents/{path}?ref={ref}")
+    if data.get("type") != "submodule":
+        raise SyncError(
+            f"{repo}@{ref[:9]}:{path} is no longer a submodule (type={data.get('type')!r}). "
+            + "Upstream restructured the tree and this script's assumptions no longer hold.")
+    return data["sha"], data.get("submodule_git_url") or ""
+
+
+def build_tinygrad(workdir: Path, pinned: str, dry_run: bool) -> str:
+    """Rebuild <fork>/tinygrad:nv-usb3-built as sunnypilot's pinned tinygrad + the NV-USB delta.
+
+    Deliberately *not* rebased onto tinygrad master. sunnypilot pins a snapshot of its own
+    fork and the whole of modeld is written against it; rebasing onto real upstream would give
+    a tinygrad that carries the eGPU patch and no longer runs the models.
+    """
+    repo = workdir / "tinygrad"
+    log("\n=== tinygrad ===")
+    log(f"cloning {UPSTREAM_TINYGRAD} (blobless)")
+    run(["git", "clone", "-q", "--filter=blob:none", "--single-branch", "--branch", MAIN_BRANCH,
+         f"https://github.com/{UPSTREAM_TINYGRAD}.git", str(repo)])
+    git(["remote", "rename", "origin", "upstream"], repo)
+    git(["remote", "add", "fork",
+         os.environ.get("TINYGRAD_PUSH_URL", f"https://github.com/{FORK_TINYGRAD}.git")], repo)
+
+    # By sha, not by branch: sunnypilot's own tools/release/check-submodules.sh explicitly
+    # skips tinygrad_repo from its "hash must be on master" check, so the pin is not promised
+    # to be reachable from any branch.
+    fetched = run(["git", "fetch", "-q", "--filter=blob:none", "upstream", pinned],
+                  cwd=repo, check=False)
+    if fetched.returncode != 0:
+        raise SyncError(
+            f"cannot fetch the tinygrad commit sunnypilot pins ({pinned[:9]}) from "
+            + f"{UPSTREAM_TINYGRAD}:\n" + (fetched.stderr or "").strip()
+            + "\n\nIt may live on a branch that was deleted, or in a different fork. "
+            + "Nothing published.")
+    git(["fetch", "-q", "--filter=blob:none", "fork", TINYGRAD_PORT_BRANCH], repo)
+    port_sha = git(["rev-parse", "FETCH_HEAD"], repo)
+    base = git(["merge-base", pinned, port_sha], repo)
+    log(f"  pin {pinned[:9]}  port {port_sha[:9]}  base {base[:9]}")
+
+    # The branch invariant. sunnypilot's tinygrad and upstream tinygrad are separate lineages,
+    # so a merge-base computed across them can be months back -- and the "delta" would then
+    # carry every upstream tinygrad change in between, silently dragging the pin past the
+    # snapshot modeld is written against. That failure *succeeds*, which is worse than a
+    # conflict, so check it explicitly rather than trusting the diff to be small.
+    touched = [p for p in git(["diff", "--name-only", base, port_sha], repo).splitlines()
+               if p.strip()]
+    stray = sorted(set(touched) - set(NV_DELTA_PATHS))
+    if stray:
+        raise SyncError(
+            f"{FORK_TINYGRAD}:{TINYGRAD_PORT_BRANCH} reaches outside the NV-USB delta:\n  "
+            + "\n  ".join(stray)
+            + f"\n\nIts merge-base with sunnypilot's pin is {base[:9]}. Either the branch was "
+            + "cut from tinygrad/tinygrad instead of sunnypilot/tinygrad -- in which case this "
+            + "'delta' is weeks of unrelated tinygrad churn and applying it would break modeld "
+            + "-- or the rebased PR genuinely touches a new file, in which case add it to "
+            + "NV_DELTA_PATHS in .elantra/overlay.py and give it a sentinel. Nothing published.")
+
+    patch = repo.parent / "nv-usb3-delta.patch"
+    diff = run(["git", "diff", "--binary", base, port_sha, "--"] + list(NV_DELTA_PATHS),
+               cwd=repo).stdout
+    if not diff.strip():
+        raise SyncError(
+            f"{FORK_TINYGRAD}:{TINYGRAD_PORT_BRANCH} carries no delta over sunnypilot's "
+            + "tinygrad. Either the NV-USB work landed upstream or the branch was reset -- "
+            + "refusing to publish a build whose eGPU support has silently gone away.")
+    patch.write_text(diff, encoding="utf-8", newline="\n")
+    log(f"  recomputed NV-USB delta: {len(diff.splitlines())} lines")
+
+    git(["checkout", "-q", "-B", TINYGRAD_BRANCH, pinned], repo)
+    applied = run(["git", "apply", "-3", str(patch)], cwd=repo, check=False)
+    if applied.returncode != 0:
+        raise SyncError(
+            "the NV-USB eGPU delta no longer applies to the tinygrad sunnypilot pins:\n"
+            + (applied.stderr or "").strip()
+            + f"\n\n  sunnypilot pins  {UPSTREAM_TINYGRAD}@{pinned[:9]}\n"
+            + f"  our delta        {FORK_TINYGRAD}:{TINYGRAD_PORT_BRANCH}@{port_sha[:9]}"
+            + f" (base {base[:9]})\n\n"
+            + "sunnypilot moved its tinygrad snapshot under the patch. This is expected: it is\n"
+            + "an unmerged PR against a fast-moving tree, not a stable API.\n\n"
+            + "To fix:\n"
+            + f"  1. rebase {TINYGRAD_PORT_BRANCH} onto {UPSTREAM_TINYGRAD}:master (see CLAUDE.md)\n"
+            + f"  2. python .elantra/sync.py --dry-run --tinygrad-pin {pinned}\n"
+            + "  3. re-run the sync\n\n"
+            + "Nothing published. The car keeps the last build, eGPU and all.")
+
+    # A three-way apply can return 0 and still leave conflict markers behind. A tree that is a
+    # SyntaxError on the device is not a better outcome than a clean abort here.
+    for rel in NV_DELTA_PATHS:
+        target = repo / rel
+        if target.is_file() and re.search(r"^<{7} ", target.read_text(encoding="utf-8",
+                                                                     errors="replace"), re.M):
+            raise SyncError(f"three-way apply left conflict markers in {rel}. Nothing published.")
+
+    git(["add", "-A"], repo)
+    stamp = git(["show", "-s", "--format=%cI", pinned], repo)
+    env = dict(os.environ, GIT_AUTHOR_DATE=stamp, GIT_COMMITTER_DATE=stamp)
+    commit = subprocess.run(
+        ["git", "-c", "user.name=elantra-sync",
+         "-c", "user.email=elantra-sync@users.noreply.github.com",
+         "commit", "-q", "-m",
+         "NV-USB eGPU support, replayed onto sunnypilot's tinygrad\n\n"
+         + f"sunnypilot pin  {UPSTREAM_TINYGRAD}@{pinned}\n"
+         + f"{TINYGRAD_PORT_BRANCH}          {port_sha}\n\n"
+         + "Delta recomputed on every sync, so rebases of tinygrad PR #17369 flow through."],
+        cwd=repo, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if commit.returncode != 0:
+        raise SyncError("tinygrad commit failed:\n" + (commit.stderr or "").strip())
+    new_sha = git(["rev-parse", "HEAD"], repo)
+
+    # "git apply returned 0" and "the patch actually landed" are different claims.
+    detector = Path(__file__).resolve().parent / "test_egpu_tinygrad.py"
+    log("  checking the NV-USB patch is structurally intact")
+    proc = run([sys.executable, str(detector), "--tinygrad", str(repo)], check=False)
+    log(proc.stdout)
+    if proc.returncode != 0:
+        raise SyncError("the rebuilt tinygrad does not carry working eGPU support. "
+                        + "Nothing published.")
+
+    if dry_run:
+        log(f"  [dry-run] would push {new_sha[:9]} to {FORK_TINYGRAD}:{TINYGRAD_BRANCH}")
+    else:
+        # Mirror the pin too, so the built branch has a meaningful "ahead by 1" on GitHub and
+        # the delta stays reviewable.
+        git(["push", "--no-verify", "--force", "fork",
+             f"{pinned}:refs/heads/sunnypilot-base"], repo, check=False)
+        git(["push", "--no-verify", "--force", "fork",
+             f"{TINYGRAD_BRANCH}:refs/heads/{TINYGRAD_BRANCH}"], repo)
+        log(f"  pushed {new_sha[:9]} -> {FORK_TINYGRAD}:{TINYGRAD_BRANCH}")
+
+    return new_sha
+
+
 # --- superproject -------------------------------------------------------------------------
 
 def restore_paths(repo: Path, ref: str, paths: list[str]) -> None:
@@ -307,10 +440,21 @@ def restore_paths(repo: Path, ref: str, paths: list[str]) -> None:
     fails with "unable to read sha1 file" rather than fetching what it needs. `git cat-file`
     does fetch, so walk the blobs once to pull them local, then let checkout do its job.
     """
+    # Check each path separately first. `git checkout` with a bad pathspec dies with a raw
+    # git error that does not say which registered path is wrong or what to do about it, and
+    # one missing entry out of four blocks the whole sync.
+    missing = [p for p in paths
+               if not git(["ls-tree", "-r", "--name-only", ref, "--", p], repo).strip()]
+    if missing:
+        raise SyncError(
+            f"these paths are registered in OVERLAY_ADDED but do not exist at {ref[:9]}:\n  "
+            + "\n  ".join(missing)
+            + "\n\nThe sync cannot restore a file that was never committed. Either commit it "
+            + f"to {MAIN_BRANCH}, or take it out of the registry in .elantra/overlay.py. "
+            + "Nothing published.")
+
     listing = git(["ls-tree", "-r", "--name-only", ref, "--"] + paths, repo)
     files = [f for f in listing.splitlines() if f.strip()]
-    if not files:
-        raise SyncError(f"none of the overlay paths exist at {ref[:9]}: {paths}")
     wanted = "\n".join(f"{ref}:{f}" for f in files)
     proc = subprocess.run(["git", "cat-file", "--batch"], cwd=repo, text=True, input=wanted,
                           capture_output=True, encoding="utf-8", errors="replace")
@@ -333,8 +477,8 @@ def previous_build(repo: Path) -> tuple[str, dict]:
     return prev, json.loads(raw.stdout)
 
 
-def build_superproject(repo: Path, target: dict, opendbc_sha: str,
-                       dry_run: bool) -> tuple[str, str]:
+def build_superproject(repo: Path, target: dict, opendbc_sha: str, tinygrad_sha: str,
+                       tinygrad_meta: dict, dry_run: bool) -> tuple[str, str]:
     log("\n=== superproject ===")
     prev, prev_manifest = previous_build(repo)
     prev_base = prev_manifest["sunnypilot_upstream_sha"]
@@ -342,9 +486,13 @@ def build_superproject(repo: Path, target: dict, opendbc_sha: str,
     log(f"  target upstream {target['sha'][:9]} ({target['date'][:10]})")
 
     # opendbc moves on its own schedule, and local-extras.patch (your car's firmware) lands
-    # there too -- so an unchanged upstream commit is not on its own a reason to skip.
-    if prev_base == target["sha"] and prev_manifest.get("opendbc_sha") == opendbc_sha:
-        log("  already current: same upstream commit, same opendbc. Nothing to do.")
+    # there too -- so an unchanged upstream commit is not on its own a reason to skip. The
+    # tinygrad pin has to be in this test too, or an unchanged upstream with a moved tinygrad
+    # would silently keep the stale pin and the eGPU would run against the wrong tree.
+    if (prev_base == target["sha"]
+            and prev_manifest.get("opendbc_sha") == opendbc_sha
+            and prev_manifest.get("tinygrad_sha") == tinygrad_sha):
+        log("  already current: same upstream commit, same opendbc, same tinygrad.")
         return prev, ""
     if prev_base == target["sha"]:
         log("  upstream unchanged, but opendbc moved "
@@ -379,6 +527,8 @@ def build_superproject(repo: Path, target: dict, opendbc_sha: str,
 
     log(f"  pinning opendbc submodule -> {opendbc_sha[:9]}")
     git(["update-index", "--cacheinfo", f"160000,{opendbc_sha},opendbc_repo"], repo)
+    log(f"  pinning tinygrad submodule -> {tinygrad_sha[:9]}")
+    git(["update-index", "--cacheinfo", f"160000,{tinygrad_sha},tinygrad_repo"], repo)
 
     manifest = {
         "sunnypilot_upstream_sha": target["sha"],
@@ -389,6 +539,13 @@ def build_superproject(repo: Path, target: dict, opendbc_sha: str,
         "upstream_ci_url": f"https://github.com/{UPSTREAM_REPO}/commit/{target['sha']}/checks",
         "opendbc_sha": opendbc_sha,
         "opendbc_repo": FORK_OPENDBC,
+        "tinygrad_sha": tinygrad_sha,
+        "tinygrad_repo": FORK_TINYGRAD,
+        "tinygrad_upstream_sha": tinygrad_meta["pin"],
+        "tinygrad_upstream_ci_conclusion": tinygrad_meta["ci_conclusion"],
+        "tinygrad_upstream_ci_checked": tinygrad_meta["ci_checks"],
+        "tinygrad_patch": "nv-usb3 (tinygrad#17369)",
+        "egpu": True,
         "elantra_platforms": ["HYUNDAI_ELANTRA_2024", "HYUNDAI_ELANTRA_HEV_2024"],
         "previous_master_sha": prev,
         "rollback_branch": ROLLBACK_BRANCH,
@@ -399,12 +556,30 @@ def build_superproject(repo: Path, target: dict, opendbc_sha: str,
                              encoding="utf-8", newline="\n")
 
     git(["add", "-A"], repo)
+
+    # `git add -A` restages an *initialised* submodule at its own HEAD, which would silently
+    # undo the pins above. In CI the clone is --no-checkout and submodules are never
+    # initialised, so this never bites there -- but it bites hard when rehearsing with --repo
+    # against a working tree that has ever seen `git submodule update --init`. Re-assert, then
+    # prove it stuck: a gitlink that quietly reverted to sunnypilot's pin is exactly the
+    # failure this design exists to prevent.
+    pinned_gitlinks = {"opendbc_repo": opendbc_sha, "tinygrad_repo": tinygrad_sha}
+    assert set(pinned_gitlinks) == set(OVERLAY_GITLINKS), "OVERLAY_GITLINKS and the pins here have drifted"
+    for path in OVERLAY_GITLINKS:
+        sha = pinned_gitlinks[path]
+        git(["update-index", "--cacheinfo", f"160000,{sha},{path}"], repo)
+        staged = git(["ls-files", "-s", "--", path], repo)
+        if not staged.startswith(f"160000 {sha} "):
+            raise SyncError(f"the {path} gitlink did not stick: staged {staged!r}, "
+                            + f"wanted {sha[:9]}. Nothing published.")
+
     subject = f"Sync to sunnypilot {target['sha'][:9]} with Elantra 2024-25 port"
     body = (f"{subject}\n\n"
             + f"upstream   {UPSTREAM_REPO}@{target['sha']}\n"
             + f"           {target['message'][:100]}\n"
             + f"           CI {target['ci_conclusion']} ({target['ci_checks']} checks)\n"
             + f"opendbc    {FORK_OPENDBC}@{opendbc_sha}\n"
+            + f"tinygrad   {FORK_TINYGRAD}@{tinygrad_sha}\n"
             + f"rollback   {ROLLBACK_BRANCH} -> {prev}\n\n"
             + "Rebuilt by .elantra/sync.py: reset to upstream, replay overlay. Not a merge.\n")
     git(["-c", "user.name=elantra-sync",
@@ -450,6 +625,11 @@ def main() -> int:
                     help="existing superproject checkout to build in (default: fresh clone)")
     ap.add_argument("--opendbc-tests", action="store_true",
                     help="also run opendbc's own tests (CI does; needs its dependency tree)")
+    ap.add_argument("--tinygrad-pin", default=None,
+                    help="override the tinygrad commit to replay the eGPU delta onto "
+                         + "(default: whatever the target sunnypilot commit pins)")
+    ap.add_argument("--require-tinygrad-ci", action="store_true",
+                    help="abort if sunnypilot's tinygrad pin does not have green CI")
     args = ap.parse_args()
 
     global RUN_OPENDBC_TESTS
@@ -474,6 +654,37 @@ def main() -> int:
 
         opendbc_sha = build_opendbc(workdir, args.dry_run)
 
+        # Which tinygrad does the target sunnypilot commit pin, and from whose fork?
+        tinygrad_pin, tinygrad_url = upstream_gitlink(UPSTREAM_REPO, target["sha"],
+                                                      "tinygrad_repo")
+        if args.tinygrad_pin:
+            log(f"\noverriding tinygrad pin {tinygrad_pin[:9]} -> {args.tinygrad_pin[:9]}")
+            tinygrad_pin = args.tinygrad_pin
+        elif UPSTREAM_TINYGRAD not in tinygrad_url:
+            # A red pin is a maybe; a *different fork* is a certainty. Our delta is cut
+            # against sunnypilot's tinygrad and would be replayed onto a tree it was never
+            # written for.
+            raise SyncError(
+                f"sunnypilot now pins tinygrad from {tinygrad_url!r}, not {UPSTREAM_TINYGRAD}. "
+                + "The NV-USB delta would be replayed onto a tree it was never written for. "
+                + "Nothing published.")
+
+        tg_ci, tg_checks = ci_verdict(UPSTREAM_TINYGRAD, tinygrad_pin)
+        log(f"tinygrad pin {tinygrad_pin[:9]} -- CI: {tg_ci} ({tg_checks} checks)")
+        if tg_ci != "success":
+            if args.require_tinygrad_ci:
+                raise SyncError(f"tinygrad pin {tinygrad_pin[:9]} has CI '{tg_ci}' and "
+                                + "--require-tinygrad-ci is set. Nothing published.")
+            # Not fatal by default: we do not choose this pin, and the sunnypilot commit we
+            # already gated on green CI was itself built against this exact tinygrad. That is
+            # stronger evidence than the fork's own CI, which exercises a hundred backends we
+            # never touch. sunnypilot's own check-submodules.sh declines to gate it too.
+            log("note: building on it anyway -- the sunnypilot commit we picked is green and "
+                + "its CI built modeld against this exact pin. Recorded in the manifest; "
+                + "--require-tinygrad-ci makes this fatal.")
+        tinygrad_meta = {"pin": tinygrad_pin, "ci_conclusion": tg_ci, "ci_checks": tg_checks}
+        tinygrad_sha = build_tinygrad(workdir, tinygrad_pin, args.dry_run)
+
         if args.repo:
             repo = args.repo.resolve()
         else:
@@ -493,14 +704,15 @@ def main() -> int:
         git(["fetch", "-q", "--filter=blob:none", "upstream", MAIN_BRANCH], repo)
         git(["fetch", "-q", "--filter=blob:none", "fork", MAIN_BRANCH], repo)
 
-        new, prev = build_superproject(repo, target, opendbc_sha, args.dry_run)
+        new, prev = build_superproject(repo, target, opendbc_sha, tinygrad_sha,
+                                       tinygrad_meta, args.dry_run)
         if not prev:
             return 0
 
         guards = repo / ".elantra/guards.py"
         log("\n=== guards on the assembled tree ===")
         proc = run([sys.executable, str(guards), "--opendbc", str(workdir / "opendbc"),
-                    "--repo", str(repo)], check=False)
+                    "--tinygrad", str(workdir / "tinygrad"), "--repo", str(repo)], check=False)
         log(proc.stdout)
         if proc.returncode != 0:
             raise SyncError("guards failed on the assembled tree. Nothing published.")
