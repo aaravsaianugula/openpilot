@@ -68,6 +68,57 @@ The overlay diff is **derived from the previous build** rather than stored as a 
 so editing any of those files by hand and committing is all it takes — the next sync picks
 the change up automatically.
 
+## Custom code must survive the weekly sync
+
+The sync rebuilds `master` by hard-resetting to an upstream commit and putting back only what
+`.elantra/overlay.py` names. **A file that is not in the registry is not "left alone" — it is
+deleted**, with no error, because from the rebuild's point of view it never existed. This is
+the price of a derived branch, and it is the one thing about the design that surprises people.
+
+The registry has three lists:
+
+| List | For | Restored how | Conflicts? |
+|---|---|---|---|
+| `OVERLAY_ADDED` | files that are wholly ours | copied wholesale from the previous build | never |
+| `OVERLAY_MODIFIED` | upstream files we edit | three-way replay of a diff derived from the previous build | yes — this is the entire conflict surface |
+| `OVERLAY_GITLINKS` | `opendbc_repo`, `tinygrad_repo` | re-pinned with `git update-index --cacheinfo` | no, but see below |
+
+**The procedure.** Add the file → add its path to the right list *in the same commit* → run
+`python .elantra/test_overlay_registration.py` → push. Anything under `.elantra/` is already
+covered by the directory entry and needs no separate registration.
+
+**The two ways to get it wrong**, and what each looks like:
+
+- **Unregistered.** The file is gone next Monday. Nothing fails, nothing warns; you find out
+  when something imports it on the car and the settings screen dies.
+- **Registered but absent.** `restore_paths()` refuses and the sync aborts **entirely** — no
+  build for anyone until it is fixed. Louder, and therefore the safer of the two.
+
+Both are caught by `test_overlay_registration.py`, which CI runs on every push to `master`
+(`.github/workflows/elantra-guard.yaml`) rather than six days later.
+
+Note `CLAUDE.md` is a special case: upstream's `.gitignore` ignores it, so it was committed
+with `git add -f`.
+
+### tinygrad and the eGPU
+
+sunnypilot pins a snapshot of its own tinygrad fork. We replay a five-file NV-USB delta from
+`aaravsaianugula/tinygrad:nv-usb3` onto whatever it now pins, and re-pin the gitlink — the
+same shape as the opendbc rebuild, so rebases of tinygrad PR #17369 flow through
+automatically.
+
+**This delta will stop applying.** It is an unmerged PR against a fast-moving tree, not a
+stable API. When that happens the sync aborts with `master` untouched, opens an issue, and
+prints the refresh recipe. The car keeps its last good build, eGPU and all.
+
+The branch invariant matters: `nv-usb3` must be **exactly one non-merge commit on top of a
+commit that exists in `sunnypilot/tinygrad`**. sunnypilot's tinygrad and upstream tinygrad are
+separate lineages, and a merge-base computed across them would drag weeks of unrelated
+tinygrad churn into the "delta" — a failure that *succeeds*, which is worse than a conflict.
+`build_tinygrad()` checks this explicitly and refuses rather than trusting the diff to be small.
+
+See `.elantra/EGPU.md` for what is proven and what is not.
+
 ## The weekly sync
 
 `.github/workflows/elantra-sync.yaml`, Mondays 09:00 UTC, plus **Run workflow** for an
@@ -165,6 +216,12 @@ python .elantra/verify_published.py          # check what is live on GitHub
   actually run. That path is branch-independent and works here.
 - **The 0x485 widening applies to every Hyundai, not just the Elantra.** That is why the port
   is not upstream. It is inherent to the port, not something this branch introduces.
+- **The eGPU patch is unmerged upstream.** Expect to refresh `nv-usb3` every few weeks. Until
+  you do, the branch stays on its last good build rather than publishing one without eGPU
+  support.
+- **NVIDIA eGPU support is unproven on hardware.** The vendor abstraction, guards and tests
+  are real and green; whether a 3080 Ti actually runs a model over the chestnut's USB3 bridge
+  has not been tested by anyone on a comma four. See `.elantra/EGPU.md`.
 - **Green CI is not a road test.** sunnypilot master is a development branch. Weekly plus a
   CI gate is a much better filter than the community branch has, but `master-previous` exists
   because it is still a filter and not a guarantee.

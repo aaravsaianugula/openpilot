@@ -64,6 +64,7 @@ jobs:
         env:
           OPENDBC_KEY: ${{ secrets.OPENDBC_DEPLOY_KEY }}
           OPENPILOT_KEY: ${{ secrets.OPENPILOT_DEPLOY_KEY }}
+          TINYGRAD_KEY: ${{ secrets.TINYGRAD_DEPLOY_KEY }}
         run: |
           # Both pushes go over SSH, for two different reasons:
           #   opendbc   - GITHUB_TOKEN is scoped to this repo and cannot reach another one.
@@ -71,8 +72,8 @@ jobs:
           #               That is a GitHub App restriction with no permissions flag to unlock,
           #               and mirroring upstream changes workflow files constantly.
           # Each key is write-scoped to exactly one repo, which is narrower than a PAT.
-          if [ -z "$OPENDBC_KEY" ] || [ -z "$OPENPILOT_KEY" ]; then
-            echo "Missing deploy key secrets (need OPENDBC_DEPLOY_KEY and OPENPILOT_DEPLOY_KEY)." >&2
+          if [ -z "$OPENDBC_KEY" ] || [ -z "$OPENPILOT_KEY" ] || [ -z "$TINYGRAD_KEY" ]; then
+            echo "Missing deploy key secrets (need OPENDBC_DEPLOY_KEY, OPENPILOT_DEPLOY_KEY, TINYGRAD_DEPLOY_KEY)." >&2
             echo "Without them the sync cannot publish. Refusing to run." >&2
             exit 1
           fi
@@ -93,8 +94,22 @@ jobs:
             echo "  User git"
             echo "  IdentityFile ~/.ssh/openpilot_deploy"
             echo "  IdentitiesOnly yes"
+            echo "Host tinygrad.github.com"
+            echo "  HostName github.com"
+            echo "  User git"
+            echo "  IdentityFile ~/.ssh/tinygrad_deploy"
+            echo "  IdentitiesOnly yes"
           } >> ~/.ssh/config
           chmod 600 ~/.ssh/config
+
+      - name: Check the overlay registry against the branch
+        run: python .elantra/test_overlay_registration.py
+
+      - name: Check the eGPU registries are self-consistent
+        run: python .elantra/test_egpu_tinygrad.py
+
+      - name: Test the eGPU vendor logic
+        run: python .elantra/test_egpu.py
 
       - name: Test the port panel's update and rollback logic
         run: python .elantra/test_port_panel.py
@@ -104,6 +119,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENDBC_PUSH_URL: git@opendbc.github.com:aaravsaianugula/opendbc.git
           OPENPILOT_PUSH_URL: git@openpilot.github.com:aaravsaianugula/openpilot.git
+          TINYGRAD_PUSH_URL: git@tinygrad.github.com:aaravsaianugula/tinygrad.git
         run: |
           ARGS=""
           if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi

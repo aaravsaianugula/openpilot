@@ -12,10 +12,16 @@ Exits non-zero if the published branch would not support the car.
 
 from __future__ import annotations
 
+import ast
 import base64
 import json
+import re
 import subprocess
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from overlay import NV_IFACE_REGISTRY, NV_SENTINELS
 
 FORK_REPO = "aaravsaianugula/openpilot"
 MAIN_BRANCH = "master"
@@ -46,6 +52,82 @@ def gh(path: str):
 def contents(repo: str, path: str, ref: str) -> str:
     blob = gh(f"repos/{repo}/contents/{path}?ref={ref}")
     return base64.b64decode(blob["content"]).decode("utf-8", "replace")
+
+
+def commit_exists(repo: str, sha: str) -> bool:
+    """Does this commit exist in this repo? gh() raises on 404, and here 404 is an answer."""
+    proc = subprocess.run(["gh", "api", f"repos/{repo}/commits/{sha}"],
+                          capture_output=True, text=True)
+    return proc.returncode == 0
+
+
+def verify_tinygrad(head: str, manifest: dict) -> None:
+    """The published superproject really pins a tinygrad that carries the NV-USB patch.
+
+    Four claims, and any three can hold while the fourth fails:
+      * .gitmodules names our fork         -- else the device clones stock tinygrad
+      * the gitlink matches the manifest   -- else we published something we did not build
+      * that commit exists in that fork    -- else `git submodule update` dies on the car with
+                                              "reference is not a tree": offroad, but stopped
+      * that commit defines the NV classes -- else it clones fine and the eGPU never inits
+
+    Checked by AST over the fetched source, not by matching source lines. tinygrad reformats
+    constantly, and a whitespace-exact literal is a check that goes red for a reason that has
+    nothing to do with the car.
+    """
+    print("\n[tinygrad] the published pin carries eGPU support")
+    if "egpu" not in manifest:
+        print("  note  this build predates eGPU support; nothing to verify")
+        return
+
+    tg_repo = manifest.get("tinygrad_repo") or ""
+    pinned = manifest.get("tinygrad_sha") or ""
+    check("manifest names a tinygrad fork and pin", bool(tg_repo and pinned))
+    if not (tg_repo and pinned):
+        return
+
+    gitmodules = contents(FORK_REPO, ".gitmodules", head)
+    check(".gitmodules points tinygrad at " + tg_repo, tg_repo in gitmodules,
+          "the device would clone stock tinygrad and the eGPU would never come up")
+
+    entry = gh(f"repos/{FORK_REPO}/contents/tinygrad_repo?ref={head}")
+    check("tinygrad_repo is still a submodule", entry.get("type") == "submodule")
+    check("tinygrad gitlink matches the manifest", entry.get("sha") == pinned,
+          f"gitlink {(entry.get('sha') or '')[:9]} vs manifest {pinned[:9]}")
+
+    if not commit_exists(tg_repo, pinned):
+        check(f"{pinned[:9]} exists in {tg_repo}", False,
+              "git submodule update would fail on the car with 'reference is not a tree'")
+        return
+    check(f"{pinned[:9]} exists in {tg_repo}", True)
+
+    for rel, wanted in NV_SENTINELS.items():
+        try:
+            tree = ast.parse(contents(tg_repo, rel, pinned))
+        except (SyntaxError, SystemExit):
+            check(rel + " parses in the pinned tinygrad", False)
+            continue
+        found = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                found.add(("class", node.name))
+            elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+                found.add(("def", node.name))
+        for kind, name in wanted:
+            check(f"{rel}: {kind} {name} defined", (kind, name) in found,
+                  "the published pin does not carry the NV-USB delta")
+
+    rel, cls, attr, want = NV_IFACE_REGISTRY
+    ifaces: list[str] = []
+    for node in ast.walk(ast.parse(contents(tg_repo, rel, pinned))):
+        if isinstance(node, ast.ClassDef) and node.name == cls:
+            for stmt in node.body:
+                if isinstance(stmt, ast.Assign) and any(
+                        isinstance(t, ast.Name) and t.id == attr for t in stmt.targets):
+                    if isinstance(stmt.value, ast.List | ast.Tuple):
+                        ifaces = [e.id for e in stmt.value.elts if isinstance(e, ast.Name)]
+    check(f"{want} is registered in {cls}.{attr}", want in ifaces,
+          "the USB backend is defined but nothing will ever select it; found " + str(ifaces))
 
 
 def verify_rollback_target(sha: str) -> None:
@@ -127,8 +209,11 @@ def main() -> int:
 
     safety = contents(odbc, "opendbc/safety/modes/hyundai.h", pinned)
     dbc = contents(odbc, "opendbc/dbc/generator/hyundai/hyundai_can.dbc", pinned)
-    safety_ok = "{0x485, 0,       8," in safety.replace("\t", " ")
-    dbc_ok = "BO_ 1157 LFAHDA_MFC: 8" in dbc
+    # The same regexes guards.py uses. This was a whitespace-exact literal, which meant any
+    # upstream reformat of hyundai.h would break the published-branch check for a reason with
+    # nothing to do with the car -- and would disagree with guards.py, which still passed.
+    safety_ok = re.search(r"\{\s*0x485\s*,\s*0\s*,\s*8\s*,", safety) is not None
+    dbc_ok = re.search(r"^BO_\s+1157\s+LFAHDA_MFC:\s*8\s", dbc, re.MULTILINE) is not None
     check("panda safety allows 8 bytes on 0x485", safety_ok)
     check("dbc declares LFAHDA_MFC as 8 bytes", dbc_ok)
     check("safety and dbc agree on 0x485", safety_ok == dbc_ok and safety_ok,
@@ -137,6 +222,8 @@ def main() -> int:
     car_list = json.loads(contents(odbc, "opendbc/sunnypilot/car/car_list.json", pinned))
     check("'Hyundai Elantra 2024-25' in the sunnypilot car list",
           "Hyundai Elantra 2024-25" in car_list)
+
+    verify_tinygrad(head, manifest)
 
     print()
     if failures:
