@@ -273,7 +273,7 @@ class ModelManagerSP:
         # device costs a 60s load timeout and a modeld restart loop, so gate the whole
         # catalog swap -- get_available_bundles and validate_active_bundle both take
         # this flag, so a stale AMD selection is stashed and reset rather than served.
-        chestnut_present = self.sm['deviceState'].chestnutPresent and egpu.uses_amd_catalog()
+        chestnut_present = self.sm['deviceState'].chestnutPresent and egpu.uses_amd_catalog(self.params)
         self.available_models = self.model_fetcher.get_available_bundles(chestnut_present)
         if boot_ticks >= self.BOOT_SETTLE_TICKS:
           validate_active_bundle(self.params, self.available_models, is_usbgpu=chestnut_present)

@@ -27,7 +27,6 @@ from openpilot.sunnypilot.egpu.vendors import AMD, AUTO, NVIDIA, VALID_VENDORS, 
 # all AMD-compiled (sunnypilot's model CI builds them with DEV=USB+AMD:LLVM), so on NVIDIA
 # there is no catalog to download from and the pkl has to be built on the device.
 NV_MODEL_PATH = Path(__file__).resolve().parents[1].parent / "selfdrive/modeld/models/big_driving_tinygrad_nv.pkl"
-MARKER_SUFFIX = ".egpu"
 
 
 def _params(params=None):
@@ -99,11 +98,18 @@ def apply_env(params=None) -> None:
   control with no defined meaning over USB+NV.
   """
   env = {"GMMU": "0"}
-  from openpilot.selfdrive.modeld.helpers import usbgpu_present
-  if usbgpu_present():
-    resolved, assumed = resolve(params)
-    if resolved == NVIDIA and not assumed:
-      env = dict(spec_for(NVIDIA).env)
+  try:
+    from openpilot.selfdrive.modeld.helpers import usbgpu_present
+    if usbgpu_present():
+      resolved, assumed = resolve(params)
+      if resolved == NVIDIA and not assumed:
+        env = dict(spec_for(NVIDIA).env)
+  except Exception:
+    # This runs at modeld import, before anything else is set up. The line it replaces
+    # (`os.environ['GMMU'] = '0'`) could not fail; reading params or globbing /sys can.
+    # Falling back to exactly upstream's behaviour keeps a params problem from becoming
+    # "modeld cannot even be imported", which would take the car off the road.
+    env = {"GMMU": "0"}
   os.environ.update(env)
 
 

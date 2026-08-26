@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import os
 import re
 import struct
 import sys
@@ -146,6 +147,43 @@ def test_enabled(tmp: Path):
              detect.enabled(FakeParams(EgpuVendor="nvidia", EgpuUseNvidia=True)), False)
     finally:
         detect.NV_MODEL_PATH = real
+
+
+def test_apply_env_is_total():
+    """apply_env replaces `os.environ['GMMU'] = '0'`, which could not fail.
+
+    It runs at modeld import, before anything else is set up. If a params read can make it
+    raise, a params problem becomes "modeld cannot be imported", which takes the car off the
+    road -- strictly worse than upstream. So it must fall back to upstream's exact behaviour.
+    """
+    print("\n[apply_env] never worse than the one-liner it replaces")
+
+    class ExplodingParams:
+        def get(self, key):
+            raise RuntimeError("params unavailable")
+
+        def get_bool(self, key):
+            raise RuntimeError("params unavailable")
+
+    before = os.environ.get("GMMU")
+    try:
+        os.environ.pop("GMMU", None)
+        raised = None
+        try:
+            detect.apply_env(ExplodingParams())
+        except Exception as e:  # catching broadly IS the assertion here
+            raised = e
+        case("a broken params store does not raise", raised, None)
+        case("and GMMU still gets upstream's value", os.environ.get("GMMU"), "0")
+
+        os.environ.pop("GMMU", None)
+        detect.apply_env(FakeParams(EgpuVendor="amd"))
+        case("the AMD path sets GMMU exactly as upstream did", os.environ.get("GMMU"), "0")
+    finally:
+        if before is None:
+            os.environ.pop("GMMU", None)
+        else:
+            os.environ["GMMU"] = before
 
 
 def test_catalog():
@@ -389,6 +427,7 @@ def main() -> int:
         test_configured()
         test_resolve()
         test_enabled(tmp)
+        test_apply_env_is_total()
         test_catalog()
         test_pkl_vendor(tmp)
         test_assert_pkl(tmp)
