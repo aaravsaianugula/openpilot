@@ -16,6 +16,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.hardware.hw import Paths
 
 from openpilot.cereal import messaging, custom
+from openpilot.sunnypilot.egpu import detect as egpu
 from openpilot.sunnypilot.models.fetcher import ModelFetcher
 from openpilot.sunnypilot.models.helpers import get_active_bundle, validate_active_bundle, verify_file
 
@@ -267,7 +268,12 @@ class ModelManagerSP:
     while True:
       try:
         self.sm.update(0)
-        chestnut_present = self.sm['deviceState'].chestnutPresent
+        # The bridge being present is not the same as an AMD card being behind it, and
+        # every published _USBGPU bundle is AMD-compiled. Handing one to an NVIDIA
+        # device costs a 60s load timeout and a modeld restart loop, so gate the whole
+        # catalog swap -- get_available_bundles and validate_active_bundle both take
+        # this flag, so a stale AMD selection is stashed and reset rather than served.
+        chestnut_present = self.sm['deviceState'].chestnutPresent and egpu.uses_amd_catalog()
         self.available_models = self.model_fetcher.get_available_bundles(chestnut_present)
         if boot_ticks >= self.BOOT_SETTLE_TICKS:
           validate_active_bundle(self.params, self.available_models, is_usbgpu=chestnut_present)

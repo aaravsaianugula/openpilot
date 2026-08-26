@@ -7,7 +7,8 @@ See the LICENSE.md file in the root directory for more details.
 """
 
 import os
-os.environ['GMMU'] = '0'
+from openpilot.sunnypilot.egpu import detect as egpu
+egpu.apply_env()
 from openpilot.common.hardware import COMMA_HARDWARE
 from openpilot.selfdrive.modeld.helpers import usbgpu_present, load_oob
 import time
@@ -35,7 +36,7 @@ from openpilot.system import sentry
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value
-from openpilot.selfdrive.modeld.modeld import ChestnutState
+from openpilot.sunnypilot.egpu.chestnut_state import ChestnutState
 
 from openpilot.sunnypilot.modeld_v2.fill_model_msg import fill_model_msg, fill_pose_msg, PublishState, get_curvature_from_output
 from openpilot.sunnypilot.modeld_v2.constants import Plan
@@ -103,6 +104,7 @@ class ModelState(ModelStateBase):
 
     pkl_path = _find_driving_pkl(model_bundle)
     assert pkl_path is not None, "No driving pkl found — all models must be compiled with compile_modeld.py"
+    egpu.assert_pkl_matches(pkl_path, self.usbgpu)
     self._init_combined(pkl_path, cam_w, cam_h, model_bundle)
 
   def _init_combined(self, pkl_path, cam_w, cam_h, bundle):
@@ -110,8 +112,7 @@ class ModelState(ModelStateBase):
     jits = load_oob(open_file_chunked(pkl_path))
 
     self.WARP_DEV = 'QCOM' if COMMA_HARDWARE else 'CPU'
-    self.DEV = 'AMD' if self.usbgpu else self.WARP_DEV
-    self.QUEUE_DEV = self.DEV
+    self.DEV = self.QUEUE_DEV = egpu.queue_dev() if self.usbgpu else self.WARP_DEV
     metadata = jits['metadata']
 
     self.is_legacy_model = 'run_policy' not in jits  # remove after next recompile
@@ -327,7 +328,7 @@ def main(demo=False):
   setproctitle(PROCESS_NAME)
   config_realtime_process(7, 54)
 
-  USBGPU = usbgpu_present()
+  USBGPU = usbgpu_present() and egpu.enabled()
   if USBGPU:
     os.environ['HCQDEV_WAIT_TIMEOUT_MS'] = '3000'
 

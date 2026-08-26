@@ -1,0 +1,53 @@
+# Fast structural checks on the overlay itself.
+#
+# The weekly sync already runs these before it builds, but that is up to six days after a
+# mistake is made -- and the specific mistake this exists to catch (adding a file and
+# forgetting to register it) is invisible until the Monday that deletes the file.
+#
+# Deploy-key pushes trigger workflows, unlike GITHUB_TOKEN pushes, so this also re-validates
+# the branch for free after every sync.
+#
+# No network, no submodules, no build. It should finish in well under a minute.
+
+name: elantra guard
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: elantra-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    if: github.repository == 'aaravsaianugula/openpilot'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The registration test diffs HEAD against the upstream commit named in the build
+          # manifest, so the history has to reach back that far.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Check the overlay registry against the branch
+        run: python .elantra/test_overlay_registration.py
+
+      - name: Check the eGPU registries are self-consistent
+        run: python .elantra/test_egpu_tinygrad.py
+
+      - name: Test the eGPU vendor logic
+        run: python .elantra/test_egpu.py
+
+      - name: Test the port panel's update and rollback logic
+        run: python .elantra/test_port_panel.py
