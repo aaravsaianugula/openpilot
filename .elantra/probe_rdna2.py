@@ -408,8 +408,19 @@ def stage6_psp(ip_ver, regs_offset, mmio, timeout_s: float) -> str:
   return NO_GO
 
 
-def stage7_registers(ip_ver) -> None:
-  """What tinygrad would still be missing even if the card did come up."""
+def stage7_registers(ip_ver) -> bool:
+  """Whether tinygrad can build this card's register set. True if everything resolves.
+
+  This list is not a guess: it is exactly what AMDev._build_regs walks (amdev.py:327), plus
+  the two things AM resolves package-level. hdp belongs here and was missing until a build
+  proved it -- with gc/mp/smu/nbio/osssys/mmhub all present, AM still died on
+  `ImportError: Failed to import regs.hdp 5.0.3`, because _build_regs asks for it too. A
+  stage that reports "all present" while the driver still cannot start is worse than no
+  stage at all, so this now returns a verdict instead of printing one.
+
+  sdma is deliberately absent: _build_regs only asks for sdma registers when SDMA0 is 4.4.2
+  or 4.4.4, and RDNA2 is 5.2.x.
+  """
   head("Stage 7 -- register sets tinygrad already has for this card")
   from tinygrad.runtime.autogen.am import am
   from tinygrad.runtime.support.amd import import_module
@@ -417,7 +428,9 @@ def stage7_registers(ip_ver) -> None:
   # smu_* are modules of the autogen package; the rest are tables inside am/regs.py. AM
   # itself makes the same distinction -- _build_regs uses import_asic_regs (submod="regs")
   # while AM_SMU resolves its module package-level.
+  missing = []
   for prefix, hwip, submod in (("gc", am.GC_HWIP, "regs"), ("mp", am.MP0_HWIP, "regs"),
+                               ("hdp", am.HDP_HWIP, "regs"),
                                ("smu", am.MP1_HWIP, ""), ("nbio", am.NBIO_HWIP, "regs"),
                                ("osssys", am.OSSSYS_HWIP, "regs"),
                                ("mmhub", am.MMHUB_HWIP, "regs")):
@@ -428,7 +441,8 @@ def stage7_registers(ip_ver) -> None:
       import_module(prefix, version, submod=submod)
       ok(f"{prefix} {ver(version)}", "present")
     except Exception as e:
-      info(f"{prefix} {ver(version)}", "MISSING -- " + str(e))
+      bad(f"{prefix} {ver(version)}", "MISSING -- " + str(e))
+      missing.append(prefix)
 
   # soc_* are generated lazily on the *package*, unlike the structs above which live in the
   # am.py module inside it. AM_SOC does `import_soc(ip)` -> getattr(package, f"soc_{major}"),
@@ -439,7 +453,14 @@ def stage7_registers(ip_ver) -> None:
     getattr(am_pkg, "soc_" + str(major))
     ok("soc_" + str(major), "present")
   except AttributeError as e:
-    info("soc_" + str(major), "MISSING -- AM_SOC cannot be built: " + str(e))
+    bad("soc_" + str(major), "MISSING -- AM_SOC cannot be built: " + str(e))
+    missing.append("soc")
+
+  if missing:
+    info("register work remaining", ", ".join(missing))
+  else:
+    ok("every register set AM asks for", "present -- port stage 1 is complete for this card")
+  return not missing
 
 
 def main() -> int:
@@ -473,12 +494,18 @@ def main() -> int:
   ip_ver, regs_offset, mmio = discovered
 
   result = stage6_psp(ip_ver, regs_offset, mmio, args.psp_timeout)
-  stage7_registers(ip_ver)
+  regs_ready = stage7_registers(ip_ver)
 
   head("Verdict")
   if result == GO:
     print("  GO -- the PSP bootloader came up. Porting AM to this card is worth doing.")
-    print("  Stage 5 lists the IP versions and stage 7 the register sets still missing.")
+    # Stage 7 does not move the exit code on purpose: this tool answers one question, and it
+    # is stage 6's. Missing registers are work remaining, not a reason not to start.
+    if regs_ready:
+      print("  Every register set AM asks for now resolves, so port stage 1 is done for this")
+      print("  card. The next unknown is PSP: SOS load, TMR setup and ring creation.")
+    else:
+      print("  Stage 5 lists the IP versions and stage 7 the register sets still missing.")
     return 0
   if result == NO_GO:
     print("  NO-GO -- the PSP bootloader was polled and never reported ready. Everything a")

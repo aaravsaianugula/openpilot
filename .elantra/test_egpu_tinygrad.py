@@ -238,13 +238,79 @@ def check_am_arch(tinygrad: Path) -> None:
           all(spec.gfx.startswith("gfx") and spec.gfx[3:].isalnum()
               for spec in UNSUPPORTED_AMD.values()))
 
+    # Stage 1 of the RDNA2 port adds gfx10.3 register tables on purpose, so their presence is no
+    # longer evidence of anything. What matters is the ordering: registers may land ahead of the
+    # assert, never behind it. If the assert ever admits major 10 while the blocklist still names
+    # gfx10 parts, the check above goes red -- which is the intended way for the blocklist to be
+    # retired: a card actually runs first, then the entry goes.
     regs = tinygrad / "tinygrad/runtime/autogen/am/regs.py"
     if regs.is_file():
         first = regs.read_text(encoding="utf-8", errors="replace").split(chr(10), 1)[0]
         have_gc = set(re.findall(r"gc_(\d+)_", first))
-        check("no gc_10_* register set exists either",
-              "10" not in have_gc,
-              "regs.py now ships gfx10 registers; recheck whether AM can drive RDNA2")
+        if "10" in have_gc:
+            check("gfx10 registers exist, so AM must still refuse gfx10.3 at the assert",
+                  10 not in majors and not any(t[0] == 10 for t in exact),
+                  "registers alone are not support; the blocklist stays until a card runs")
+        else:
+            print("        no gc_10_* register set yet (port stage 1 not applied to this tree)")
+
+
+def check_gfx_target_table(tinygrad: Path) -> None:
+    """gfx10's IP version and its gfx target are different numbers.
+
+    tinygrad packed the three GC IP digits into gfx_target_version. That happens to work on
+    gfx9/11/12 and is simply wrong on gfx10: five of the seven GC 10.3.x versions map to a
+    different target, and not even monotonically -- 10.3.2 is gfx1031 while 10.3.4 is gfx1032.
+    The failure is silent, because packing yields a *plausible* target for a different ASIC,
+    and the card would then be compiled for the wrong ISA. Values are the kernel's, from
+    drivers/gpu/drm/amd/amdkfd/kfd_device.c.
+    """
+    print("\n[am] GC IP version -> gfx target")
+    ops_amd = tinygrad / "tinygrad/runtime/ops_amd.py"
+    if not ops_amd.is_file():
+        check("ops_amd.py exists", False)
+        return
+    src = ops_amd.read_text(encoding="utf-8", errors="replace")
+
+    tree = ast.parse(src)
+    table = None
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "GFX_TARGET_VERSION"
+                                                 for t in node.targets)):
+            table = ast.literal_eval(node.value)
+    check("ops_amd.py defines a real GC -> gfx target table", table is not None,
+          "without it gfx10 targets are digit-packed, which is wrong for RDNA2")
+    if table is None:
+        return
+
+    # The card in the dock. Getting this one wrong compiles for Navi 24 and runs on Navi 23.
+    for ip, want, name in (((10, 3, 4), 100302, "Dimgrey Cavefish is gfx1032"),
+                           ((10, 3, 2), 100301, "Navy Flounder is gfx1031"),
+                           ((10, 3, 5), 100304, "Beige Goby is gfx1034")):
+        label = f"GC {ip[0]}.{ip[1]}.{ip[2]}: {name}"
+        check(label, table.get(ip) == want, "got " + repr(table.get(ip)))
+
+    # Decode exactly as ops_amd does, and confirm the arch string comes out right.
+    def arch_of(trgt):
+        return f"gfx{trgt // 10000:d}{(trgt // 100) % 100:x}{trgt % 100:x}"
+    check("GC 10.3.4 renders as gfx1032", arch_of(table[(10, 3, 4)]) == "gfx1032",
+          "got " + arch_of(table[(10, 3, 4)]))
+
+    # The table has to actually disagree with packing, or it is not earning its place.
+    def packed(ip):
+        return int(f"{ip[0]:02d}{ip[1]:02d}{ip[2]:02d}")
+    differs = {ip for ip, t in table.items() if packed(ip) != t}
+    check("the table differs from digit-packing where it must",
+          {(10, 3, 1), (10, 3, 2), (10, 3, 3), (10, 3, 4), (10, 3, 5), (10, 3, 7)} <= differs,
+          "sorted(differs)=" + str(sorted(differs)))
+
+    # Every gfx10 target the table produces must be a target our blocklist knows about, or the
+    # two tables have drifted apart.
+    blocked_gfx = {spec.gfx for spec in UNSUPPORTED_AMD.values()}
+    rdna2 = {arch_of(t) for ip, t in table.items() if ip[:2] == (10, 3)}
+    check("every gfx10.3 target the table can produce is in the blocklist or is an APU",
+          blocked_gfx >= (rdna2 & {"gfx1030", "gfx1031", "gfx1032", "gfx1034"}),
+          "blocklist=" + str(sorted(blocked_gfx)))
 
 
 def main() -> int:
@@ -263,6 +329,7 @@ def main() -> int:
             raise SystemExit("not a tinygrad checkout: " + str(tinygrad))
         check_patch(tinygrad)
         check_am_arch(tinygrad)
+        check_gfx_target_table(tinygrad)
     else:
         print("\nnote: no --tinygrad checkout given; the patch itself was NOT inspected.")
         print("      Only the registry consistency checks ran.")
