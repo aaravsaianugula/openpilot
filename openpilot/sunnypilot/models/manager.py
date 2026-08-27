@@ -268,6 +268,11 @@ class ModelManagerSP:
     while True:
       try:
         self.sm.update(0)
+        # Which card is in the dock decides which catalog is served below, and this
+        # process is the only offroad place that may ask the hardware -- see
+        # detect.probe_once, which latches after one attempt. In the loop rather than
+        # __init__ so a dock plugged in after boot is still identified.
+        egpu.probe_once(self.params)
         # The bridge being present is not the same as an AMD card being behind it, and
         # every published _USBGPU bundle is AMD-compiled. Handing one to an NVIDIA
         # device costs a 60s load timeout and a modeld restart loop, so gate the whole

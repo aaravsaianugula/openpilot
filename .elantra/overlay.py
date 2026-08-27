@@ -68,12 +68,13 @@ OVERLAY_GITLINKS = [
 OVERLAY_HOOKS = {
     ".gitmodules": ["aaravsaianugula/opendbc", "aaravsaianugula/tinygrad"],
     "openpilot/common/params_keys.h": ["ElantraBuildManifest", "ElantraNewBuildManifest",
-                                       "ElantraVerifiedUpdatesOnly", "EgpuVendor", "EgpuUseNvidia"],
+                                       "ElantraVerifiedUpdatesOnly", "EgpuVendor", "EgpuUseNvidia",
+                                       "EgpuDeviceDetected"],
     "openpilot/system/updated/updated.py": ["get_elantra_manifest", "ElantraBuildManifest"],
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py": ["ElantraPortLayoutMici", "port_btn"],
     "openpilot/sunnypilot/modeld_v2/modeld.py": ["sunnypilot.egpu", "egpu.enabled",
                                                  "assert_pkl_matches"],
-    "openpilot/sunnypilot/models/manager.py": ["uses_amd_catalog"],
+    "openpilot/sunnypilot/models/manager.py": ["uses_amd_catalog", "probe_once"],
 }
 
 # The NV-USB delta may touch these and only these. Restricting the generated patch to them

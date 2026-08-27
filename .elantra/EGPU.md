@@ -160,12 +160,105 @@ saturating GEMM, then cold-start. Any `bob_flt` assertion is an immediate fail.
 
 **Stage 4** — in-vehicle, only after 0–3 pass. Re-run Stage 2 against segments from this car.
 
+## RDNA2, and the RX 6600 XT
+
+The card now in this dock is an **RX 6600 XT** -- Navi 23, `1002:73ff` rev C1, gfx1032. It does
+not work, and note the reversal from the 3080 Ti above: at 160 W TBP on a single 8-pin it clears
+the power blocker that kills the NVIDIA plan outright, and dies on software support instead.
+
+**tinygrad's AM driver is RDNA3/RDNA4 only, and says so.** `tinygrad/runtime/ops_amd.py`:
+
+```python
+self.target = ((trgt:=self.iface.props['gfx_target_version']) // 10000, (trgt // 100) % 100, trgt % 100)
+self.arch = "gfx%d%x%x" % self.target
+assert (self.target in ((9,4,2),(9,5,0))) or self.target[0] in (11, 12), f"Unsupported arch: {self.arch}"
+```
+
+`gfx_target_version` is built from the GC IP version in the card's own discovery table, so a
+Navi 23 arrives as `(10, 3, x)` and trips that assert before a kernel runs. Underneath it there
+is nothing to fall back on either: `autogen/am/regs.py` ships `gc_9_4_3, gc_11_0_0, gc_11_0_3,
+gc_11_5_0, gc_12_0_0` and no `gc_10_*`; `autogen/am/` has `soc_9, soc_11, soc_12` and no
+`soc_10`; the SMU modules are `smu_13_0_*` and `smu_14_0_2`, where Navi 2x needs SMU 11.
+`import_module` matches on major version, so each of those is an independent failure.
+
+**There is no kernel-driver escape hatch.** The chestnut is a USB-to-PCIe bridge: the GPU never
+appears to the kernel as a PCIe endpoint, so `amdgpu` cannot bind to it and ROCm is not an
+option no matter what `HSA_OVERRIDE_GFX_VERSION` says. Every path to this card runs through
+tinygrad's userspace AM driver. That is the whole option space.
+
+### What this branch does about it
+
+Not a driver port -- a gate, so the car is not harmed by a card it cannot use.
+
+Upstream conflates "a chestnut is attached" with "run the big model on it". The vendor
+abstraction split that by vendor; an RDNA2 card shows why vendor is the wrong granularity. An
+RX 6600 XT and comma's RX 9060 are both `0x1002`, so before this change the 6600 XT resolved as
+plain `amd`, took `DEV=USB+AMD:LLVM`, was served the gfx12-compiled `_USBGPU` bundles, failed to
+open the device, and left modeld in the 60-second-timeout restart loop -- the car could not
+engage until the dock was unplugged.
+
+Now `egpu/asics.py` carries a table of ASICs AM refuses, `probe.py` keeps the device ID out of
+the config dword it already reads, and `detect.enabled()` consults both. The dock stays attached
+and powered, the panel names the card and says why, and the model runs on the SoC.
+
+**The table is a blocklist on purpose.** It names only cards with positive evidence against
+them; anything unrecognised takes exactly today's path. An allowlist would gate every AMD card
+comma has not shipped yet, and every one whose device ID we typed wrong, on our being right.
+`.elantra/test_egpu_tinygrad.py` re-derives the supported targets from that assert by AST on
+every run, so if RDNA2 support ever lands upstream the blocklist fails loudly instead of quietly
+switching off eGPUs that would now work.
+
+### The probe, and what it decides
+
+`.elantra/probe_rdna2.py`. Run it offroad, on the bench, with modeld stopped -- `USBPCIDevice`
+takes an exclusive flock and must not be contended with a running model.
+
+| Stage | Check | Stop condition |
+|---|---|---|
+| 1 | USB link speed | `480` is the ASM2464PD USB-2 fallback. Stop: nothing measured after it means anything |
+| 2 | chestnut enumerated, LTSSM | not `0x78` -> stop |
+| 3 | config `0x00` on bus 4 | expect `0x73ff1002`, rev `0xc1` |
+| 4 | PCIe capability walk | does the endpoint advertise FLR? Recorded, not a stop |
+| 5 | `mmRCC_CONFIG_MEMSIZE`, then the discovery table at `VRAM_SIZE - 64KB` | dumps every IP version: GC, MP0, MP1, SDMA, NBIO |
+| **6** | **`regMP0_SMN_C2PMSG_35`, bit 31** | **the decisive one** |
+| 7 | which register sets tinygrad already has | what a port would still have to generate |
+
+Stage 5 replicates `AMDev._run_discovery` rather than calling it, because constructing `AMDev`
+is exactly what cannot work -- it resolves `soc_10` and `gc_10` modules that do not exist. It
+reads VRAM through `MM_INDEX`/`MM_DATA`, so a 256 MB BAR over 8 GB of VRAM is not a problem.
+
+**Stage 6 is the go/no-go.** `AM_PSP._wait_for_bootloader` polls `regMP0_SMN_C2PMSG_35` for bit
+31, and everything the driver does afterwards -- SOS, the TMR, every other IP's firmware -- is
+downstream of it. tinygrad [#15636](https://github.com/tinygrad/tinygrad/issues/15636) reports
+an RX 6900 XT (also RDNA2) sitting there at `0x0` forever with `TimeoutError: BL not ready`, on
+a different bridge. If the 6600 XT does the same over the chestnut, the port is dead before any
+of the register work matters and the answer is to stop.
+
+### If stage 6 passes, what the port would cost
+
+Listed so the size is not a surprise, not as a plan: `gc_10_3_0`, `soc_10` and `smu_11_0_x`
+register sets; PSP v11 bring-up, whose C2PMSG layout differs from v13; gfx10 CP init, which uses
+F32 ME/PFP/MEC against AM's RS64 path; Navi 2x firmware naming (`navi23_*.bin`, not the
+IP-versioned `gc_11_0_0_*.bin` convention AM expects); a reset path that does not depend on
+endpoint FLR; and lifting the `ops_amd.py` assert. Then on-device model compilation for gfx1032,
+since every published `_USBGPU` bundle is gfx12. It would live in a tinygrad fork branch, which
+`sync.py` requires to be exactly one non-merge commit on top of a commit in
+`sunnypilot/tinygrad`.
+
+A supported card remains the short path: the RX 9060 comma ships, or any RDNA3/RDNA4 board.
+
 ## Local checks (no hardware)
 
 ```bash
 python .elantra/test_egpu.py
 python .elantra/test_egpu_tinygrad.py --tinygrad <checkout>
 python .elantra/guards.py --opendbc <path> --repo . --tinygrad <checkout>
+```
+
+With the dock, on the bench:
+
+```bash
+python .elantra/probe_rdna2.py --expect 0x73ff
 ```
 
 The detector is proven in both directions: green on the patched tree, and correctly failing on

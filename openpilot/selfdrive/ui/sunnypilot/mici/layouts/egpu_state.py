@@ -37,14 +37,22 @@ def vendor_label(vendor: str, assumed: bool) -> str:
 
 
 def idle_reason(bridge_present: bool, vendor: str, assumed: bool,
-                use_nvidia: bool, nv_model: bool) -> str | None:
+                use_nvidia: bool, nv_model: bool,
+                asic_name: str | None = None, asic_supported: bool = True) -> str | None:
   """Why the driving model is not running on the eGPU, or None when it is.
 
   Ordered by what the user would have to fix first, so the panel never tells someone to
-  compile a model when the dock is not even plugged in.
+  compile a model when the dock is not even plugged in. The card check comes before the
+  vendor check because an unsupported card is an AMD card: it would otherwise fall straight
+  through to "everything is fine" and the panel would have nothing to say about a dock that
+  is plainly not being used.
   """
   if not bridge_present:
     return "No chestnut detected. Check the USB cable and that the dock has power."
+  if not asic_supported:
+    return ((asic_name or "This card") + " cannot be driven over the chestnut: tinygrad's "
+            + "driverless AMD driver supports RDNA3 and RDNA4 only. The dock stays powered "
+            + "and the driving model runs on the device.")
   if vendor == AMD:
     return None
   if assumed:
@@ -61,14 +69,21 @@ def idle_reason(bridge_present: bool, vendor: str, assumed: bool,
 
 
 def status_rows(bridge_present: bool, vendor: str, assumed: bool, use_nvidia: bool,
-                nv_model: bool, egpu_enabled: bool) -> list[tuple[str, str]]:
-  """Label/value pairs describing the dock, top to bottom."""
+                nv_model: bool, egpu_enabled: bool,
+                asic_name: str | None = None) -> list[tuple[str, str]]:
+  """Label/value pairs describing the dock, top to bottom.
+
+  When the card has actually been identified its own name is shown instead of the vendor:
+  the chip name already implies the vendor, and "Navi 23" is the thing worth reading when
+  the row below says the model is running on the device.
+  """
   if not bridge_present:
     return [("chestnut", "not detected"),
             ("gpu", "-"),
             ("driving model", "on device")]
 
-  rows = [("chestnut", "detected"), ("gpu", vendor_label(vendor, assumed))]
+  rows = [("chestnut", "detected"),
+          ("gpu", asic_name or vendor_label(vendor, assumed))]
   if egpu_enabled:
     rows.append(("driving model", "on the eGPU"))
   else:

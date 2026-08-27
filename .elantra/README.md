@@ -219,6 +219,12 @@ python .elantra/verify_published.py          # check what is live on GitHub
 - **The eGPU patch is unmerged upstream.** Expect to refresh `nv-usb3` every few weeks. Until
   you do, the branch stays on its last good build rather than publishing one without eGPU
   support.
+- **An RDNA2 card cannot drive the model, and is now detected rather than tolerated.**
+  tinygrad's driverless AM driver is RDNA3/RDNA4 only, so an RX 6600 XT (gfx1032) fails to open
+  after modeld has already committed to it -- which upstream turns into a restart loop the car
+  cannot engage through. `egpu/asics.py` blocks the Navi 2x device IDs, and the dock then looks
+  like no dock instead of a broken one. Whether the card could ever be supported is a driver
+  port, gated on `.elantra/probe_rdna2.py`; see `.elantra/EGPU.md`.
 - **NVIDIA eGPU support is unproven on hardware.** The vendor abstraction, guards and tests
   are real and green; whether a 3080 Ti actually runs a model over the chestnut's USB3 bridge
   has not been tested by anyone on a comma four. See `.elantra/EGPU.md`.

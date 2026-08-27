@@ -1,0 +1,433 @@
+#!/usr/bin/env python3
+"""
+Can tinygrad's driverless AM driver ever drive an RDNA2 card over the chestnut?
+
+tinygrad's AM driver is RDNA3/RDNA4 only. `tinygrad/runtime/ops_amd.py` says so outright:
+
+    assert (self.target in ((9,4,2),(9,5,0))) or self.target[0] in (11, 12), "Unsupported arch"
+
+so an RX 6600 XT (Navi 23, GC 10.3.x, gfx1032) is refused before a kernel runs, and below that
+assert there is no gc_10_* register set, no soc_10 and no smu_11 either. Supporting the card
+means porting AM to GC 10.3: new register sets, PSP v11 bring-up, gfx10 CP init, Navi 2x
+firmware naming, and a reset path that does not need endpoint FLR. That is weeks of driver
+work, and it is worth nothing if the card cannot even be brought out of reset over a USB
+bridge -- which is a real possibility. tinygrad issue #15636 reports an RX 6900 XT (also
+RDNA2) dying at exactly that point on the sibling TinyGPU path, with "BL not ready" and
+C2PMSG_35 reading 0x0.
+
+**Stage 6 is the whole point of this script.** If the PSP bootloader never reports ready, the
+port is dead before any of the register work matters and the answer is to stop. Everything
+before it exists to make stage 6's result trustworthy rather than to be interesting.
+
+Nothing here runs a kernel, loads firmware, or resets the card. Stages 1-4 are config-space
+reads. Stage 5 constructs tinygrad's USBPCIDevice, which programs the BARs -- the same thing
+tinygrad does on every open. Stages 5-7 are MMIO reads.
+
+Run it offroad, on the bench, with the dock attached and modeld stopped: USBPCIDevice takes an
+exclusive flock, so this cannot share the device with a running model.
+
+Usage:
+    python .elantra/probe_rdna2.py
+    python .elantra/probe_rdna2.py --expect 0x73ff     # fail if a different card answers
+"""
+
+from __future__ import annotations
+
+import argparse
+import array
+import ctypes
+import glob
+import sys
+import time
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
+
+ASM_LTSSM_REG = 0xB450
+LTSSM_L0 = 0x78
+GPU_BUS = 4              # where AMD's USBIface enumerates the card behind the bridge
+MMIO_BAR = 5             # AMDev maps bar 5 as its register aperture
+VRAM_BAR = 0
+mmRCC_CONFIG_MEMSIZE = 0xDE3
+MM_INDEX, MM_DATA, MM_INDEX_HI = 0x00, 0x01, 0x06
+PSP_BL_READY = 0x80000000
+
+_failed = False
+
+
+def head(title: str) -> None:
+  print("")
+  print("=" * 72)
+  print(title)
+  print("=" * 72)
+
+
+def ok(label: str, detail: str = "") -> None:
+  print("  ok    " + label + ((": " + detail) if detail else ""))
+
+
+def info(label: str, detail: str = "") -> None:
+  print("  --    " + label + ((": " + detail) if detail else ""))
+
+
+def bad(label: str, detail: str = "") -> None:
+  global _failed
+  _failed = True
+  print("  FAIL  " + label + ((": " + detail) if detail else ""))
+
+
+def ver(v) -> str:
+  """An IP version tuple as people write it."""
+  return f"{v[0]}.{v[1]}.{v[2]}"
+
+
+def stop(why: str) -> int:
+  print("")
+  print("STOP: " + why)
+  return 1
+
+
+def stage1_usb_speed() -> bool:
+  """A USB 2 fallback makes every later number meaningless, so it is a stop, not a warning."""
+  head("Stage 1 -- USB link speed")
+  speeds = []
+  for path in sorted(glob.glob("/sys/bus/usb/devices/*/speed")):
+    try:
+      speeds.append((path.split("/")[-2], Path(path).read_text().strip()))
+    except OSError:
+      continue
+  if not speeds:
+    info("no /sys/bus/usb/devices entries readable", "not Linux, or no USB bus here")
+    return True
+  for dev, sp in speeds:
+    info("usb " + dev, sp + " Mb/s")
+  fast = [d for d, s in speeds if s == "10000"]
+  if fast:
+    ok("a device is enumerated at 10000 Mb/s", ", ".join(fast))
+    return True
+  if any(s == "480" for _, s in speeds):
+    bad("only USB 2 (480 Mb/s) devices present",
+        "the known ASM2464PD fallback -- power-cycle the dock and retry")
+    return False
+  info("no 10000 Mb/s device found", "the dock may not be attached to this host")
+  return True
+
+
+def stage2_bridge():
+  """The chestnut itself, and its PCIe link. CustomASM24Controller raises if it is down."""
+  head("Stage 2 -- chestnut bridge and PCIe link")
+  try:
+    from tinygrad.runtime.support.usb import USB3, CustomASM24Controller
+  except Exception as e:
+    bad("tinygrad is not importable here", str(e))
+    return None
+
+  # Not swallowed: reported. Without libusb there is no way to reach the bridge at all, and
+  # that is a fact about the machine this is running on, not a fault of the card.
+  try:
+    devices = USB3.list_devices(0xADD1, 0x0001) + USB3.list_devices(0x3801, 0x0001)
+  except Exception as e:
+    bad("cannot enumerate USB devices", str(e))
+    info("this probe needs libusb and the dock", "run it on the comma four, not a laptop")
+    return None
+
+  if not devices:
+    bad("no chestnut on custom firmware found",
+        "tinygrad only drives the custom firmware; stock ASMedia firmware is not usable")
+    return None
+  ok("chestnut found", str(len(devices)) + " device(s)")
+
+  try:
+    usb = CustomASM24Controller(USB3(devices[0][0]))
+  except Exception as e:
+    bad("PCIe link did not come up", str(e))
+    return None
+
+  ltssm = usb.read(ASM_LTSSM_REG, 1)[0]
+  if ltssm != LTSSM_L0:
+    bad("LTSSM is not L0", hex(ltssm) + ", want " + hex(LTSSM_L0))
+    return None
+  ok("LTSSM is L0", hex(ltssm))
+  return usb, devices[0]
+
+
+def stage3_identity(usb, expect: int | None) -> int | None:
+  """Which card actually answered, read straight out of config space."""
+  head("Stage 3 -- card identity")
+  word = usb.pcie_cfg_req(0x00, bus=GPU_BUS, dev=0, fn=0, size=4)
+  vendor_id, device_id = word & 0xFFFF, (word >> 16) & 0xFFFF
+  rev = usb.pcie_cfg_req(0x08, bus=GPU_BUS, dev=0, fn=0, size=4) & 0xFF
+  info("config 0x00", hex(word))
+  ok("vendor", hex(vendor_id) + (" (AMD)" if vendor_id == 0x1002 else ""))
+  ok("device", hex(device_id))
+  ok("revision", hex(rev))
+
+  from openpilot.sunnypilot.egpu.asics import asic_for
+  from openpilot.sunnypilot.egpu.vendors import AMD
+  spec = asic_for(AMD, device_id) if vendor_id == 0x1002 else None
+  if spec is not None:
+    ok("identified", spec.name + " -- " + spec.gfx + " (" + spec.arch + ")")
+    info("driveable by AM today", "no, which is exactly why we are probing")
+  else:
+    info("not in the RDNA2 blocklist",
+         "either a card AM already supports, or one we have no entry for")
+
+  if expect is not None and device_id != expect:
+    bad("a different card answered", "expected " + hex(expect) + ", got " + hex(device_id))
+    return None
+  return device_id
+
+
+def stage4_flr(usb) -> None:
+  """Does the endpoint advertise Function Level Reset?
+
+  tinygrad issue #15636 stalled on RDNA2 partly because the GPU function does not support FLR
+  and the reset path had nothing else to use. Not a stop condition -- a bridge-level or PSP
+  mode1 reset may still work -- but it decides what a teardown path would have to be.
+  """
+  head("Stage 4 -- reset capability")
+  status = (usb.pcie_cfg_req(0x04, bus=GPU_BUS, dev=0, fn=0, size=4) >> 16) & 0xFFFF
+  if not status & 0x10:
+    info("no PCI capability list", "cannot tell whether FLR is supported")
+    return
+
+  ptr = usb.pcie_cfg_req(0x34, bus=GPU_BUS, dev=0, fn=0, size=4) & 0xFF
+  seen: set[int] = set()
+  while ptr and ptr != 0xFF and ptr not in seen:
+    seen.add(ptr)
+    cap = usb.pcie_cfg_req(ptr & 0xFC, bus=GPU_BUS, dev=0, fn=0, size=4)
+    cap_id, nxt = cap & 0xFF, (cap >> 8) & 0xFF
+    if cap_id == 0x10:  # PCI Express capability
+      devcap = usb.pcie_cfg_req((ptr + 4) & 0xFC, bus=GPU_BUS, dev=0, fn=0, size=4)
+      info("PCIe capability at", hex(ptr))
+      if devcap & (1 << 28):
+        ok("endpoint advertises FLR")
+      else:
+        info("endpoint does NOT advertise FLR",
+             "teardown would need a bridge or PSP mode1 reset -- see tinygrad #15636")
+      return
+    ptr = nxt
+  info("no PCIe capability structure found", "unexpected for a GPU")
+
+
+def stage5_discovery(pci_dev):
+  """The card's own IP discovery table: the exact work list a port would have to write.
+
+  This replicates AMDev._run_discovery rather than calling it, because constructing AMDev is
+  precisely what cannot work here -- it resolves soc_10 and gc_10 modules that do not exist.
+  VRAM is read through MM_INDEX/MM_DATA, so a 256MB BAR over 8GB of VRAM is not a problem.
+  """
+  head("Stage 5 -- IP discovery table")
+  import tinygrad.runtime.autogen.am as am
+
+  mmio = pci_dev.map_bar(MMIO_BAR, fmt="I")
+
+  def rreg(reg: int) -> int:
+    if reg >= len(mmio):
+      raise IndexError("register " + hex(reg) + " is outside the MMIO aperture ("
+                       + hex(len(mmio)) + " dwords); AM would reach it over RSMU")
+    return mmio[reg]
+
+  def wreg(reg: int, val: int) -> None:
+    mmio[reg] = val
+
+  vram_size = rreg(mmRCC_CONFIG_MEMSIZE) << 20
+  if vram_size == 0 or vram_size > (128 << 30):
+    bad("implausible VRAM size", hex(vram_size) + " -- MMIO reads are not working")
+    return None
+  ok("VRAM size", str(vram_size >> 20) + " MB")
+  bar_addr, bar_size = pci_dev.bar_info(VRAM_BAR)
+  ok("VRAM BAR", str(bar_size >> 20) + " MB at " + hex(bar_addr))
+  info("large BAR", "yes" if bar_size >= vram_size else "no, the CPU-visible pool is the BAR")
+
+  addr, size = vram_size - (64 << 10), (10 << 10)
+  words = []
+  for caddr in range(addr, addr + size, 4):
+    wreg(MM_INDEX_HI, caddr >> 31)
+    wreg(MM_INDEX, (caddr & 0x7FFFFFFF) | 0x80000000)
+    words.append(rreg(MM_DATA))
+  disc = bytearray(bytes(array.array("I", words)))
+
+  bhdr = am.struct_binary_header.from_buffer(disc)
+  if bhdr.binary_signature != am.BINARY_SIGNATURE:
+    bad("discovery table signature mismatch", hex(bhdr.binary_signature))
+    return None
+  ihdr = am.struct_ip_discovery_header.from_address(
+    ctypes.addressof(bhdr) + bhdr.table_list[am.IP_DISCOVERY].offset)
+  if ihdr.signature != am.DISCOVERY_TABLE_SIGNATURE:
+    bad("ip discovery signature mismatch", hex(ihdr.signature))
+    return None
+  ok("discovery table parsed", str(ihdr.num_dies) + " die(s)")
+
+  names = {v: k.removesuffix("_HWIP") for k, v in vars(am).items()
+           if k.endswith("_HWIP") and isinstance(v, int)}
+  ip_ver: dict[int, tuple[int, int, int]] = {}
+  regs_offset: dict[int, dict[int, tuple]] = {}
+  for die in range(ihdr.num_dies):
+    dhdr = am.struct_die_header.from_address(
+      ctypes.addressof(bhdr) + ihdr.die_info[die].die_offset)
+    off = ctypes.addressof(bhdr) + ctypes.sizeof(dhdr) + ihdr.die_info[die].die_offset
+    for _ in range(dhdr.num_ips):
+      ip = am.struct_ip_v4.from_address(off)
+      base_t = ctypes.c_uint64 if ihdr.base_addr_64_bit else ctypes.c_uint32
+      bases = (base_t * ip.num_base_address).from_address(off + 8)
+      for hw_ip in range(1, am.MAX_HWIP):
+        if hw_ip in am.hw_id_map and am.hw_id_map[hw_ip] == ip.hw_id:
+          regs_offset.setdefault(hw_ip, {})[ip.instance_number] = tuple(bases)
+          ip_ver[hw_ip] = (ip.major, ip.minor, ip.revision)
+      off += 8 + (8 if ihdr.base_addr_64_bit else 4) * ip.num_base_address
+
+  print("")
+  print("  IP block versions -- this is the port's work list:")
+  for hw_ip in sorted(ip_ver, key=lambda k: names.get(k, str(k))):
+    name = names.get(hw_ip, "HWIP" + str(hw_ip))
+    print(f"      {name:<12} {ver(ip_ver[hw_ip])}")
+
+  gc = ip_ver.get(am.GC_HWIP)
+  if gc is not None:
+    gfxver = int(f"{gc[0]:02d}{gc[1]:02d}{gc[2]:02d}")
+    target = (gfxver // 10000, (gfxver // 100) % 100, gfxver % 100)
+    print("")
+    ok("gfx target", f"gfx{target[0]}{target[1]:x}{target[2]:x} {target}")
+    if target[0] in (11, 12) or target in ((9, 4, 2), (9, 5, 0)):
+      ok("ops_amd.py would accept this target", "AM can drive this card as it stands")
+    else:
+      info("ops_amd.py would reject this target",
+           "assert (target in ((9,4,2),(9,5,0))) or target[0] in (11, 12)")
+  return ip_ver, regs_offset, mmio
+
+
+def stage6_psp(ip_ver, regs_offset, mmio, timeout_s: float) -> bool:
+  """The decisive check: does the PSP bootloader come up?
+
+  AM_PSP._wait_for_bootloader polls regMP0_SMN_C2PMSG_35 for bit 31. Everything the driver
+  does afterwards -- loading SOS, the TMR, every other IP's firmware -- is downstream of this
+  one register. tinygrad #15636 is an RDNA2 card sitting here reading 0x0 forever.
+  """
+  head("Stage 6 -- PSP bootloader (THE DECISIVE CHECK)")
+  import tinygrad.runtime.autogen.am as am
+  from tinygrad.runtime.support.amd import import_module
+
+  mp0 = ip_ver.get(am.MP0_HWIP)
+  if mp0 is None:
+    bad("no MP0 (PSP) block in the discovery table", "nothing to poll")
+    return False
+  ok("MP0 (PSP) IP version", ver(mp0))
+
+  try:
+    regs = import_module("mp", mp0)
+  except Exception as e:
+    bad("no register set for this PSP version", str(e))
+    return False
+
+  entry = regs.get("mmMP0_SMN_C2PMSG_35") or regs.get("regMP0_SMN_C2PMSG_35")
+  if entry is None:
+    bad("C2PMSG_35 is not defined for this PSP version", "cannot poll the bootloader")
+    return False
+  offset, segment = entry[0], entry[1]
+  addr = regs_offset[am.MP0_HWIP][0][segment] + offset
+  info("regMP0_SMN_C2PMSG_35 at", hex(addr))
+  if addr >= len(mmio):
+    bad("C2PMSG_35 is outside the MMIO aperture",
+        hex(addr) + " >= " + hex(len(mmio)) + "; AM reaches it over RSMU, which needs the "
+        + "nbio register set this probe does not build")
+    return False
+
+  deadline, value = time.monotonic() + timeout_s, 0
+  while time.monotonic() < deadline:
+    value = mmio[addr]
+    if value & PSP_BL_READY:
+      ok("PSP bootloader reports ready", hex(value))
+      print("")
+      print("  GO. The card comes out of reset over the chestnut. The RDNA2 port is worth")
+      print("  attempting, and stage 5's IP versions are the modules it needs.")
+      return True
+    time.sleep(0.05)
+
+  bad("PSP bootloader never reported ready",
+      "C2PMSG_35 = " + hex(value) + " after " + str(timeout_s) + "s, want bit 31 set")
+  entry64 = regs.get("mmMP0_SMN_C2PMSG_64") or regs.get("regMP0_SMN_C2PMSG_64")
+  if entry64 is not None:
+    addr64 = regs_offset[am.MP0_HWIP][0][entry64[1]] + entry64[0]
+    if addr64 < len(mmio):
+      info("C2PMSG_64", hex(mmio[addr64]))
+  return False
+
+
+def stage7_registers(ip_ver) -> None:
+  """What tinygrad would still be missing even if the card did come up."""
+  head("Stage 7 -- register sets tinygrad already has for this card")
+  import tinygrad.runtime.autogen.am as am
+  from tinygrad.runtime.support.amd import import_module
+
+  for prefix, hwip in (("gc", am.GC_HWIP), ("mp", am.MP0_HWIP), ("smu", am.MP1_HWIP),
+                       ("nbio", am.NBIO_HWIP), ("osssys", am.OSSSYS_HWIP),
+                       ("mmhub", am.MMHUB_HWIP)):
+    version = ip_ver.get(hwip)
+    if version is None:
+      continue
+    try:
+      import_module(prefix, version)
+      ok(f"{prefix} {ver(version)}", "present")
+    except Exception as e:
+      info(f"{prefix} {ver(version)}", "MISSING -- " + str(e))
+
+  try:
+    soc = getattr(am, "soc_" + str(ip_ver[am.GC_HWIP][0]))
+    ok("soc_" + str(ip_ver[am.GC_HWIP][0]), "present " + str(soc is not None))
+  except (AttributeError, KeyError):
+    info("soc_" + str(ip_ver.get(am.GC_HWIP, (0,))[0]), "MISSING -- AM_SOC cannot be built")
+
+
+def main() -> int:
+  ap = argparse.ArgumentParser(description=__doc__,
+                               formatter_class=argparse.RawDescriptionHelpFormatter)
+  ap.add_argument("--expect", default=None,
+                  help="PCI device id the card must report, hex (e.g. 0x73ff)")
+  ap.add_argument("--psp-timeout", type=float, default=5.0,
+                  help="seconds to wait for the PSP bootloader (default 5)")
+  args = ap.parse_args()
+  expect = int(args.expect, 16) if args.expect else None
+
+  print("RDNA2-on-chestnut bring-up probe")
+  print("  repo: " + str(REPO))
+
+  if not stage1_usb_speed():
+    return stop("USB 2 fallback. Nothing measured past this point would mean anything.")
+
+  bridge = stage2_bridge()
+  if bridge is None:
+    return stop("The bridge or its PCIe link is not up. Fix that before reading anything.")
+  usb, device_entry = bridge
+
+  if stage3_identity(usb, expect) is None:
+    return stop("Not the card we were told to probe.")
+
+  stage4_flr(usb)
+
+  from tinygrad.runtime.support.system import USBPCIDevice
+  pci_dev = USBPCIDevice("AM", *device_entry)
+
+  discovered = stage5_discovery(pci_dev)
+  if discovered is None:
+    return stop("Could not read the card's discovery table. MMIO is not working.")
+  ip_ver, regs_offset, mmio = discovered
+
+  went = stage6_psp(ip_ver, regs_offset, mmio, args.psp_timeout)
+  stage7_registers(ip_ver)
+
+  head("Verdict")
+  if went:
+    print("  GO -- the PSP bootloader came up. Porting AM to this card is worth doing.")
+    print("  Stage 5 lists the IP versions and stage 7 the register sets still missing.")
+  else:
+    print("  NO-GO -- the PSP bootloader did not come up. Everything a port would build")
+    print("  sits downstream of that register, so do not start the port on this evidence.")
+    print("  This is the failure tinygrad #15636 reports for RDNA2.")
+  print("")
+  return 0 if (went and not _failed) else 1
+
+
+if __name__ == "__main__":
+  sys.exit(main())

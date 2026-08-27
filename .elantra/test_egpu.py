@@ -34,7 +34,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from openpilot.sunnypilot.egpu import detect, models, vendors
+from openpilot.sunnypilot.egpu import asics, detect, models, vendors
 
 EGPU_DIR = REPO / "openpilot/sunnypilot/egpu"
 SCONSCRIPT = REPO / "openpilot/selfdrive/modeld/SConscript"
@@ -83,6 +83,35 @@ class FakeParams:
 
     def remove(self, key):
         self._v.pop(key, None)
+
+
+_REAL_PROBE_IDS = None
+
+
+def monkey_probe(dock_present: bool, probe_ids) -> None:
+    """Point detect's two lazy imports at fakes.
+
+    probe_once imports usbgpu_present and probe_ids inside the function body, so both are
+    replaced at their source module rather than as attributes of detect.
+    """
+    global _REAL_PROBE_IDS
+    import types
+
+    from openpilot.sunnypilot.egpu import probe as probe_mod
+    if _REAL_PROBE_IDS is None:
+        _REAL_PROBE_IDS = probe_mod.probe_ids
+
+    helpers = types.ModuleType("openpilot.selfdrive.modeld.helpers")
+    helpers.usbgpu_present = lambda: dock_present
+    sys.modules["openpilot.selfdrive.modeld.helpers"] = helpers
+    probe_mod.probe_ids = probe_ids
+
+
+def unmonkey_probe() -> None:
+    sys.modules.pop("openpilot.selfdrive.modeld.helpers", None)
+    if _REAL_PROBE_IDS is not None:
+        from openpilot.sunnypilot.egpu import probe as probe_mod
+        probe_mod.probe_ids = _REAL_PROBE_IDS
 
 
 # --- vendor resolution --------------------------------------------------------------------
@@ -251,6 +280,145 @@ def test_assert_pkl(tmp: Path):
     check("refusing to mark a model with an unknown vendor", bad is not None)
 
 
+# --- which ASIC, not just which vendor ------------------------------------------------------
+
+def test_asic_table():
+    """The table is a blocklist. An id it does not know must change nothing.
+
+    tinygrad's driverless AM driver is RDNA3/RDNA4 only -- ops_amd.py asserts
+    `target[0] in (11, 12)` (plus two CDNA targets) and raises "Unsupported arch" for anything
+    else. RDNA2 is gfx10.3, so a 6600 XT fails that assert after modeld has already committed
+    to the eGPU. We cannot enumerate every card AMD will ever ship, so we enumerate the ones we
+    have positive evidence AM refuses, and leave every other card on exactly today's path.
+    """
+    print("\n[asics] a blocklist of cards AM refuses, never an allowlist")
+    spec = asics.asic_for(vendors.AMD, 0x73FF)
+    check("the RX 6600 XT is in the table", spec is not None)
+    if spec is not None:
+        case("and it is Navi 23 / gfx1032", (spec.gfx, spec.arch), ("gfx1032", "rdna2"))
+        case("and AM cannot drive it", spec.am_supported, False)
+
+    case("an AMD id we do not know yields no opinion", asics.asic_for(vendors.AMD, 0x7550), None)
+    case("a device id under the wrong vendor is not matched",
+         asics.asic_for(vendors.NVIDIA, 0x73FF), None)
+    case("no device id at all yields no opinion", asics.asic_for(vendors.AMD, None), None)
+
+    check("every entry in the table is marked unsupported",
+          all(not s.am_supported for s in asics.UNSUPPORTED_AMD.values()))
+    check("every entry names a gfx10.3x target",
+          all(s.gfx.startswith("gfx103") for s in asics.UNSUPPORTED_AMD.values()))
+    check("the whole Navi 2x line is covered, not just the one card we own",
+          {asics.asic_for(vendors.AMD, i).arch for i in (0x73BF, 0x73DF, 0x73FF, 0x743F)} == {"rdna2"})
+
+    check("am_supports says yes to anything unknown", asics.am_supports(vendors.AMD, 0x7550))
+    check("am_supports says yes when nothing was detected", asics.am_supports(vendors.AMD, None))
+    check("am_supports says no to the 6600 XT", not asics.am_supports(vendors.AMD, 0x73FF))
+
+
+def test_resolve_device():
+    print("\n[resolve_device] explicit > cached > nothing known")
+    case("an explicit override is used", detect.resolve_device(FakeParams(EgpuDevice="0x73ff")), 0x73FF)
+    case("the 0x prefix is optional", detect.resolve_device(FakeParams(EgpuDevice="73ff")), 0x73FF)
+    case("case does not matter", detect.resolve_device(FakeParams(EgpuDevice="0x73FF")), 0x73FF)
+    case("a cached probe result is used",
+         detect.resolve_device(FakeParams(EgpuDeviceDetected="0x73ff")), 0x73FF)
+    case("explicit beats a stale cache",
+         detect.resolve_device(FakeParams(EgpuDevice="0x743f", EgpuDeviceDetected="0x73ff")), 0x743F)
+    case("nothing known is None, not a guess", detect.resolve_device(FakeParams()), None)
+    case("a garbage id is ignored, not trusted",
+         detect.resolve_device(FakeParams(EgpuDevice="banana")), None)
+    case("an out-of-range id is ignored", detect.resolve_device(FakeParams(EgpuDevice="0x1ffff")), None)
+    case("bytes decode like every other param", detect.resolve_device(FakeParams(EgpuDevice=b"0x73ff")), 0x73FF)
+
+
+def test_device_id_parsing_is_strict():
+    """A PCI device ID is 16 bits unsigned. Nothing else is an ID.
+
+    int(x, 16) happily accepts a sign, so "+3ff" would otherwise parse as 1023 -- a real
+    device ID that is not the one written down.
+    """
+    print("\n[device id] only a 16-bit unsigned hex value is an id")
+    for raw in ("-1", "+3ff", "-73f", " ", "0x", "zzzz", "1ffff", ""):
+        case("rejects " + repr(raw), detect._parse_device_id(raw), None)
+    for raw, want in (("73ff", 0x73FF), ("0x73ff", 0x73FF), ("0", 0), ("ffff", 0xFFFF)):
+        case("accepts " + repr(raw), detect._parse_device_id(raw), want)
+
+
+def test_probe_once(monkey):
+    """probe_once must learn the card even when the vendor is not in question.
+
+    resolve() short-circuits on an explicit EgpuVendor, so hanging the probe off it meant a
+    user who picked "amd" in the panel -- a perfectly ordinary thing to do -- never got a
+    device ID, and the whole RDNA2 gate silently did not apply to them.
+    """
+    print("\n[probe_once] the dock is identified regardless of vendor")
+    calls = []
+
+    def fake_probe_ids():
+        calls.append(1)
+        return ("amd", 0x73FF)
+
+    monkey(True, fake_probe_ids)
+
+    detect._probe_attempted = False
+    params = FakeParams(EgpuVendor="amd")          # vendor pinned: resolve() never probes
+    detect.probe_once(params)
+    case("probes even with the vendor explicitly set", len(calls), 1)
+    case("and caches the device id", params.get("EgpuDeviceDetected"), "0x73ff")
+    case("so the gate now applies to a pinned-vendor user", detect.enabled(params), False)
+
+    detect.probe_once(params)
+    case("but only once per manager start", len(calls), 1)
+
+    calls.clear()
+    detect._probe_attempted = False
+    already = FakeParams(EgpuVendor="amd", EgpuDeviceDetected="0x7550")
+    detect.probe_once(already)
+    case("a known card is not re-probed", len(calls), 0)
+
+    calls.clear()
+    detect._probe_attempted = False
+    monkey(False, fake_probe_ids)
+    detect.probe_once(FakeParams())
+    case("no dock means no probe", len(calls), 0)
+    case("and no latch, so a dock plugged in later is still found",
+         detect._probe_attempted, False)
+
+    monkey(True, lambda: None)
+    detect._probe_attempted = False
+    unknown = FakeParams()
+    detect.probe_once(unknown)
+    case("a probe that reads nothing caches nothing",
+         unknown.get("EgpuDeviceDetected"), None)
+    detect._probe_attempted = False
+    unmonkey_probe()
+
+
+def test_asic_gate():
+    """A card we cannot drive must look like no eGPU, not like a broken one.
+
+    Without this, a 6600 XT resolves as plain "amd", takes DEV=USB+AMD:LLVM, is served the
+    gfx12-compiled _USBGPU bundles, fails to open the device, and modeld restarts forever --
+    the car cannot engage until the dock is unplugged.
+    """
+    print("\n[enabled] an eGPU AM cannot drive looks like no eGPU")
+    case("an RDNA2 card does not get the model",
+         detect.enabled(FakeParams(EgpuVendor="amd", EgpuDeviceDetected="0x73ff")), False)
+    case("and it gets no AMD catalog to download",
+         detect.uses_amd_catalog(FakeParams(EgpuVendor="amd", EgpuDeviceDetected="0x73ff")), False)
+    case("a supported AMD card is untouched",
+         detect.enabled(FakeParams(EgpuVendor="amd", EgpuDeviceDetected="0x7550")), True)
+    case("an unknown device id keeps today's behaviour exactly",
+         detect.enabled(FakeParams(EgpuVendor="amd")), True)
+    case("a garbage device id keeps today's behaviour exactly",
+         detect.enabled(FakeParams(EgpuVendor="amd", EgpuDeviceDetected="banana")), True)
+    case("an explicit device override beats the cached probe",
+         detect.enabled(FakeParams(EgpuVendor="amd", EgpuDevice="0x73ff", EgpuDeviceDetected="0x7550")),
+         False)
+    case("an assumed vendor with an RDNA2 id still refuses",
+         detect.enabled(FakeParams(EgpuDeviceDetected="0x73ff")), False)
+
+
 # --- descriptor drift ---------------------------------------------------------------------
 
 def test_descriptor_drift():
@@ -392,6 +560,29 @@ def test_panel_logic():
     case("an NVIDIA dock in use says so", rows.get("driving model"), "on the eGPU")
     case("the NVIDIA rows report the compiled model", rows.get("compiled model"), "present")
 
+    print("\n[egpu_state] a card AM cannot drive is named and explained")
+    unsupported = state.idle_reason(True, "amd", False, False, False,
+                                    "Navi 23 [Radeon RX 6600/6600 XT/6600M]", False)
+    check("an unsupported card is explained, not silently ignored", unsupported is not None)
+    if unsupported:
+        check("and it is named", "Navi 23" in unsupported)
+        check("and the reason given is the driver, not the dock", "RDNA3 and RDNA4" in unsupported)
+        check("and it says the car still drives", "runs on the device" in unsupported)
+    case("an unsupported card outranks the vendor check, which would have said nothing",
+         state.idle_reason(True, "amd", False, False, False, "Navi 23", False) is None, False)
+    case("no dock still outranks an unsupported card",
+         state.idle_reason(False, "amd", False, False, False, "Navi 23", False).startswith("No chestnut"),
+         True)
+    case("a supported card explains nothing",
+         state.idle_reason(True, "amd", False, False, False, None, True), None)
+
+    rows = dict(state.status_rows(True, "amd", True, False, False, False, "Navi 23"))
+    case("an identified card is named in the gpu row", rows.get("gpu"), "Navi 23")
+    case("and the model row says it is not being used", rows.get("driving model"), "on device")
+    rows = dict(state.status_rows(True, "amd", True, False, False, True))
+    case("without an identified card the vendor label is used as before",
+         rows.get("gpu"), "AMD (assumed)")
+
     case("the telemetry note only appears for NVIDIA", state.telemetry_note("amd"), None)
     check("the NVIDIA telemetry note explains the missing readings",
           "no NVIDIA equivalent" in (state.telemetry_note("nvidia") or ""))
@@ -420,6 +611,40 @@ def test_import_purity():
         case(path.name + " has no heavy top-level import", hits, [])
 
 
+def test_probe_tool():
+    """The bring-up probe is run by hand on a bench, so nothing else would catch a typo.
+
+    It may import tinygrad -- it is a hardware tool, not a test -- but only lazily, so that
+    it can be read and checked on a machine that has neither tinygrad nor a dock.
+    """
+    print("\n[probe] the RDNA2 bring-up tool is intact")
+    tool = REPO / ".elantra/probe_rdna2.py"
+    check("the probe tool exists", tool.is_file())
+    if not tool.is_file():
+        return
+    source = tool.read_text(encoding="utf-8")
+    compiled = None
+    try:
+        compiled = compile(source, str(tool), "exec")
+    except SyntaxError as e:
+        check("the probe tool compiles", False, str(e))
+    check("the probe tool compiles", compiled is not None)
+
+    tree = ast.parse(source)
+    top = []
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            top += [a.name.split(".")[0] for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            top.append(node.module.split(".")[0])
+    case("the probe tool imports tinygrad lazily", sorted({"tinygrad"} & set(top)), [])
+
+    defined = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+    for stage in ("stage1_usb_speed", "stage2_bridge", "stage3_identity", "stage4_flr",
+                  "stage5_discovery", "stage6_psp", "main"):
+        check("the probe defines " + stage, stage in defined)
+
+
 def main() -> int:
     print("eGPU vendor logic")
     with tempfile.TemporaryDirectory(prefix="egpu-test-") as raw_tmp:
@@ -429,12 +654,18 @@ def main() -> int:
         test_enabled(tmp)
         test_apply_env_is_total()
         test_catalog()
+        test_asic_table()
+        test_resolve_device()
+        test_device_id_parsing_is_strict()
+        test_asic_gate()
+        test_probe_once(monkey_probe)
         test_pkl_vendor(tmp)
         test_assert_pkl(tmp)
         test_descriptor_drift()
         test_chestnut_state_fields()
         test_panel_logic()
         test_import_purity()
+        test_probe_tool()
 
     print("\n" + "-" * 60)
     if failures:

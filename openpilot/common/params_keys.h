@@ -154,6 +154,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CustomAccShortPressIncrement", {PERSISTENT | BACKUP, INT, "1"}},
     {"DeviceBootMode", {PERSISTENT | BACKUP, INT, "0"}},
     {"DevUIInfo", {PERSISTENT | BACKUP, INT, "0"}},
+    {"EgpuDevice", {PERSISTENT | BACKUP, STRING}},  // PCI device id override, hex e.g. 0x73ff
+    {"EgpuDeviceDetected", {CLEAR_ON_MANAGER_START, STRING}},  // cached probe result, re-probed each boot
     {"EgpuUseNvidia", {PERSISTENT | BACKUP, BOOL, "0"}},  // opt in to driving on an NVIDIA eGPU
     {"EgpuVendor", {PERSISTENT | BACKUP, STRING, "auto"}},  // auto | amd | nvidia
     {"EgpuVendorDetected", {CLEAR_ON_MANAGER_START, STRING}},  // cached probe result, re-probed each boot

@@ -284,6 +284,46 @@ def _class_list_attr(source: str, cls: str, attr: str) -> list[str] | None:
     return None
 
 
+
+def _function_names_used(source: str, func: str) -> set[str]:
+    """Every name called inside one top-level function. AST, so reflowing changes nothing."""
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.FunctionDef) and node.name == func:
+            return {n.attr if isinstance(n, ast.Attribute) else n.id
+                    for n in ast.walk(node)
+                    if isinstance(n, ast.Attribute) or isinstance(n, ast.Name)}
+    return set()
+
+
+def guard_egpu_asics(repo: Path) -> None:
+    """A card tinygrad cannot drive must not be handed the driving model.
+
+    tinygrad's AM driver is RDNA3/RDNA4 only. An RDNA2 card is still an AMD card, so the
+    vendor gate waves it through, modeld commits to DEV=USB+AMD:LLVM, the device fails to
+    open, and the 60s loader timeout puts modeld in a restart loop -- the car cannot engage
+    until the dock is unplugged. The table is only worth anything if enabled() consults it,
+    which is the claim that can rot silently, so it is checked rather than assumed.
+    """
+    print("\n[egpu] cards tinygrad cannot drive")
+    asics_src = read(repo / "openpilot/sunnypilot/egpu/asics.py")
+    detect_src = read(repo / "openpilot/sunnypilot/egpu/detect.py")
+
+    defined = _defined(asics_src)
+    check("asics.py defines am_supports", ("def", "am_supports") in defined)
+    check("asics.py defines asic_for", ("def", "asic_for") in defined)
+    check("the blocklist is present", "UNSUPPORTED_AMD" in asics_src)
+
+    # The card actually sitting in this dock. Losing this entry is the specific regression
+    # this branch exists to prevent, so it is named rather than counted.
+    check("the RX 6600 XT (Navi 23, 0x73ff) is blocked", "0x73FF" in asics_src,
+          "the gate would let an RDNA2 card take the model and hang modeld")
+
+    used = _function_names_used(detect_src, "enabled")
+    check("enabled() actually consults the blocklist", "am_supports" in used,
+          "asics.py would be decoration; every card would still be waved through")
+    check("enabled() resolves the device id", "resolve_device" in used)
+
+
 def guard_tinygrad(repo: Path, tinygrad: Path | None) -> None:
     """The eGPU half of the overlay: the submodule points at our tinygrad, and it is patched.
 
@@ -348,6 +388,7 @@ def main() -> int:
         guard_superproject(repo)
         guard_overlay_present(repo)
         guard_overlay_hooks(repo)
+        guard_egpu_asics(repo)
         guard_tinygrad(repo, args.tinygrad.resolve() if args.tinygrad else None)
 
     print("\n" + "-" * 60)

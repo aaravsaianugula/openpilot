@@ -29,7 +29,10 @@ import re
 import sys
 from pathlib import Path
 
+REPO = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from openpilot.sunnypilot.egpu.asics import UNSUPPORTED_AMD
 from overlay import (
     NV_DELTA_PATHS, NV_DEVICE_METHOD, NV_IFACE_REGISTRY, NV_SENTINEL_EXEMPT, NV_SENTINELS,
 )
@@ -160,6 +163,90 @@ def check_patch(tinygrad: Path) -> None:
               "the allocator's USB path branches on this; a reindented method still compiles")
 
 
+
+def gfx_major(gfx: str) -> int:
+    """The major version out of an LLVM target name.
+
+    tinygrad builds these as `"gfx%d%x%x" % target` (ops_amd.py), so the last two characters
+    are minor and revision in hex and everything before them is the major: gfx1032 -> 10.
+    """
+    return int(gfx[len("gfx"):-2])
+
+
+def supported_am_targets(source: str) -> tuple[set[int], set[tuple[int, ...]]] | None:
+    """(supported gfx majors, exactly-supported targets) as ops_amd.py itself declares them.
+
+    Read off the assert rather than restated, because restating it is exactly the mistake
+    this check exists to catch. Matched by AST so reflowing the line changes nothing.
+    """
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Assert) or node.msg is None:
+            continue
+        msg = ast.dump(node.msg)
+        if "Unsupported arch" not in msg:
+            continue
+        majors: set[int] = set()
+        exact: set[tuple[int, ...]] = set()
+        for cmp_node in ast.walk(node.test):
+            if not isinstance(cmp_node, ast.Compare) or not isinstance(cmp_node.ops[0], ast.In):
+                continue
+            right = cmp_node.comparators[0]
+            if not isinstance(right, ast.Tuple):
+                continue
+            if isinstance(cmp_node.left, ast.Subscript):        # self.target[0] in (11, 12)
+                majors |= {e.value for e in right.elts if isinstance(e, ast.Constant)}
+            else:                                                # self.target in ((9,4,2), ...)
+                for elt in right.elts:
+                    if isinstance(elt, ast.Tuple):
+                        exact.add(tuple(e.value for e in elt.elts if isinstance(e, ast.Constant)))
+        return majors, exact
+    return None
+
+
+def check_am_arch(tinygrad: Path) -> None:
+    """Our blocklist must agree with what tinygrad's AM driver actually refuses.
+
+    egpu/asics.py decides whether a card gets the driving model. It is a hand-written table,
+    and the thing it is a table *of* lives in tinygrad and moves. If RDNA2 support ever lands
+    upstream, the table silently starts switching off eGPUs that would now work -- a failure
+    that looks like nothing at all. So derive the truth from the source on every run.
+    """
+    print("\n[am] the RDNA2 blocklist still matches what AM refuses")
+    ops_amd = tinygrad / "tinygrad/runtime/ops_amd.py"
+    if not ops_amd.is_file():
+        check("ops_amd.py exists", False, "cannot verify the arch table against anything")
+        return
+
+    declared = supported_am_targets(ops_amd.read_text(encoding="utf-8", errors="replace"))
+    check("ops_amd.py still asserts which architectures AM supports", declared is not None,
+          "our whole gate is derived from that assert; without it we are guessing")
+    if declared is None:
+        return
+
+    majors, exact = declared
+    print("        AM supports gfx majors " + str(sorted(majors))
+          + " plus exact targets " + str(sorted(exact)))
+    check("AM still supports at least one architecture", bool(majors or exact))
+
+    blocked = {gfx_major(spec.gfx) for spec in UNSUPPORTED_AMD.values()}
+    check("nothing in our blocklist is an architecture AM supports",
+          not (blocked & majors),
+          "asics.py blocks gfx major(s) " + str(sorted(blocked & majors))
+          + " that tinygrad now drives -- delete those entries")
+    check("our blocklist is not empty", bool(UNSUPPORTED_AMD))
+    check("every blocked entry names a real gfx target",
+          all(spec.gfx.startswith("gfx") and spec.gfx[3:].isalnum()
+              for spec in UNSUPPORTED_AMD.values()))
+
+    regs = tinygrad / "tinygrad/runtime/autogen/am/regs.py"
+    if regs.is_file():
+        first = regs.read_text(encoding="utf-8", errors="replace").split(chr(10), 1)[0]
+        have_gc = set(re.findall(r"gc_(\d+)_", first))
+        check("no gc_10_* register set exists either",
+              "10" not in have_gc,
+              "regs.py now ships gfx10 registers; recheck whether AM can drive RDNA2")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -175,6 +262,7 @@ def main() -> int:
         if not (tinygrad / "tinygrad/runtime/ops_nv.py").is_file():
             raise SystemExit("not a tinygrad checkout: " + str(tinygrad))
         check_patch(tinygrad)
+        check_am_arch(tinygrad)
     else:
         print("\nnote: no --tinygrad checkout given; the patch itself was NOT inspected.")
         print("      Only the registry consistency checks ran.")

@@ -18,6 +18,8 @@ The decisions live in egpu_state.py, which has no pyray in it and is tested by
 .elantra/test_egpu.py. This file only renders them.
 """
 
+from typing import NamedTuple
+
 import pyray as rl
 
 from openpilot.selfdrive.ui.mici.widgets.button import BigMultiToggle, BigParamControl, GreyBigButton
@@ -43,15 +45,30 @@ def _egpu():
   return detect
 
 
-def _facts() -> tuple[bool, str, bool, bool, bool, bool]:
-  """Everything the panel renders, gathered in one place."""
+class _Facts(NamedTuple):
+  """Everything the panel renders. Named because the callers each ignore a different field,
+  and eight positional values is how a mis-ordered unpack becomes a silent wrong label."""
+  bridge: bool
+  vendor: str
+  assumed: bool
+  use_nvidia: bool
+  nv_model: bool
+  enabled: bool
+  asic_name: str | None
+  asic_supported: bool
+
+
+def _facts() -> _Facts:
   detect = _egpu()
   from openpilot.selfdrive.modeld.helpers import usbgpu_present
   vendor, assumed = detect.resolve()
-  return (usbgpu_present(), vendor, assumed,
-          ui_state.params.get_bool("EgpuUseNvidia"),
-          detect.nv_model_available(),
-          detect.enabled())
+  asic = detect.asic()
+  return _Facts(bridge=usbgpu_present(), vendor=vendor, assumed=assumed,
+                use_nvidia=ui_state.params.get_bool("EgpuUseNvidia"),
+                nv_model=detect.nv_model_available(),
+                enabled=detect.enabled(),
+                asic_name=asic.name if asic else None,
+                asic_supported=asic.am_supported if asic else True)
 
 
 class EgpuStatusInfo(Widget):
@@ -77,8 +94,9 @@ class EgpuStatusInfo(Widget):
     self._visible_rows = 0
 
   def _update_state(self):
-    bridge, vendor, assumed, use_nvidia, nv_model, enabled = _facts()
-    rows = status_rows(bridge, vendor, assumed, use_nvidia, nv_model, enabled)[:MAX_ROWS]
+    f = _facts()
+    rows = status_rows(f.bridge, f.vendor, f.assumed, f.use_nvidia, f.nv_model, f.enabled,
+                       f.asic_name)[:MAX_ROWS]
     self._visible_rows = len(rows)
     for (head, body), (label, value) in zip(self._rows, rows, strict=False):
       head.set_text(tr(label))
@@ -136,8 +154,9 @@ class EgpuLayoutMici(NavScroller):
     return _egpu().resolve()[0] == NVIDIA and not ui_state.started
 
   def _has_reason(self) -> bool:
-    bridge, vendor, assumed, use_nvidia, nv_model, _ = _facts()
-    reason = idle_reason(bridge, vendor, assumed, use_nvidia, nv_model)
+    f = _facts()
+    reason = idle_reason(f.bridge, f.vendor, f.assumed, f.use_nvidia, f.nv_model,
+                         f.asic_name, f.asic_supported)
     if reason:
       self._reason.set_value(reason)
     return bool(reason)
@@ -155,3 +174,4 @@ class EgpuLayoutMici(NavScroller):
     ui_state.params.put("EgpuVendor", value, block=True)
     # A cached probe result would otherwise override the choice just made.
     ui_state.params.remove("EgpuVendorDetected")
+    ui_state.params.remove("EgpuDeviceDetected")

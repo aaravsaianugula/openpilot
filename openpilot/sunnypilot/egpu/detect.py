@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from openpilot.sunnypilot.egpu import asics
 from openpilot.sunnypilot.egpu.vendors import AMD, AUTO, NVIDIA, VALID_VENDORS, spec_for
 
 # Where compile_nv.py puts a locally compiled NVIDIA model. The published eGPU bundles are
@@ -53,10 +54,47 @@ def configured(params=None) -> str:
   return value if value in VALID_VENDORS else AUTO
 
 
-def resolve(params=None, allow_probe: bool = False) -> tuple[str, bool]:
+def _parse_device_id(raw: str) -> int | None:
+  """A 16-bit PCI device ID from a param, or None. Hex, 0x prefix optional.
+
+  Total by construction, like configured(): a hand-edited param must never be able to raise
+  on the path that decides whether the car gets a model.
+  """
+  text = raw.removeprefix("0x")
+  # Hex digits only, and at most four of them. int(x, 16) accepts a sign and surrounding
+  # space, so "+3ff" would otherwise parse as 1023 -- a real device ID, just not the one
+  # that was written down. Four digits is also what bounds the result to 16 bits.
+  if not text or len(text) > 4 or not all(c in "0123456789abcdefABCDEF" for c in text):
+    return None
+  return int(text, 16)
+
+
+# Whether this process has already asked the hardware. The model manager is one process
+# per manager start and the probe is a USB round trip, so at most one attempt per start --
+# but only once a dock is actually there, so plugging one in later still gets probed.
+_probe_attempted = False
+
+
+def resolve_device(params=None) -> int | None:
+  """The eGPU's PCI device ID: explicit override > cached probe > nothing known.
+
+  None means "we do not know", and every caller treats that as "behave exactly as today".
+  That is the safe direction: not knowing which card is attached must never switch off an
+  eGPU that works.
+  """
+  for key in ("EgpuDevice", "EgpuDeviceDetected"):
+    device_id = _parse_device_id(_get(params, key))
+    if device_id is not None:
+      return device_id
+  return None
+
+
+def resolve(params=None) -> tuple[str, bool]:
   """(vendor, assumed). `assumed` means nothing actually confirmed it.
 
-  Order: explicit param > cached probe result > live probe (opt-in) > AMD.
+  Order: explicit param > cached probe result > AMD. Reading only, never probing:
+  `probe_once()` is the one place that touches hardware, and keeping that out of here is
+  what lets this be called freely from a 1 Hz loop and from the UI.
 
   Falling back to AMD is deliberate rather than lazy: it is byte-for-byte today's behaviour,
   so a user with an AMD card can never regress because this code exists. `assumed` is what
@@ -71,14 +109,44 @@ def resolve(params=None, allow_probe: bool = False) -> tuple[str, bool]:
   if cached in (AMD, NVIDIA):
     return cached, False
 
-  if allow_probe:
-    from openpilot.sunnypilot.egpu.probe import probe_vendor
-    probed = probe_vendor()
-    if probed in (AMD, NVIDIA):
-      _params(params).put("EgpuVendorDetected", probed)
-      return probed, False
-
   return AMD, True
+
+
+def probe_once(params=None) -> None:
+  """Ask the dock what is in it, and cache the answer for the rest of this manager start.
+
+  Called from the model manager, which `process_config.py` registers `only_offroad`. That is
+  what makes it safe: probing borrows tinygrad's USB controller and USBPCIDevice takes an
+  exclusive flock, so doing this underneath a running modeld would either fail outright or
+  disturb a device that is driving.
+
+  Triggered on the *card* being unknown rather than the vendor. Driving this off vendor
+  resolution was wrong: resolve() short-circuits on an explicit EgpuVendor, so a user who
+  picked "amd" in the panel -- an ordinary thing to do -- never got a device ID and the
+  RDNA2 gate silently did not apply to them.
+
+  Attempted at most once per manager start, and only once a dock is actually present, so a
+  dock plugged in after boot is still identified. Both cached params are
+  CLEAR_ON_MANAGER_START, so a card swapped while the device was off is picked up next boot
+  rather than remembered forever.
+  """
+  global _probe_attempted
+  if _probe_attempted:
+    return
+
+  from openpilot.selfdrive.modeld.helpers import usbgpu_present
+  if not usbgpu_present():
+    return
+
+  _probe_attempted = True
+  if resolve_device(params) is not None:
+    return
+
+  from openpilot.sunnypilot.egpu.probe import probe_ids
+  if (probed := probe_ids()) is not None:
+    store = _params(params)
+    store.put("EgpuVendorDetected", probed[0])
+    store.put("EgpuDeviceDetected", f"0x{probed[1]:04x}")
 
 
 def vendor(params=None) -> str:
@@ -126,7 +194,8 @@ def nv_model_available() -> bool:
 def enabled(params=None) -> bool:
   """Route the driving model through the eGPU at all?
 
-  AMD  -- yes, as today; sunnypilot publishes AMD-compiled bundles for exactly this.
+  AMD  -- yes, as today; sunnypilot publishes AMD-compiled bundles for exactly this, unless
+          the card is one tinygrad's AM driver refuses (see asics.py).
   NV   -- only with EgpuUseNvidia set, a confirmed (not assumed) vendor, and a locally
           compiled NV model actually present.
 
@@ -135,11 +204,18 @@ def enabled(params=None) -> bool:
   eGPU, not like a broken one.
   """
   resolved, assumed = resolve(params)
+  if not asics.am_supports(resolved, resolve_device(params)):
+    return False
   if resolved == AMD:
     return True
   if assumed:
     return False
   return bool(_params(params).get_bool("EgpuUseNvidia")) and nv_model_available()
+
+
+def asic(params=None) -> asics.AsicSpec | None:
+  """What we know about the attached card, or None when we know nothing specific about it."""
+  return asics.asic_for(resolve(params)[0], resolve_device(params))
 
 
 def uses_amd_catalog(params=None) -> bool:

@@ -25,8 +25,14 @@ from openpilot.sunnypilot.egpu.vendors import BY_PCI_ID
 CANDIDATE_BUSES = (4, 2)
 
 
-def probe_pci_vendor_id() -> int | None:
-  """The vendor ID at PCIe config offset 0x00, or None if it cannot be read safely."""
+def probe_pci_ids() -> tuple[int, int] | None:
+  """(vendor ID, device ID) from PCIe config offset 0x00, or None if it cannot be read safely.
+
+  Both live in the one dword we already fetch -- vendor in the low half, device in the high
+  half -- so the device ID costs no extra USB round trip. Which card it is matters as much as
+  whose: tinygrad's AM driver refuses RDNA2, and an RX 6600 XT and comma's RX 9060 are both
+  0x1002 (see asics.py).
+  """
   try:
     from tinygrad.runtime.support.usb import USB3, CustomASM24Controller
   except Exception:
@@ -52,13 +58,25 @@ def probe_pci_vendor_id() -> int | None:
       word = usb.pcie_cfg_req(0x00, bus=bus, dev=0, fn=0, size=4)
     except Exception:
       continue
-    vendor_id = word & 0xFFFF
+    vendor_id, device_id = word & 0xFFFF, (word >> 16) & 0xFFFF
     if vendor_id in BY_PCI_ID:
-      return vendor_id
+      return vendor_id, device_id
   return None
+
+
+def probe_pci_vendor_id() -> int | None:
+  """The vendor ID alone, or None if it could not be read safely."""
+  ids = probe_pci_ids()
+  return None if ids is None else ids[0]
+
+
+def probe_ids() -> tuple[str, int] | None:
+  """(vendor name, device ID) behind the bridge, or None when it could not be determined."""
+  ids = probe_pci_ids()
+  return None if ids is None else (BY_PCI_ID[ids[0]].name, ids[1])
 
 
 def probe_vendor() -> str | None:
   """The vendor name behind the bridge, or None when it could not be determined."""
-  vendor_id = probe_pci_vendor_id()
-  return BY_PCI_ID[vendor_id].name if vendor_id in BY_PCI_ID else None
+  probed = probe_ids()
+  return None if probed is None else probed[0]
