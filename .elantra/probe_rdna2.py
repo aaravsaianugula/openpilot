@@ -19,9 +19,9 @@ C2PMSG_35 reading 0x0.
 port is dead before any of the register work matters and the answer is to stop. Everything
 before it exists to make stage 6's result trustworthy rather than to be interesting.
 
-Nothing here runs a kernel, loads firmware, or resets the card. Stages 1-4 are config-space
-reads. Stage 5 constructs tinygrad's USBPCIDevice, which programs the BARs -- the same thing
-tinygrad does on every open. Stages 5-7 are MMIO reads.
+Nothing here runs a kernel, loads firmware, or resets the card. Stage 2 opens tinygrad's
+USBPCIDevice, which programs the BARs -- the same thing tinygrad does on every open, and it
+takes the exclusive flock. Stages 3-4 are config-space reads, stages 5-7 MMIO reads.
 
 Run it offroad, on the bench, with the dock attached and modeld stopped: USBPCIDevice takes an
 exclusive flock, so this cannot share the device with a running model.
@@ -150,10 +150,11 @@ def stage1_usb_speed() -> bool:
 
 
 def stage2_bridge():
-  """The chestnut itself, and its PCIe link. CustomASM24Controller raises if it is down."""
+  """The chestnut, its PCIe link, and an opened device. The controller raises if it is down."""
   head("Stage 2 -- chestnut bridge and PCIe link")
   try:
-    from tinygrad.runtime.support.usb import USB3, CustomASM24Controller
+    from tinygrad.runtime.support.system import USBPCIDevice
+    from tinygrad.runtime.support.usb import USB3
   except Exception as e:
     bad("tinygrad is not importable here", str(e))
     return None
@@ -173,18 +174,22 @@ def stage2_bridge():
     return None
   ok("chestnut found", str(len(devices)) + " device(s)")
 
+  # Let USBPCIDevice build the controller. It owns the ASM2464 endpoint numbers and the
+  # custom-vs-stock firmware choice, and both have changed shape between tinygrad revisions
+  # -- constructing USB3 by hand here broke against the tinygrad the car actually runs.
+  # It also takes the exclusive flock, which is what keeps this off a device modeld is using.
   try:
-    usb = CustomASM24Controller(USB3(devices[0][0]))
+    pci_dev = USBPCIDevice("AM", *devices[0])
   except Exception as e:
-    bad("PCIe link did not come up", str(e))
+    bad("could not open the bridge", str(e))
     return None
 
-  ltssm = usb.read(ASM_LTSSM_REG, 1)[0]
+  ltssm = pci_dev.usb.read(ASM_LTSSM_REG, 1)[0]
   if ltssm != LTSSM_L0:
     bad("LTSSM is not L0", hex(ltssm) + ", want " + hex(LTSSM_L0))
     return None
   ok("LTSSM is L0", hex(ltssm))
-  return usb, devices[0]
+  return pci_dev
 
 
 def stage3_identity(usb, expect: int | None) -> int | None:
@@ -431,18 +436,14 @@ def main() -> int:
   if not stage1_usb_speed():
     return stop("USB 2 fallback. Nothing measured past this point would mean anything.")
 
-  bridge = stage2_bridge()
-  if bridge is None:
+  pci_dev = stage2_bridge()
+  if pci_dev is None:
     return stop("The bridge or its PCIe link is not up. Fix that before reading anything.")
-  usb, device_entry = bridge
 
-  if stage3_identity(usb, expect) is None:
+  if stage3_identity(pci_dev.usb, expect) is None:
     return stop("Not the card we were told to probe.")
 
-  stage4_flr(usb)
-
-  from tinygrad.runtime.support.system import USBPCIDevice
-  pci_dev = USBPCIDevice("AM", *device_entry)
+  stage4_flr(pci_dev.usb)
 
   discovered = stage5_discovery(pci_dev)
   if discovered is None:
