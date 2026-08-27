@@ -234,6 +234,23 @@ def guard_dynamic_torque_pair(opendbc: Path) -> None:
           re.search(r"hyundai_dynamic_limits\s*\?\s*HYUNDAI_STEERING_LIMITS_DYNAMIC", safety_src) is not None,
           "HYUNDAI_LIMITS_DYNAMIC is defined but never reached from the tx hook")
 
+    # .max_torque is what actually caps the interpolated ceiling: steer_torque_cmd_checks does
+    # SAFETY_CLAMP(interpolate(...) + 1, -max_torque, max_torque). Reading the macro's arguments
+    # is not enough -- flipping the macro BODY to steer_high caps panda at 384 while opendbc
+    # still commands 409 below 8 m/s, which is the exact divergence this whole guard exists for.
+    check("panda's max_torque is the low-speed value, not the high-speed one",
+          re.search(r"#define\s+HYUNDAI_LIMITS_DYNAMIC\([^)]*\)\s*\{\s*\\\s*\n\s*\.max_torque\s*=\s*\(steer_low\)",
+                    safety_src) is not None,
+          ".max_torque must be (steer_low); anything else clamps the ceiling below what "
+          + "opendbc commands and every low-speed frame is rejected")
+
+    # and the flag has to be assigned, not merely mentioned: deleting the GET_FLAG line leaves
+    # the ternary above intact and reading a variable that is never set
+    check("hyundai_dynamic_limits is actually assigned from the param",
+          re.search(r"hyundai_dynamic_limits\s*=\s*GET_FLAG\(\s*param\s*,\s*HYUNDAI_PARAM_DYNAMIC_LIMITS\s*\)",
+                    read(opendbc / "opendbc/safety/modes/hyundai_common.h")) is not None,
+          "the ternary reads a flag nothing ever sets, so the schedule can never engage")
+
     cc_src = read(opendbc / "opendbc/car/hyundai/carcontroller.py")
     check("carcontroller applies the schedule to the command",
           re.search(r"np\.interp\(\s*CS\.out\.vEgoRaw\s*,\s*\*self\.params\.STEER_MAX_LOOKUP\s*\)",
