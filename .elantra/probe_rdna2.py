@@ -265,7 +265,7 @@ def stage5_discovery(pci_dev):
   VRAM is read through MM_INDEX/MM_DATA, so a 256MB BAR over 8GB of VRAM is not a problem.
   """
   head("Stage 5 -- IP discovery table")
-  import tinygrad.runtime.autogen.am as am
+  from tinygrad.runtime.autogen.am import am
 
   mmio = pci_dev.map_bar(MMIO_BAR, fmt="I")
 
@@ -352,7 +352,7 @@ def stage6_psp(ip_ver, regs_offset, mmio, timeout_s: float) -> bool:
   one register. tinygrad #15636 is an RDNA2 card sitting here reading 0x0 forever.
   """
   head("Stage 6 -- PSP bootloader (THE DECISIVE CHECK)")
-  import tinygrad.runtime.autogen.am as am
+  from tinygrad.runtime.autogen.am import am
   from tinygrad.runtime.support.amd import import_module
 
   mp0 = ip_ver.get(am.MP0_HWIP)
@@ -404,7 +404,7 @@ def stage6_psp(ip_ver, regs_offset, mmio, timeout_s: float) -> bool:
 def stage7_registers(ip_ver) -> None:
   """What tinygrad would still be missing even if the card did come up."""
   head("Stage 7 -- register sets tinygrad already has for this card")
-  import tinygrad.runtime.autogen.am as am
+  from tinygrad.runtime.autogen.am import am
   from tinygrad.runtime.support.amd import import_module
 
   for prefix, hwip in (("gc", am.GC_HWIP), ("mp", am.MP0_HWIP), ("smu", am.MP1_HWIP),
@@ -419,11 +419,16 @@ def stage7_registers(ip_ver) -> None:
     except Exception as e:
       info(f"{prefix} {ver(version)}", "MISSING -- " + str(e))
 
+  # soc_* are generated lazily on the *package*, unlike the structs above which live in the
+  # am.py module inside it. AM_SOC does `import_soc(ip)` -> getattr(package, f"soc_{major}"),
+  # so a missing soc_10 is one of the concrete things an RDNA2 port would have to produce.
+  import tinygrad.runtime.autogen.am as am_pkg
+  major = ip_ver.get(am.GC_HWIP, (0,))[0]
   try:
-    soc = getattr(am, "soc_" + str(ip_ver[am.GC_HWIP][0]))
-    ok("soc_" + str(ip_ver[am.GC_HWIP][0]), "present " + str(soc is not None))
-  except (AttributeError, KeyError):
-    info("soc_" + str(ip_ver.get(am.GC_HWIP, (0,))[0]), "MISSING -- AM_SOC cannot be built")
+    getattr(am_pkg, "soc_" + str(major))
+    ok("soc_" + str(major), "present")
+  except AttributeError as e:
+    info("soc_" + str(major), "MISSING -- AM_SOC cannot be built: " + str(e))
 
 
 def main() -> int:
