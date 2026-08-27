@@ -4,8 +4,15 @@ Structural guards for the Elantra 2024-25 overlay.
 
 These run before anything is ever pushed. They are deliberately text/AST level so they work
 on any machine with a bare Python 3 and no opendbc dependencies installed -- the point is to
-prove the port survived a rebase onto new upstream code, not to replace opendbc's own test
-suite. CI runs that suite separately; both gates must pass.
+prove the port survived a rebase onto new upstream code.
+
+Do not read that as "the real tests will catch anything these miss". sync.py's opendbc_tests()
+runs opendbc/car/tests/test_car_interfaces.py filtered to the two Elantra platforms, and
+nothing else. The C safety suite is never compiled by any automated gate in this repo -- it
+only runs when someone runs it by hand on a comma device. So for anything that lives in
+opendbc/safety/, these guards are the ONLY thing standing between an edit and a published
+build, and they have to be written that way: check the values that are enforced, not the ones
+that are merely declared, and negative-test every check by breaking the thing it guards.
 
 Every check raises on failure. Nothing here warns and continues: a guard that can be skipped
 is not a guard.
