@@ -644,6 +644,19 @@ def test_probe_tool():
                   "stage5_discovery", "stage6_psp", "main"):
         check("the probe defines " + stage, stage in defined)
 
+    # speed_verdict is the one piece of probe logic that is pure, and the one that was
+    # already wrong once: the first version surveyed every USB device and stopped if any
+    # read 480, which on a comma four is always true because the modem is USB 2. It fired
+    # on real hardware whose own output listed three devices at 5000.
+    probe = load_by_path(tool, "probe_rdna2")
+    case("no dock: proceed and let stage 2 say so", probe.speed_verdict(None)[:2], (True, "info"))
+    case("dock at 10 Gb/s: proceed", probe.speed_verdict("10000")[:2], (True, "ok"))
+    case("dock at 480: stop", probe.speed_verdict("480")[:2], (False, "bad"))
+    case("a 5000 Mb/s port is NOT the USB-2 fallback",
+         probe.speed_verdict("5000")[:2], (True, "info"))
+    check("the 480 stop names the ASM2464PD fallback",
+          "ASM2464PD" in probe.speed_verdict("480")[3])
+
 
 def main() -> int:
     print("eGPU vendor logic")

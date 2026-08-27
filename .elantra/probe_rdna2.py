@@ -36,7 +36,6 @@ from __future__ import annotations
 import argparse
 import array
 import ctypes
-import glob
 import sys
 import time
 from pathlib import Path
@@ -88,30 +87,48 @@ def stop(why: str) -> int:
   return 1
 
 
+def speed_verdict(speed: str | None) -> tuple[bool, str, str, str]:
+  """(proceed, level, label, detail) for the dock's link speed.
+
+  Pure, so it can be tested without a dock. The first version of this probe surveyed every
+  USB device and stopped if *any* of them read 480 -- which on a comma four is always true,
+  because the modem is a USB 2 device. It declared "only USB 2 devices present" on a machine
+  whose own output listed three devices at 5000. Only the dock's own port means anything.
+  """
+  if speed is None:
+    return True, "info", "no chestnut on the USB bus", "stage 2 will say so definitively"
+  if speed == "10000":
+    return True, "ok", "the dock is enumerated at 10000 Mb/s", ""
+  if speed == "480":
+    return False, "bad", "the dock enumerated at USB 2 (480 Mb/s)",            "the known ASM2464PD fallback -- power-cycle the dock and retry"
+  return True, "info", "the dock enumerated at " + speed + " Mb/s",          "expected 10000; throughput past here is not comparable to the documented figures"
+
+
+def _chestnut_port() -> tuple[str | None, bool]:
+  """(link speed, is on custom firmware) for the dock, or (None, False) if it is not attached."""
+  from openpilot.common.hardware.usb import (
+    CHESTNUT_ROM_USB_IDS, CHESTNUT_USB_IDS, read, read_int, usb_devices,
+  )
+  for device in usb_devices():
+    ids = (read_int(device / "idVendor", 16), read_int(device / "idProduct", 16))
+    if ids in CHESTNUT_USB_IDS:
+      return read(device / "speed"), True
+    if ids in CHESTNUT_ROM_USB_IDS:
+      return read(device / "speed"), False
+  return None, False
+
+
 def stage1_usb_speed() -> bool:
-  """A USB 2 fallback makes every later number meaningless, so it is a stop, not a warning."""
-  head("Stage 1 -- USB link speed")
-  speeds = []
-  for path in sorted(glob.glob("/sys/bus/usb/devices/*/speed")):
-    try:
-      speeds.append((path.split("/")[-2], Path(path).read_text().strip()))
-    except OSError:
-      continue
-  if not speeds:
-    info("no /sys/bus/usb/devices entries readable", "not Linux, or no USB bus here")
-    return True
-  for dev, sp in speeds:
-    info("usb " + dev, sp + " Mb/s")
-  fast = [d for d, s in speeds if s == "10000"]
-  if fast:
-    ok("a device is enumerated at 10000 Mb/s", ", ".join(fast))
-    return True
-  if any(s == "480" for _, s in speeds):
-    bad("only USB 2 (480 Mb/s) devices present",
-        "the known ASM2464PD fallback -- power-cycle the dock and retry")
-    return False
-  info("no 10000 Mb/s device found", "the dock may not be attached to this host")
-  return True
+  """The dock's own link speed. 480 there is the ASM2464PD USB-2 fallback, and makes every
+  later number meaningless, so it is a stop rather than a warning."""
+  head("Stage 1 -- dock USB link speed")
+  speed, custom_fw = _chestnut_port()
+  if speed is not None:
+    info("chestnut firmware", "custom (tinygrad-usable)" if custom_fw
+         else "stock ASMedia ROM -- tinygrad cannot drive this; reflash the dock")
+  proceed, level, label, detail = speed_verdict(speed)
+  {"ok": ok, "info": info, "bad": bad}[level](label, detail)
+  return proceed
 
 
 def stage2_bridge():
