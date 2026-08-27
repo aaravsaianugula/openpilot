@@ -244,6 +244,16 @@ def guard_dynamic_torque_pair(opendbc: Path) -> None:
           ".max_torque must be (steer_low); anything else clamps the ceiling below what "
           + "opendbc commands and every low-speed frame is rejected")
 
+    # The torque row inside the macro body has to be [low, high, high] in that order. Reading
+    # the macro's arguments does not see it: inverting the row to [high, low, low] makes panda
+    # reject 409 at low speed AND accept 409 on the highway -- silently widening the allow-list
+    # in exactly the regime this change promises is bit-identical to today.
+    check("panda's torque row is [steer_low, steer_high, steer_high]",
+          re.search(r"\.max_torque_lookup\s*=\s*\{\s*\\?\s*\n?\s*\{[^}]*\}\s*,\s*\\?\s*\n?\s*"
+                    r"\{\s*\(steer_low\)\s*,\s*\(steer_high\)\s*,\s*\(steer_high\)\s*\}",
+                    safety_src) is not None,
+          "the schedule must fall with speed; any other order inverts it")
+
     # and the flag has to be assigned, not merely mentioned: deleting the GET_FLAG line leaves
     # the ternary above intact and reading a variable that is never set
     check("hyundai_dynamic_limits is actually assigned from the param",
