@@ -182,6 +182,12 @@ def stage2_bridge():
     pci_dev = USBPCIDevice("AM", *devices[0])
   except Exception as e:
     bad("could not open the bridge", str(e))
+    # 0x00 is not a software state. The bridge answered over USB, so its firmware is fine;
+    # the PCIe side simply never trained, which on this dock is almost always the card.
+    if "LTSSM=0x00" in str(e):
+      info("LTSSM 0x00 means the link never came up at all",
+           "check the card's 8-pin PCIe power lead, that the dock's supply is switched on, "
+           + "and that the card is fully seated -- none of that is fixable from software")
     return None
 
   ltssm = pci_dev.usb.read(ASM_LTSSM_REG, 1)[0]
