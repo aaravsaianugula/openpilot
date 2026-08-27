@@ -104,11 +104,29 @@ def speed_verdict(speed: str | None) -> tuple[bool, str, str, str]:
   return True, "info", "the dock enumerated at " + speed + " Mb/s",          "expected 10000; throughput past here is not comparable to the documented figures"
 
 
+def _usb_helpers():
+  """openpilot's own chestnut USB constants and sysfs readers, loaded by file path.
+
+  `import openpilot.common.hardware.usb` runs the package __init__, which pulls in
+  HardwareBase -> cereal -> capnp. This is a bench tool that has to work against a bare
+  checkout with no openpilot build, and usb.py is itself stdlib-only -- so load that one
+  file directly rather than duplicating the IDs here and letting them drift.
+  """
+  import importlib.util
+  path = REPO / "openpilot/common/hardware/usb.py"
+  spec = importlib.util.spec_from_file_location("chestnut_usb", path)
+  if spec is None or spec.loader is None:
+    raise RuntimeError("cannot load " + str(path))
+  module = importlib.util.module_from_spec(spec)
+  spec.loader.exec_module(module)
+  return module
+
+
 def _chestnut_port() -> tuple[str | None, bool]:
   """(link speed, is on custom firmware) for the dock, or (None, False) if it is not attached."""
-  from openpilot.common.hardware.usb import (
-    CHESTNUT_ROM_USB_IDS, CHESTNUT_USB_IDS, read, read_int, usb_devices,
-  )
+  usb = _usb_helpers()
+  CHESTNUT_USB_IDS, CHESTNUT_ROM_USB_IDS = usb.CHESTNUT_USB_IDS, usb.CHESTNUT_ROM_USB_IDS
+  read, read_int, usb_devices = usb.read, usb.read_int, usb.usb_devices
   for device in usb_devices():
     ids = (read_int(device / "idVendor", 16), read_int(device / "idProduct", 16))
     if ids in CHESTNUT_USB_IDS:
