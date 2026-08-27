@@ -81,6 +81,9 @@ class FakeParams:
     def put(self, key, value, block=False):
         self._v[key] = value
 
+    def put_bool(self, key, value, block=False):
+        self._v[key] = bool(value)
+
     def remove(self, key):
         self._v.pop(key, None)
 
@@ -666,6 +669,163 @@ def test_probe_tool():
     check("a real no-go says the register was actually polled", "was polled" in verdict_src)
 
 
+# --- an eGPU we cannot drive must not take the car with it -----------------------------------
+
+def _def_node(tree, name: str):
+    """The FunctionDef called `name`, anywhere in the tree, or None."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    return None
+
+
+def _names_called(node) -> set[str]:
+    """Every bare or attribute call target under `node`, by last component."""
+    out = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Call):
+            fn = child.func
+            if isinstance(fn, ast.Name):
+                out.add(fn.id)
+            elif isinstance(fn, ast.Attribute):
+                out.add(fn.attr)
+    return out
+
+
+class ExplodingParams:
+    """Params that cannot be read at all -- a clean tree, where libparams_c.so is not built."""
+
+    def get(self, key):
+        raise OSError("libparams_c.so: cannot open shared object file")
+
+    def get_bool(self, key):
+        raise OSError("libparams_c.so: cannot open shared object file")
+
+
+def test_build_gate():
+    """SCons must not attempt an eGPU compile for a card tinygrad's AM driver refuses.
+
+    The failure this prevents is not "no big model". do_compile returned env.Execute's
+    non-zero result, which fails the SCons target, which makes build.py open a blocking
+    TextWindow and exit(1) -- the device sits on an error screen needing the touchscreen.
+    """
+    print("\n[build gate] an unsupported card cannot fail the build")
+    from openpilot.sunnypilot.egpu import guard
+
+    case("an RDNA2 card is not built for",
+         guard.egpu_build_ok(FakeParams(EgpuVendor="amd", EgpuDeviceDetected="0x73ff")), False)
+    case("a supported AMD card is built for",
+         guard.egpu_build_ok(FakeParams(EgpuVendor="amd", EgpuDeviceDetected="0x744c")), True)
+    case("an unknown card is still built for",
+         guard.egpu_build_ok(FakeParams(EgpuVendor="amd")), True)
+    # SCons reads this before openpilot is built, so Params may not load at all. Not knowing
+    # must read as yes: the skip-on-failure below is the backstop, not this.
+    case("unreadable params do not fail the build",
+         guard.egpu_build_ok(ExplodingParams()), True)
+
+    src = SCONSCRIPT.read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    # Primary gate: don't even declare the eGPU target for a card we cannot compile for.
+    assigns = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+               and any(isinstance(t, ast.Name) and t.id == "USBGPU" for t in n.targets)]
+    check("the SConscript assigns USBGPU exactly once", len(assigns) == 1)
+    if len(assigns) == 1:
+        expr = ast.get_source_segment(src, assigns[0].value) or ""
+        check("the build's USBGPU consults the eGPU gate", "egpu_build_ok" in expr, expr)
+
+    # Backstop: whatever slips through, a failed eGPU compile is a skip, not a build failure.
+    do_compile = _def_node(tree, "do_compile")
+    check("the SConscript still has a do_compile", do_compile is not None)
+    if do_compile is not None:
+        # Every exit is a skip. A `return ret` here is what bricked the boot.
+        check("do_compile can only skip, never fail the build",
+              all(n.value is None for n in ast.walk(do_compile) if isinstance(n, ast.Return)))
+
+
+def test_stock_runner_gate():
+    """The upstream runner is the default one, and it had no ASIC check at all.
+
+    get_active_model_runner() returns `stock` whenever no bundle is active, so a fresh device
+    with an RDNA2 card in the dock ran the *unguarded* path while asics.py sat unconsulted.
+    """
+    print("\n[stock runner] the default modeld consults the same gate")
+    modeld = REPO / "openpilot/selfdrive/modeld/modeld.py"
+    check("upstream modeld.py exists", modeld.is_file())
+    if not modeld.is_file():
+        return
+    src = modeld.read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    assigns = [n for n in ast.walk(tree) if isinstance(n, ast.Assign)
+               and any(isinstance(t, ast.Name) and t.id == "USBGPU" for t in n.targets)]
+    check("modeld.py assigns USBGPU exactly once", len(assigns) == 1)
+    if len(assigns) == 1:
+        expr = ast.get_source_segment(src, assigns[0].value) or ""
+        check("the stock runner's USBGPU consults the eGPU gate", "egpu" in expr.lower(), expr)
+
+
+def test_loading_flag_is_released():
+    """UsbGpuLoading must be false on every path out of the model load, raise included.
+
+    It is CLEAR_ON_MANAGER_START, and a modeld crash restarts modeld, not manager. Left True
+    it is a NO_ENTRY every frame *and* sets selfdrived's big_model_settling, which suppresses
+    commIssue and posenetInvalid -- the car cannot engage and is not told why.
+    """
+    print("\n[loading flag] a failed load does not latch the car out of engagement")
+    from openpilot.sunnypilot.egpu import guard
+
+    p = FakeParams(UsbGpuActive=True)
+    with guard.loading(p, True):
+        case("the flag is held during the load", p.get("UsbGpuLoading"), True)
+        case("any stale UsbGpuActive is cleared first", p.get("UsbGpuActive"), None)
+    case("the flag is released on a clean load", p.get("UsbGpuLoading"), False)
+
+    p = FakeParams()
+    raised = False
+    try:
+        with guard.loading(p, True):
+            raise RuntimeError("eGPU model load failed or timed out (60s)")
+    except RuntimeError:
+        raised = True
+    check("the load failure still propagates", raised)
+    case("the flag is released when the load raises", p.get("UsbGpuLoading"), False)
+
+    p = FakeParams()
+    with guard.loading(p, False):
+        pass
+    case("without an eGPU the flag is never set", p.get("UsbGpuLoading"), False)
+
+
+def test_sunnypilot_runner_degrades():
+    """modeld_v2 had no small-model fallback at all -- upstream's has one on both paths."""
+    print("\n[sunnypilot runner] an eGPU fault degrades instead of killing modeld")
+    v2 = REPO / "openpilot/sunnypilot/modeld_v2/modeld.py"
+    check("modeld_v2 exists", v2.is_file())
+    if not v2.is_file():
+        return
+    src = v2.read_text(encoding="utf-8")
+    tree = ast.parse(src)
+
+    main_fn = _def_node(tree, "main")
+    check("modeld_v2 has a main", main_fn is not None)
+    if main_fn is not None:
+        check("modeld_v2 holds the loading flag through the guard",
+              "loading" in _names_called(main_fn))
+
+    # model.run() was unguarded: the only handler was the top-level re-raise, so an eGPU
+    # fault mid-drive killed the process rather than falling back.
+    guarded = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Try):
+            continue
+        for child in ast.walk(node):
+            if (isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+                    and child.func.attr == "run" and node.handlers):
+                guarded = True
+    check("model.run() is inside a try with a handler", guarded)
+    check("the handler names the fallback", "fall back to small" in src)
+
+
 def main() -> int:
     print("eGPU vendor logic")
     with tempfile.TemporaryDirectory(prefix="egpu-test-") as raw_tmp:
@@ -687,6 +847,10 @@ def main() -> int:
         test_panel_logic()
         test_import_purity()
         test_probe_tool()
+        test_build_gate()
+        test_stock_runner_gate()
+        test_loading_flag_is_released()
+        test_sunnypilot_runner_degrades()
 
     print("\n" + "-" * 60)
     if failures:

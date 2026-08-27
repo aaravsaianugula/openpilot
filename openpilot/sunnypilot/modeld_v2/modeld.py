@@ -37,6 +37,7 @@ from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value
 from openpilot.sunnypilot.egpu.chestnut_state import ChestnutState
+from openpilot.sunnypilot.egpu import guard
 
 from openpilot.sunnypilot.modeld_v2.fill_model_msg import fill_model_msg, fill_pose_msg, PublishState, get_curvature_from_output
 from openpilot.sunnypilot.modeld_v2.constants import Plan
@@ -333,52 +334,65 @@ def main(demo=False):
     os.environ['HCQDEV_WAIT_TIMEOUT_MS'] = '3000'
 
   params = Params()
-  params.put_bool("UsbGpuLoading", USBGPU)
-  params.remove("UsbGpuActive")
+  # The `finally` inside guard.loading() is why this is a context manager: UsbGpuLoading is
+  # CLEAR_ON_MANAGER_START and a modeld crash restarts modeld, not manager, so a load that
+  # raised used to leave the flag latched True -- a permanent NO_ENTRY with selfdrived's
+  # commIssue and posenetInvalid suppressed alongside it.
+  with guard.loading(params, USBGPU):
 
-  # visionipc clients
-  while True:
-    available_streams = VisionIpcClient.available_streams("camerad", block=False)
-    if available_streams:
-      use_extra_client = VisionStreamType.VISION_STREAM_WIDE_ROAD in available_streams and VisionStreamType.VISION_STREAM_NARROW_ROAD in available_streams
-      main_wide_camera = VisionStreamType.VISION_STREAM_NARROW_ROAD not in available_streams
-      break
-    time.sleep(.1)
+    # visionipc clients
+    while True:
+      available_streams = VisionIpcClient.available_streams("camerad", block=False)
+      if available_streams:
+        use_extra_client = VisionStreamType.VISION_STREAM_WIDE_ROAD in available_streams and VisionStreamType.VISION_STREAM_NARROW_ROAD in available_streams
+        main_wide_camera = VisionStreamType.VISION_STREAM_NARROW_ROAD not in available_streams
+        break
+      time.sleep(.1)
 
-  vipc_client_main_stream = VisionStreamType.VISION_STREAM_WIDE_ROAD if main_wide_camera else VisionStreamType.VISION_STREAM_NARROW_ROAD
-  vipc_client_main = VisionIpcClient("camerad", vipc_client_main_stream, True)
-  vipc_client_extra = VisionIpcClient("camerad", VisionStreamType.VISION_STREAM_WIDE_ROAD, False)
-  cloudlog.warning(f"vision stream set up, main_wide_camera: {main_wide_camera}, use_extra_client: {use_extra_client}")
+    vipc_client_main_stream = VisionStreamType.VISION_STREAM_WIDE_ROAD if main_wide_camera else VisionStreamType.VISION_STREAM_NARROW_ROAD
+    vipc_client_main = VisionIpcClient("camerad", vipc_client_main_stream, True)
+    vipc_client_extra = VisionIpcClient("camerad", VisionStreamType.VISION_STREAM_WIDE_ROAD, False)
+    cloudlog.warning(f"vision stream set up, main_wide_camera: {main_wide_camera}, use_extra_client: {use_extra_client}")
 
-  while not vipc_client_main.connect(False):
-    time.sleep(0.1)
-  while use_extra_client and not vipc_client_extra.connect(False):
-    time.sleep(0.1)
+    while not vipc_client_main.connect(False):
+      time.sleep(0.1)
+    while use_extra_client and not vipc_client_extra.connect(False):
+      time.sleep(0.1)
 
-  cloudlog.warning(f"connected main cam with buffer size: {vipc_client_main.buffer_len} ({vipc_client_main.width} x {vipc_client_main.height})")
-  if use_extra_client:
-    cloudlog.warning(f"connected extra cam with buffer size: {vipc_client_extra.buffer_len} ({vipc_client_extra.width} x {vipc_client_extra.height})")
+    cloudlog.warning(f"connected main cam with buffer size: {vipc_client_main.buffer_len} ({vipc_client_main.width} x {vipc_client_main.height})")
+    if use_extra_client:
+      cloudlog.warning(f"connected extra cam with buffer size: {vipc_client_extra.buffer_len} ({vipc_client_extra.width} x {vipc_client_extra.height})")
 
-  cloudlog.warning("loading model")
-  st = time.monotonic()
+    cloudlog.warning("loading model")
+    st = time.monotonic()
 
-  model = None
-  if USBGPU:
-    import threading
-    def load():
-      nonlocal model
-      model = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, usbgpu=True)
-    t = threading.Thread(target=load, daemon=True)
-    t.start()
-    t.join(60)
+    model = None
+    small_model = None
+    if USBGPU:
+      import threading
+      big_model = None
+      def load():
+        nonlocal big_model
+        try:
+          big_model = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, usbgpu=True)
+        except Exception:
+          cloudlog.exception("big model load failed")
+      t = threading.Thread(target=load, daemon=True)
+      t.start()
+      t.join(60)
+      model = big_model
+      params.put_bool("UsbGpuActive", model is not None)
+      if model is None:
+        cloudlog.error("eGPU model load failed or timed out (60s), falling back to the on-SoC model")
+
+    # Keep the small model resident whenever the eGPU is in play: it is both the load-time
+    # fallback and what the run loop swaps to if the card faults mid-drive.
+    if model is None or USBGPU:
+      small_model = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, usbgpu=False)
     if model is None:
-      params.put_bool("UsbGpuActive", False)
-      raise RuntimeError("eGPU model load failed or timed out (60s)")
-    params.put_bool("UsbGpuActive", True)
-  else:
-    model = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, usbgpu=False)
+      model = small_model
+    assert model is not None
 
-  params.put_bool("UsbGpuLoading", False)
   cloudlog.warning(f"models loaded in {time.monotonic() - st:.1f}s, modeld starting")
 
   # messaging
@@ -510,7 +524,22 @@ def main(demo=False):
       inputs['action_t'] = np.array([lat_action_t, long_action_t], dtype=np.float32)
 
     mt1 = time.perf_counter()
-    model_output = model.run(bufs, transforms, inputs, prepare_only)
+    try:
+      model_output = model.run(bufs, transforms, inputs, prepare_only)
+    except Exception:
+      if not params.get_bool("UsbGpuActive"):
+        raise
+      # fall back to small model. Losing the eGPU mid-drive has to degrade the model, not end
+      # the drive: without this the exception reaches the top-level re-raise, modeld dies, and
+      # manager restarts it into the same 60-second load.
+      cloudlog.exception("big model failed, fall back to small")
+      params.put_bool("UsbGpuActive", False)
+      assert small_model is not None
+      model = small_model
+      if chestnut_state is not None:
+        chestnut_state.big = False
+      run_count = 0
+      model_output = None
     mt2 = time.perf_counter()
     model_execution_time = mt2 - mt1
 

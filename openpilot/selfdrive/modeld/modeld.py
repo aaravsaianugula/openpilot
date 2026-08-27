@@ -218,7 +218,11 @@ class ModelState(ModelStateBase):
 def main(demo=False):
   cloudlog.warning("modeld init")
 
-  USBGPU = usbgpu_present() and usbgpu_compiled()
+  # This is the default runner -- get_active_model_runner() returns `stock` whenever no bundle
+  # is active -- so it needs the same ASIC gate the sunnypilot runner already has. Without it a
+  # fresh device with a card tinygrad's AM driver refuses takes the eGPU path anyway.
+  from openpilot.sunnypilot.egpu import detect as egpu
+  USBGPU = usbgpu_present() and usbgpu_compiled() and egpu.enabled()
   if USBGPU:
     os.environ['HCQDEV_WAIT_TIMEOUT_MS'] = '3000'
   params = Params()

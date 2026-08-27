@@ -8,6 +8,7 @@ from openpilot.common.transformations.camera import _ar_ox_fisheye, _os_fisheye
 from openpilot.common.transformations.model import MEDMODEL_INPUT_SIZE, DM_INPUT_SIZE
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.modeld.helpers import TG_INPUT_DEVICES_PATH, usbgpu_present, modeld_pkl_path
+from openpilot.sunnypilot.egpu.guard import egpu_build_ok
 
 
 CAMERA_CONFIGS = [
@@ -43,7 +44,11 @@ tg_devices = { # which device to put jit inputs to at runtime
   },
 }
 
-USBGPU = usbgpu_present()
+# usbgpu_present() asks whether a flashed chestnut is attached; egpu_build_ok() asks whether the
+# card behind it is one tinygrad's AM driver can actually compile for. Without the second, an
+# RDNA2 card fails this target, and build.py turns a failed build into a blocking error window
+# at boot -- so an eGPU we cannot use would stop the car starting at all.
+USBGPU = usbgpu_present() and egpu_build_ok()
 if USBGPU:
   usbgpu_tg_flags = f'DEBUG=2 DEV=USB+AMD:LLVM WARP_DEV={tg_backend} FLOAT16=1 JIT_BATCH_SIZE=0 GMMU=0 TC_OPT=2'
   # the USB+AMD GPU takes an exclusive flock; serialize all targets that touch it
@@ -99,8 +104,12 @@ if not os.getenv('SKIP_TINYGRAD_COMPILE'):
       else:
         print("Chestnut not ready, skipping big model build")
         return
-      if ret := env.Execute(command):
-        return ret
+      if env.Execute(command):
+        # Backstop for anything the gate above could not know: a dock swapped between SCons's
+        # read and build phases, a card that enumerates but will not run, a bad pkl. Skipping
+        # costs the big model; returning non-zero costs the boot.
+        print("Big model build failed on the eGPU, skipping")
+        return
       chunk_file(pkl, chunks)
     def do_chunk(target, source, env, pkl=target_pkl_path, chunks=chunk_targets):
       chunk_file(pkl, chunks)

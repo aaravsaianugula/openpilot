@@ -52,6 +52,12 @@ OVERLAY_MODIFIED = [
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py",
     "openpilot/sunnypilot/modeld_v2/modeld.py",
     "openpilot/sunnypilot/models/manager.py",
+    # Both carry the same one-line gate: upstream asks only whether a chestnut is attached,
+    # never which card is behind it, so without these an eGPU we cannot drive fails the build
+    # (blocking error window at boot) or takes the model path anyway. The logic lives in
+    # openpilot/sunnypilot/egpu/guard.py, which is ours; these are the call sites.
+    "openpilot/selfdrive/modeld/SConscript",
+    "openpilot/selfdrive/modeld/modeld.py",
 ]
 
 # Submodule pins we set ourselves. Not in OVERLAY_MODIFIED: they are index entries updated
@@ -73,8 +79,11 @@ OVERLAY_HOOKS = {
     "openpilot/system/updated/updated.py": ["get_elantra_manifest", "ElantraBuildManifest"],
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py": ["ElantraPortLayoutMici", "port_btn"],
     "openpilot/sunnypilot/modeld_v2/modeld.py": ["sunnypilot.egpu", "egpu.enabled",
-                                                 "assert_pkl_matches"],
+                                                 "assert_pkl_matches", "guard.loading",
+                                                 "small_model"],
     "openpilot/sunnypilot/models/manager.py": ["uses_amd_catalog", "probe_once"],
+    "openpilot/selfdrive/modeld/SConscript": ["egpu_build_ok"],
+    "openpilot/selfdrive/modeld/modeld.py": ["sunnypilot.egpu", "egpu.enabled"],
 }
 
 # The NV-USB delta may touch these and only these. Restricting the generated patch to them
