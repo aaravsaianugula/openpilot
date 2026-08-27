@@ -215,6 +215,36 @@ def guard_dynamic_torque_pair(opendbc: Path) -> None:
           (int(use.group(3)), int(use.group(4))) == (3, 7),
           "found " + str((int(use.group(3)), int(use.group(4)))))
 
+    # Matching numbers are not enough. HyundaiFlags.DYNAMIC_LIMITS (CP.flags, gates the opendbc
+    # gain) and HyundaiSafetyFlags.DYNAMIC_LIMITS (safetyParam, gates the panda ceiling) are two
+    # different flags in two different words, and the block in interface.py is the only bridge
+    # between them. Delete that block and every number checked above still agrees -- but opendbc
+    # keeps applying the 409 gain while panda keeps enforcing 384, so every LKAS11 frame below
+    # 16 m/s is rejected, the stream to the MDPS stops, and the EPS faults mid-turn. That is the
+    # exact failure this guard exists to prevent, so guard the whole chain and not just the two
+    # numbers at its ends.
+    iface_src = read(opendbc / "opendbc/car/hyundai/interface.py")
+    bridge = r"ret\.flags\s*&\s*HyundaiFlags\.DYNAMIC_LIMITS\s*:\s*ret\.safetyConfigs\[-1\]\.safetyParam\s*\|=\s*HyundaiSafetyFlags\.DYNAMIC_LIMITS"
+    check("interface.py carries the car flag into safetyParam",
+          re.search(bridge, iface_src) is not None,
+          "the car flag and the panda flag are different words -- without this bridge opendbc "
+          + "commands 409 while panda still enforces 384, and the low-speed frames are dropped")
+
+    check("panda selects the dynamic limits on that flag",
+          re.search(r"hyundai_dynamic_limits\s*\?\s*HYUNDAI_STEERING_LIMITS_DYNAMIC", safety_src) is not None,
+          "HYUNDAI_LIMITS_DYNAMIC is defined but never reached from the tx hook")
+
+    cc_src = read(opendbc / "opendbc/car/hyundai/carcontroller.py")
+    check("carcontroller applies the schedule to the command",
+          re.search(r"np\.interp\(\s*CS\.out\.vEgoRaw\s*,\s*\*self\.params\.STEER_MAX_LOOKUP\s*\)",
+                    cc_src) is not None,
+          "STEER_MAX_LOOKUP exists but nothing reads it, so the schedule is inert")
+
+    check("carcontroller passes the scheduled ceiling to the rate limiter",
+          re.search(r"apply_driver_steer_torque_limits\([^)]*steer_max\s*\)", cc_src) is not None,
+          "without it the driver-torque clamp stays anchored to the static STEER_MAX while the "
+          + "command is scaled by the scheduled one")
+
 
 def guard_car_list(opendbc: Path) -> None:
     print("\n[car_list.json] sunnypilot vehicle list")
