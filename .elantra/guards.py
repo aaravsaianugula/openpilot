@@ -31,8 +31,14 @@ PLATFORMS = ("HYUNDAI_ELANTRA_2024", "HYUNDAI_ELANTRA_HEV_2024")
 # a safety allow-list wider than the message it guards.
 LFAHDA_MFC_LEN = 8
 
+# The two halves of the CN7 2024 speed-scheduled steering torque: [m/s] -> [CAN counts].
+# opendbc multiplies every command by this; panda accepts frames up to it. Below the top
+# breakpoint the car gets more authority to reach the lateral acceleration the planner
+# already asks for; at and above it, both numbers are the stock 384 and nothing changes.
+STEER_MAX_SCHEDULE = ([8.0, 16.0], [409, 384])
+
 EXPECTED_FLAGS = {
-    "HYUNDAI_ELANTRA_2024": {"CHECKSUM_CRC8", "CAMERA_SCC"},
+    "HYUNDAI_ELANTRA_2024": {"CHECKSUM_CRC8", "CAMERA_SCC", "DYNAMIC_LIMITS"},
     "HYUNDAI_ELANTRA_HEV_2024": {"CHECKSUM_CRC8", "CAMERA_SCC", "HYBRID"},
 }
 
@@ -152,6 +158,64 @@ def guard_lfahda_pair(opendbc: Path) -> None:
           "dbc=" + str(dbc_len) + " safety=" + str(safety_len) + " -- these must never diverge")
 
 
+def guard_dynamic_torque_pair(opendbc: Path) -> None:
+    """The other safety-critical pair: opendbc's torque gain and panda's ceiling.
+
+    opendbc multiplies every steering command by the value it reads out of
+    STEER_MAX_LOOKUP_DYNAMIC; panda accepts frames up to the value it reads out of
+    HYUNDAI_LIMITS_DYNAMIC. If the two drift apart, panda starts dropping LKAS11 frames
+    openpilot is legitimately sending, the stream to the MDPS stops, and the EPS faults.
+    Same class of coupled edit as LFAHDA_MFC above, and just as invisible until it bites.
+    """
+    print("\n[values.py <-> safety] speed-scheduled steering torque agreement")
+
+    values_src = read(opendbc / "opendbc/car/hyundai/values.py")
+    m = re.search(r"STEER_MAX_LOOKUP_DYNAMIC\s*=\s*(\[[^\]]*\])\s*,\s*(\[[^\]]*\])", values_src)
+    check("STEER_MAX_LOOKUP_DYNAMIC found in values.py", m is not None)
+    if m is None:
+        return
+    op_speeds = [float(v) for v in ast.literal_eval(m.group(1))]
+    op_torques = [int(v) for v in ast.literal_eval(m.group(2))]
+    check("opendbc schedule is " + str(STEER_MAX_SCHEDULE),
+          (op_speeds, op_torques) == (list(STEER_MAX_SCHEDULE[0]), list(STEER_MAX_SCHEDULE[1])),
+          "found " + str((op_speeds, op_torques)))
+
+    safety_src = read(opendbc / "opendbc/safety/modes/hyundai.h")
+    use = re.search(r"HYUNDAI_LIMITS_DYNAMIC\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)", safety_src)
+    check("HYUNDAI_LIMITS_DYNAMIC is used in safety/modes/hyundai.h", use is not None)
+    if use is None:
+        return
+    pa_torques = [int(use.group(1)), int(use.group(2))]
+    check("panda torques match opendbc's", pa_torques == op_torques,
+          "panda=" + str(pa_torques) + " opendbc=" + str(op_torques)
+          + " -- these must never diverge")
+
+    bp = re.search(r"\.max_torque_lookup\s*=\s*\{[^{]*\{([^}]*)\}", safety_src)
+    check("panda breakpoints found", bp is not None)
+    if bp is not None:
+        pa_speeds = [float(v) for v in bp.group(1).replace("\\", "").split(",") if v.strip()]
+        # lookup_t holds exactly 3 points; the schedule repeats the top one
+        check("panda breakpoints match opendbc's",
+              pa_speeds[:2] == op_speeds and pa_speeds[2] == op_speeds[-1],
+              "panda=" + str(pa_speeds) + " opendbc=" + str(op_speeds))
+
+    # the flag has to mean the same number on both sides, or the limit silently never applies
+    py_flag = re.search(r"^\s*DYNAMIC_LIMITS\s*=\s*(\d+)\s*$", values_src, re.MULTILINE)
+    c_flag = re.search(r"HYUNDAI_PARAM_DYNAMIC_LIMITS\s*=\s*(\d+)",
+                       read(opendbc / "opendbc/safety/modes/hyundai_common.h"))
+    check("HyundaiSafetyFlags.DYNAMIC_LIMITS is defined", py_flag is not None)
+    check("HYUNDAI_PARAM_DYNAMIC_LIMITS is defined", c_flag is not None)
+    if py_flag and c_flag:
+        check("safety flag values agree", py_flag.group(1) == c_flag.group(1),
+              "python=" + py_flag.group(1) + " c=" + c_flag.group(1))
+
+    # rate limits stay stock: max_rt_delta 112 over a 250 ms interval at 100 Hz caps the ramp
+    # at 4.48 counts/frame anyway, so anything above 4 would be unreachable dead code
+    check("steer ramp rates are still 3/7",
+          (int(use.group(3)), int(use.group(4))) == (3, 7),
+          "found " + str((int(use.group(3)), int(use.group(4)))))
+
+
 def guard_car_list(opendbc: Path) -> None:
     print("\n[car_list.json] sunnypilot vehicle list")
     raw = read(opendbc / "opendbc/sunnypilot/car/car_list.json")
@@ -230,6 +294,7 @@ def main() -> int:
     guard_fingerprints(opendbc)
     guard_hyundaican(opendbc)
     guard_lfahda_pair(opendbc)
+    guard_dynamic_torque_pair(opendbc)
     guard_car_list(opendbc)
     guard_torque(opendbc)
     if args.repo:
