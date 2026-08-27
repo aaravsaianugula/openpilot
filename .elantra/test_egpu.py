@@ -657,6 +657,14 @@ def test_probe_tool():
     check("the 480 stop names the ASM2464PD fallback",
           "ASM2464PD" in probe.speed_verdict("480")[3])
 
+    # The probe once printed "NO-GO" for a stage 6 it had never been able to run -- a wrong
+    # answer to the only question it exists to ask. Three outcomes, and the third says so.
+    check("stage 6 has three outcomes, not two",
+          len({probe.GO, probe.NO_GO, probe.UNTESTED}) == 3)
+    verdict_src = source[source.index("def main("):]
+    check("an unrunnable stage 6 is not reported as a no-go", "NOT a no-go" in verdict_src)
+    check("a real no-go says the register was actually polled", "was polled" in verdict_src)
+
 
 def main() -> int:
     print("eGPU vendor logic")

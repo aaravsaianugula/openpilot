@@ -52,6 +52,10 @@ mmRCC_CONFIG_MEMSIZE = 0xDE3
 MM_INDEX, MM_DATA, MM_INDEX_HI = 0x00, 0x01, 0x06
 PSP_BL_READY = 0x80000000
 
+# Stage 6 has three outcomes, not two. "We could not run the check" must never print as
+# "the card failed the check" -- that is a wrong answer to the only question this tool asks.
+GO, NO_GO, UNTESTED = "go", "no-go", "untested"
+
 _failed = False
 
 
@@ -344,7 +348,7 @@ def stage5_discovery(pci_dev):
   return ip_ver, regs_offset, mmio
 
 
-def stage6_psp(ip_ver, regs_offset, mmio, timeout_s: float) -> bool:
+def stage6_psp(ip_ver, regs_offset, mmio, timeout_s: float) -> str:
   """The decisive check: does the PSP bootloader come up?
 
   AM_PSP._wait_for_bootloader polls regMP0_SMN_C2PMSG_35 for bit 31. Everything the driver
@@ -358,19 +362,22 @@ def stage6_psp(ip_ver, regs_offset, mmio, timeout_s: float) -> bool:
   mp0 = ip_ver.get(am.MP0_HWIP)
   if mp0 is None:
     bad("no MP0 (PSP) block in the discovery table", "nothing to poll")
-    return False
+    return UNTESTED
   ok("MP0 (PSP) IP version", ver(mp0))
 
+  # submod="regs" matters: without it import_module searches the autogen package, whose
+  # __all__ lists soc_*/regs/pmc, not the per-ASIC register tables. import_asic_regs() is
+  # the wrapper that gets this right, and the mp_11_0_0 table Navi 2x needs is present.
   try:
-    regs = import_module("mp", mp0)
+    regs = import_module("mp", mp0, submod="regs")
   except Exception as e:
     bad("no register set for this PSP version", str(e))
-    return False
+    return UNTESTED
 
   entry = regs.get("mmMP0_SMN_C2PMSG_35") or regs.get("regMP0_SMN_C2PMSG_35")
   if entry is None:
     bad("C2PMSG_35 is not defined for this PSP version", "cannot poll the bootloader")
-    return False
+    return UNTESTED
   offset, segment = entry[0], entry[1]
   addr = regs_offset[am.MP0_HWIP][0][segment] + offset
   info("regMP0_SMN_C2PMSG_35 at", hex(addr))
@@ -378,7 +385,7 @@ def stage6_psp(ip_ver, regs_offset, mmio, timeout_s: float) -> bool:
     bad("C2PMSG_35 is outside the MMIO aperture",
         hex(addr) + " >= " + hex(len(mmio)) + "; AM reaches it over RSMU, which needs the "
         + "nbio register set this probe does not build")
-    return False
+    return UNTESTED
 
   deadline, value = time.monotonic() + timeout_s, 0
   while time.monotonic() < deadline:
@@ -388,7 +395,7 @@ def stage6_psp(ip_ver, regs_offset, mmio, timeout_s: float) -> bool:
       print("")
       print("  GO. The card comes out of reset over the chestnut. The RDNA2 port is worth")
       print("  attempting, and stage 5's IP versions are the modules it needs.")
-      return True
+      return GO
     time.sleep(0.05)
 
   bad("PSP bootloader never reported ready",
@@ -398,7 +405,7 @@ def stage6_psp(ip_ver, regs_offset, mmio, timeout_s: float) -> bool:
     addr64 = regs_offset[am.MP0_HWIP][0][entry64[1]] + entry64[0]
     if addr64 < len(mmio):
       info("C2PMSG_64", hex(mmio[addr64]))
-  return False
+  return NO_GO
 
 
 def stage7_registers(ip_ver) -> None:
@@ -407,14 +414,18 @@ def stage7_registers(ip_ver) -> None:
   from tinygrad.runtime.autogen.am import am
   from tinygrad.runtime.support.amd import import_module
 
-  for prefix, hwip in (("gc", am.GC_HWIP), ("mp", am.MP0_HWIP), ("smu", am.MP1_HWIP),
-                       ("nbio", am.NBIO_HWIP), ("osssys", am.OSSSYS_HWIP),
-                       ("mmhub", am.MMHUB_HWIP)):
+  # smu_* are modules of the autogen package; the rest are tables inside am/regs.py. AM
+  # itself makes the same distinction -- _build_regs uses import_asic_regs (submod="regs")
+  # while AM_SMU resolves its module package-level.
+  for prefix, hwip, submod in (("gc", am.GC_HWIP, "regs"), ("mp", am.MP0_HWIP, "regs"),
+                               ("smu", am.MP1_HWIP, ""), ("nbio", am.NBIO_HWIP, "regs"),
+                               ("osssys", am.OSSSYS_HWIP, "regs"),
+                               ("mmhub", am.MMHUB_HWIP, "regs")):
     version = ip_ver.get(hwip)
     if version is None:
       continue
     try:
-      import_module(prefix, version)
+      import_module(prefix, version, submod=submod)
       ok(f"{prefix} {ver(version)}", "present")
     except Exception as e:
       info(f"{prefix} {ver(version)}", "MISSING -- " + str(e))
@@ -461,19 +472,23 @@ def main() -> int:
     return stop("Could not read the card's discovery table. MMIO is not working.")
   ip_ver, regs_offset, mmio = discovered
 
-  went = stage6_psp(ip_ver, regs_offset, mmio, args.psp_timeout)
+  result = stage6_psp(ip_ver, regs_offset, mmio, args.psp_timeout)
   stage7_registers(ip_ver)
 
   head("Verdict")
-  if went:
+  if result == GO:
     print("  GO -- the PSP bootloader came up. Porting AM to this card is worth doing.")
     print("  Stage 5 lists the IP versions and stage 7 the register sets still missing.")
-  else:
-    print("  NO-GO -- the PSP bootloader did not come up. Everything a port would build")
-    print("  sits downstream of that register, so do not start the port on this evidence.")
-    print("  This is the failure tinygrad #15636 reports for RDNA2.")
-  print("")
-  return 0 if (went and not _failed) else 1
+    return 0
+  if result == NO_GO:
+    print("  NO-GO -- the PSP bootloader was polled and never reported ready. Everything a")
+    print("  port would build sits downstream of that register, so do not start the port on")
+    print("  this evidence. This is the failure tinygrad #15636 reports for RDNA2.")
+    return 1
+  print("  INCONCLUSIVE -- stage 6 could not be run, so the card was never actually asked.")
+  print("  This is NOT a no-go: the decisive question is simply still unanswered. Fix what")
+  print("  stage 6 reported above and run again.")
+  return 2
 
 
 if __name__ == "__main__":
