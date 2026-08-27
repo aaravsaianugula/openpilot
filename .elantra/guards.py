@@ -246,6 +246,92 @@ def guard_dynamic_torque_pair(opendbc: Path) -> None:
           + "command is scaled by the scheduled one")
 
 
+def _const_int(node: ast.AST) -> int | None:
+    """Evaluate a constant integer expression from the AST, or return None.
+
+    Deliberately not eval() and not literal_eval(): the first is unsafe on a file we are
+    auditing, the second cannot see `2 ** 27`. Only these node types are understood, so
+    anything referring to a name or calling anything is simply not a value we check.
+    """
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, int) else None
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        inner = _const_int(node.operand)
+        if inner is None:
+            return None
+        return inner if isinstance(node.op, ast.UAdd) else -inner
+    if isinstance(node, ast.BinOp):
+        left, right = _const_int(node.left), _const_int(node.right)
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.Pow):
+            return left ** right if 0 <= right <= 64 else None
+        if isinstance(node.op, ast.LShift):
+            return left << right if 0 <= right <= 64 else None
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+    return None
+
+
+def guard_no_aliased_flags(opendbc: Path) -> None:
+    """No two members of HyundaiFlags or HyundaiSafetyFlags may share a value.
+
+    Python's IntFlag does not reject a duplicate -- it makes the second member a silent alias
+    of the first. Two flags that collide therefore test True for each other, so a platform
+    carrying one silently acquires the behaviour of the other, and nothing raises anywhere.
+
+    Not hypothetical: the community elantra-2024-port lineage, which is what is installed on
+    the car, defines LFAHDA_MFC_8 as 1024 in HyundaiSafetyFlags and 2**27 in HyundaiFlags, and
+    sets it on both HYUNDAI_ELANTRA_2024 and HYUNDAI_ELANTRA_HEV_2024. DYNAMIC_LIMITS
+    originally took both of those values. Landing it there would have handed the Elantra
+    Hybrid a raised low-speed steering torque ceiling that nobody opted it into.
+    """
+    print("\n[values.py] no two flags share a value")
+
+    src = read(opendbc / "opendbc/car/hyundai/values.py")
+    tree = ast.parse(src)
+    for enum_name in ("HyundaiFlags", "HyundaiSafetyFlags"):
+        node = None
+        for n in ast.walk(tree):
+            if isinstance(n, ast.ClassDef) and n.name == enum_name:
+                node = n
+                break
+        check(enum_name + " is defined", node is not None)
+        if node is None:
+            continue
+        seen = {}
+        aliases = []
+        members = 0
+        for stmt in node.body:
+            if not isinstance(stmt, ast.Assign) or len(stmt.targets) != 1:
+                continue
+            target = stmt.targets[0]
+            if not isinstance(target, ast.Name):
+                continue
+            # NOT ast.literal_eval: these enums are written as `2 ** 27`, which is a BinOp and
+            # not a literal, so literal_eval skips every one of them and this check passes
+            # vacuously -- which is exactly how it was first written, and it caught nothing.
+            value = _const_int(stmt.value)
+            if value is None:
+                continue
+            members += 1
+            if value in seen:
+                aliases.append(target.id + " aliases " + seen[value] + " (" + str(value) + ")")
+            else:
+                seen[value] = target.id
+        # a count of zero means the parser stopped understanding how the enum is written and
+        # the alias check silently became a no-op, which is how the first version of this
+        # guard "passed" against a genuine collision
+        check(enum_name + " members were actually parsed", members > 5,
+              "only " + str(members) + " parsed -- the alias check is not testing anything")
+        check(enum_name + " has no aliased members (" + str(members) + " checked)",
+              not aliases, "; ".join(aliases))
+
+
 def guard_car_list(opendbc: Path) -> None:
     print("\n[car_list.json] sunnypilot vehicle list")
     raw = read(opendbc / "opendbc/sunnypilot/car/car_list.json")
@@ -325,6 +411,7 @@ def main() -> int:
     guard_hyundaican(opendbc)
     guard_lfahda_pair(opendbc)
     guard_dynamic_torque_pair(opendbc)
+    guard_no_aliased_flags(opendbc)
     guard_car_list(opendbc)
     guard_torque(opendbc)
     if args.repo:
