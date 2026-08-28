@@ -44,6 +44,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from openpilot.common.file_chunker import get_manifest_path
 from openpilot.sunnypilot.egpu import asics, detect
 from openpilot.sunnypilot.egpu.models import UNKNOWN_TARGET, write_marker
 from openpilot.sunnypilot.egpu.vendors import AUTO, NVIDIA, EgpuSpec, compile_flags, spec_for
@@ -161,9 +162,16 @@ def main(argv: list[str], params=None) -> int:
     print("compile failed; no marker written -- the model will not be offered to modeld")
     return proc.returncode
 
-  if not Path(output).is_file():
-    print("compiler reported success but produced no file at " + output
-          + "; refusing to write a provenance marker for a model that is not there")
+  # A successful compile does not leave a pkl behind. compile_modeld.py ends in chunk_file(),
+  # which writes <output>.chunkNNofMM plus <output>.chunkmanifest and then os.remove()s the
+  # output -- and usbgpu_compiled() and open_file_chunked() both look for the manifest, not the
+  # pkl. So the manifest is the evidence of success. Demanding the pkl fails every genuine
+  # compile, skips write_marker, and leaves assert_pkl_matches with no target to enforce, which
+  # is the one check standing between a gfx1200 pickle and a gfx1032 card.
+  if not Path(output).is_file() and not Path(get_manifest_path(output)).is_file():
+    print("compiler reported success but produced neither " + output
+          + " nor its chunk manifest; refusing to write a provenance marker for a model"
+          + " that is not there")
     return 1
 
   write_marker(output, spec.name, target)

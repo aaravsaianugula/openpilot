@@ -73,7 +73,12 @@ from pathlib import Path
 import numpy as np
 
 REPO = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO))
+# Appended, not inserted at 0. This tool has to run out of the *built* tree to reach
+# libparams_c.so, and that tree carries a `tinygrad` symlink to openpilot's own stock submodule.
+# Putting REPO first therefore shadowed /data/rdna2-tg and silently validated a tinygrad with no
+# RDNA2 support in it at all. An explicit PYTHONPATH is a deliberate act and outranks this guess;
+# this only makes the repo importable when nobody set one.
+sys.path.append(str(REPO))
 
 PASS_MAX_DIFF = 0.2
 FAIL_MAX_DIFF = 1.0
@@ -91,6 +96,13 @@ DEFAULT_DATA_DIR = Path("/data/media/0/realdata")
 DEFAULT_ONNX = REPO / "openpilot" / "selfdrive" / "modeld" / "models" / "big_driving_supercombo.onnx"
 
 EXIT_OK, EXIT_FAIL, EXIT_INCONCLUSIVE = 0, 1, 2
+
+# The budget the car is actually held to, from openpilot/selfdrive/test/test_onroad.py:
+# ("modelV2", 0.06, 0.040) asserted as `max(ts) < instant` and `mean(ts) < avg`. Reported against
+# here rather than a round "20 Hz" so the number this tool prints is the number that gates the
+# real thing. test_egpu.py::test_frame_timing pins these to upstream and fails if they drift.
+BUDGET_INSTANT_S = 0.06
+BUDGET_MEAN_S = 0.040
 
 ORT_DTYPES = {
   "tensor(float)": "float32",
@@ -134,13 +146,54 @@ def report_tinygrad() -> None:
 
 # ---------------------------------------------------------------------------- stage 1: copyout
 
+def summarize_times(samples) -> dict:
+  """min / p50 / p99 / max / mean over per-frame device times, in seconds.
+
+  Percentiles are nearest-rank, so every value reported is a frame that actually happened. An
+  interpolated percentile invents a number between two samples, and for a deadline question the
+  invented number is always the optimistic one.
+
+  An empty run raises rather than returning zeros. A summary of nothing that reads as a fast
+  card is the same failure as the all-NaN model output that used to report a perfect pass.
+  """
+  if len(samples) == 0:
+    raise ValueError("no frame times recorded: there is nothing to summarise")
+  a = np.asarray(samples, dtype=np.float64)
+  return {"n": int(a.size), "min": float(a.min()), "max": float(a.max()), "mean": float(a.mean()),
+          "p50": float(np.percentile(a, 50, method="inverted_cdf")),
+          "p99": float(np.percentile(a, 99, method="inverted_cdf"))}
+
+
+def timing_verdict(summary: dict) -> tuple[bool, str]:
+  """(holds_budget, one-line reason). Two independent gates; failing either one is a miss.
+
+  Both comparisons are strict, matching upstream's `assert max(ts) < instant_max`. Sitting
+  exactly on the line is a miss, because a frame that takes exactly the whole interval leaves
+  nothing for the rest of the loop.
+  """
+  over = []
+  if not summary["max"] < BUDGET_INSTANT_S:
+    over.append(f"slowest frame {summary['max'] * 1e3:.1f} ms is not under {BUDGET_INSTANT_S * 1e3:.0f} ms")
+  if not summary["mean"] < BUDGET_MEAN_S:
+    over.append(f"mean {summary['mean'] * 1e3:.1f} ms is not under {BUDGET_MEAN_S * 1e3:.0f} ms")
+  if over:
+    return False, "; ".join(over)
+  return True, (f"slowest {summary['max'] * 1e3:.1f} ms < {BUDGET_INSTANT_S * 1e3:.0f} ms, "
+                + f"mean {summary['mean'] * 1e3:.1f} ms < {BUDGET_MEAN_S * 1e3:.0f} ms")
+
+
 def stage_copyout(device: str, iters: int, nbytes: int) -> bool:
   head(f"stage 1: {device} _copyout round trip -- {iters} x {nbytes} bytes")
 
   report_tinygrad()
   from tinygrad.device import Device
+  from tinygrad.helpers import Context
 
-  dev = Device[device]
+  # Under the Context, so `device` may be a full target spec (USB+AMD:LLVM) and not just a key.
+  # The interface half matters: without it tinygrad tries KFDIface and PCIIface first, which is
+  # not how modeld opens this card, and the failed attempts leave USBPCIDevice's flock held.
+  with Context(DEV=device):
+    dev = Device[Device.DEFAULT]
   allocator = dev.allocator
   info("device", f"{dev.device}")
 
@@ -586,7 +639,14 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
     # before a single number is produced.
     with Context(DEV=device):
       runner = OnnxRunner(str(model_file))
-    info("tinygrad device", Device[device].device)
+      # Resolved here, inside the Context, because `device` may be a full target spec
+      # (USB+AMD:LLVM) while Device[] and Tensor(device=) both want the bare key. Held for the
+      # report and for the per-frame inputs: a Tensor built with the spec reports its device as
+      # "USB+AMD:LLVM" while the model's own tensors report "AMD", and the first comparison dies
+      # with "expected index and self on the same device".
+      tg_key = Device.DEFAULT
+      tg_device = Device[tg_key].device
+    info("tinygrad device", tg_device)
 
     queues = PolicyInputs(input_shapes, frame_skip, ModelConstants.DESIRE_LEN)
     prev_feat = np.zeros(input_shapes["features_buffer"][2], dtype=np.float32)
@@ -594,6 +654,7 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
     worst_frame = dict.fromkeys(ort_out_names, -1)
     slice_diff = dict.fromkeys(output_slices, 0.0)
     nonfinite: list[tuple[str, int, int, int]] = []
+    frame_times: list[float] = []
 
     st = time.monotonic()
     for n, fid in enumerate(plan):
@@ -626,9 +687,16 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
       inputs = queues.step(warped, desire_pulse, traffic_convention, action_t, prev_feat)
       feeds = {name: np.ascontiguousarray(inputs[name], dtype=dt) for name, dt in ort_dtypes.items()}
       cpu_out = sess.run(ort_out_names, feeds)
+      # Timed deliberately tightly: the .numpy() readback is what forces the lazy graph to run
+      # and synchronise, so this bounds the real device work. It is an UPPER bound -- it also
+      # carries the host->device upload of every input, which modeld does not do (it hands
+      # tinygrad a VisionIPC pointer via Tensor.from_blob). The number that actually gates the
+      # car is modelV2.modelExecutionTime from an onroad rlog.
+      t_frame = time.perf_counter()
       with Context(DEV=device):
-        gpu_raw = runner({k: Tensor(v, device=device) for k, v in feeds.items()})
+        gpu_raw = runner({k: Tensor(v, device=tg_key) for k, v in feeds.items()})
         gpu_out = [gpu_raw[name].numpy() for name in ort_out_names]
+      frame_times.append(time.perf_counter() - t_frame)
 
       for name, a, b in zip(ort_out_names, cpu_out, gpu_out, strict=True):
         # A non-finite output has to be caught here rather than folded into the max. np.max of an
@@ -662,7 +730,7 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
   print(f"  segments read  {seg_dirs[0].name} .. {seg_dirs[-1].name}")
   print(f"  frame ids      {plan[0]} .. {plan[-1]} ({len(plan)} consecutive frames)")
   print(f"  model          {onnx_path.name} ({metadata['model_checkpoint']})")
-  print(f"  eGPU           {Device[device].device}   reference: onnxruntime CPUExecutionProvider")
+  print(f"  eGPU           {tg_device}   reference: onnxruntime CPUExecutionProvider")
   print("")
   print("  max abs difference per output tensor")
   for name in ort_out_names:
@@ -671,6 +739,22 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
   print("  max abs difference per output slice (worst 8)")
   for name, d in sorted(slice_diff.items(), key=lambda kv: -kv[1])[:8]:
     print(f"    {name:<24} {d:>14.6g}")
+
+  # Timing is reported next to the numerics because a card can be right and still useless. This
+  # does not move the exit code: the number above is an upper bound (see the comment at the timer)
+  # and the gate that decides whether this drives is modelV2.modelExecutionTime onroad. Reported
+  # worst-case first for the same reason the diffs are -- a card that averages 30 ms and spikes to
+  # 90 ms drops frames, and a mean is exactly what hides that.
+  if frame_times:
+    t = summarize_times(frame_times)
+    holds, why = timing_verdict(t)
+    print("")
+    print(f"  frame time on {tg_device}   ({t['n']} frames, upper bound: includes host->device upload)")
+    print(f"    min {t['min'] * 1e3:>8.1f} ms     p50 {t['p50'] * 1e3:>8.1f} ms"
+          + f"     p99 {t['p99'] * 1e3:>8.1f} ms     max {t['max'] * 1e3:>8.1f} ms"
+          + f"     mean {t['mean'] * 1e3:>8.1f} ms")
+    (ok if holds else bad)("holds the 20 Hz budget" if holds else "misses the 20 Hz budget", why)
+    info("definitive check", "modelV2.modelExecutionTime from an onroad rlog, against the same two limits")
 
   # Ahead of the verdict on purpose: a non-finite output is not a large difference to be compared
   # against a threshold, it is the tool's whole reason for existing. np.max over NaN is NaN and

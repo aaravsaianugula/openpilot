@@ -35,10 +35,13 @@ REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
 from openpilot.sunnypilot.egpu import asics, compile_egpu, detect, models, vendors
+from openpilot.common.file_chunker import get_manifest_path
 
 EGPU_DIR = REPO / "openpilot/sunnypilot/egpu"
 SCONSCRIPT = REPO / "openpilot/selfdrive/modeld/SConscript"
 STATE_MODULE = REPO / "openpilot/selfdrive/ui/sunnypilot/mici/layouts/egpu_state.py"
+VALIDATE_MODULE = REPO / ".elantra/validate_numerics.py"
+ONROAD_TEST = REPO / "openpilot/selfdrive/test/test_onroad.py"
 
 failures: list[str] = []
 passes: list[str] = []
@@ -678,8 +681,15 @@ def test_panel_logic():
     check("an unsupported card is explained, not silently ignored", unsupported is not None)
     if unsupported:
         check("and it is named", "Navi 23" in unsupported)
-        check("and the reason given is the driver, not the dock", "RDNA3 and RDNA4" in unsupported)
+        # The reason has to be the real one. It used to say the driver "supports RDNA3 and
+        # RDNA4 only", which stopped being true the day RDNA2 was ported -- the driver brings
+        # these cards up fine; what they lack is a numerical validation on this car.
+        check("and the reason given is validation, not the dock", "validated" in unsupported)
         check("and it says the car still drives", "runs on the device" in unsupported)
+        # No architecture generation in the copy. Naming one is what made this string go stale,
+        # and it will go stale again the moment another family is ported.
+        for gen in ("RDNA2", "RDNA3", "RDNA4", "CDNA"):
+            check("the explanation does not hardcode " + gen, gen not in unsupported)
     case("an unsupported card outranks the vendor check, which would have said nothing",
          state.idle_reason(True, "amd", False, False, False, "Navi 23", False) is None, False)
     case("no dock still outranks an unsupported card",
@@ -793,9 +803,13 @@ class FakeRun:
     of stage 6 -- whether the marker beside the artifact names the gfx target.
     """
 
-    def __init__(self, returncode: int = 0, produce: bool = True):
+    def __init__(self, returncode: int = 0, produce: bool = True, chunk: bool = False):
         self.returncode = returncode
         self.produce = produce
+        # compile_modeld.py's last statement is chunk_file(), which os.remove()s the output it
+        # just wrote. Reproducing that is the only way to exercise what a *real* successful
+        # compile leaves on disk: a manifest and chunks, and no pkl.
+        self.chunk = chunk
         self.cmd: list[str] = []
         self.env: dict[str, str] = {}
 
@@ -811,6 +825,9 @@ class FakeRun:
                     out = arg.split("=", 1)[1]
             if out is not None:
                 Path(out).write_bytes(b"compiled")
+                if self.chunk:
+                    from openpilot.common.file_chunker import chunk_file, get_chunk_targets
+                    chunk_file(out, get_chunk_targets(out, Path(out).stat().st_size))
 
         return _Completed(self.returncode)
 
@@ -945,6 +962,22 @@ def test_compile_writes_a_targeted_marker(tmp: Path):
 
     rc = _with_fake_run(FakeRun(), lambda: compile_egpu.main(["--model-type", "supercombo"], params))
     check("AMD without --output is refused rather than guessed", rc != 0)
+
+    # A real compile ends in chunk_file(), which writes the chunks and then os.remove()s the pkl.
+    # Checking Path(output).is_file() afterwards therefore fails on every genuine success: the
+    # tool prints "produced no file", returns 1, and never writes the marker -- so the gfx target
+    # is never recorded and assert_pkl_matches has nothing to enforce. The evidence of success is
+    # the manifest, not the pkl.
+    chunked = tmp / "chunked.pkl"
+    fake = FakeRun(chunk=True)
+    rc = _with_fake_run(fake, lambda: compile_egpu.main(
+        ["--model-type", "supercombo", "--output", str(chunked)], params))
+    check("the fake compiler really did remove the pkl", not chunked.exists())
+    check("and really did leave a manifest", Path(get_manifest_path(str(chunked))).is_file())
+    case("a compile that chunks its output still exits zero", rc, 0)
+    check("and writes the marker beside the chunks",
+          Path(str(chunked) + models.MARKER_SUFFIX).exists())
+    case("which still records the gfx target", models.pkl_target(str(chunked)), "gfx1032")
 
 
 def test_compile_nv_is_a_shim():
@@ -1138,6 +1171,105 @@ def test_sunnypilot_runner_degrades():
     check("the handler names the fallback", "fall back to small" in src)
 
 
+def test_frame_timing():
+    """The per-frame timer that decides whether this card can hold the model's cadence.
+
+    Timing is the half of validation nobody has ever run on the 6600 XT. It is reported the
+    same way the numerics are -- worst case first -- because a card that averages 30 ms and
+    spikes to 90 ms drops frames, and a mean hides exactly that.
+    """
+    print("\nframe timing")
+    v = load_by_path(VALIDATE_MODULE, "validate_numerics")
+
+    # The tool must not let its own repo guess outrank an explicit PYTHONPATH. It lives in the
+    # built tree (/data/openpilot/.elantra, because /data/rdna2 has no libparams_c.so), and that
+    # tree carries a `tinygrad` symlink to the stock 66ee3cfb submodule. sys.path.insert(0, REPO)
+    # therefore shadowed /data/rdna2-tg and validated the wrong tinygrad -- a build with no RDNA2
+    # support at all. Whoever set PYTHONPATH meant it.
+    vsrc = VALIDATE_MODULE.read_text(encoding="utf-8")
+    check("the validator does not put its own repo ahead of PYTHONPATH",
+          "sys.path.insert(0, str(REPO))" not in vsrc,
+          "it shadows /data/rdna2-tg with the built tree's stock tinygrad symlink")
+    check("but the repo is still importable", "sys.path.append(str(REPO))" in vsrc)
+
+    # --device carries a full tinygrad target spec, because the interface is part of the thing
+    # under test. Plain "AMD" makes tinygrad try KFDIface and PCIIface before USBIface, and
+    # modeld does not open the card that way -- SConscript's usbgpu_tg_flags say
+    # DEV=USB+AMD:LLVM. Worse, USBPCIDevice.__init__ takes its flock before constructing USB3(),
+    # and never releases it when a later step raises, so the failed PCI attempts leave the next
+    # one reporting a lock error that hides the real cause.
+    #
+    # But Device[] only takes the bare key: Device["USB+AMD:LLVM"] tries to import
+    # tinygrad.runtime.ops_usb+amd and dies. Rather than re-implement Target.parse's grammar
+    # here and drift from it, the tool resolves the key through tinygrad itself, inside the
+    # Context that set DEV.
+    check("the validator does not index Device[] with the raw --device spec",
+          "Device[device]" not in vsrc,
+          "a full target spec like USB+AMD:LLVM is not a Device[] key")
+    check("it resolves the key through tinygrad instead", "Device[Device.DEFAULT]" in vsrc)
+    # Same trap one layer down: a Tensor built with the raw spec reports device
+    # "USB+AMD:LLVM" while the model's own tensors report "AMD", and the first comparison dies
+    # with "expected index and self on the same device".
+    check("nor builds Tensors with the raw --device spec",
+          "Tensor(v, device=device)" not in vsrc,
+          "the tensor would carry the spec string as its device name")
+
+    # An empty run must raise, not return a flattering zero. Same class of bug as the all-NaN
+    # model output that used to report a perfect pass: the absence of evidence read as success.
+    try:
+        v.summarize_times([])
+        check("an empty run raises instead of reporting 0 ms", False, "it returned a summary")
+    except ValueError:
+        check("an empty run raises instead of reporting 0 ms", True)
+
+    s = v.summarize_times([0.010, 0.020, 0.030, 0.040, 0.050, 0.060, 0.070, 0.080, 0.090, 0.100])
+    case("n counts every frame", s["n"], 10)
+    case("min is the fastest frame", round(s["min"], 6), 0.010)
+    case("max is the slowest frame", round(s["max"], 6), 0.100)
+    case("mean is the arithmetic mean", round(s["mean"], 6), 0.055)
+    # Nearest rank, so every reported percentile is a frame that actually happened. An
+    # interpolated p99 invents a value between two samples, and for a deadline question the
+    # invented value is always the optimistic one.
+    case("p50 is a real sample", round(s["p50"], 6), 0.050)
+    case("p99 is a real sample, not interpolated", round(s["p99"], 6), 0.100)
+
+    # A single frame is a legitimate summary; every statistic is that frame.
+    one = v.summarize_times([0.033])
+    case("a single frame summarises to itself", (one["min"], one["p99"], one["max"]), (0.033, 0.033, 0.033))
+
+    # The verdict is two independent gates. Failing either one fails the budget.
+    fast = v.summarize_times([0.030] * 100)
+    holds, _ = v.timing_verdict(fast)
+    check("comfortably inside both limits holds the budget", holds)
+
+    # Mean fine (~0.031 s), one spike over the instantaneous limit.
+    spiky = v.summarize_times([0.030] * 99 + [0.150])
+    holds, why = v.timing_verdict(spiky)
+    check("one frame over the instantaneous limit fails", not holds)
+    check("and the reason names the instantaneous limit", "60 ms" in why, why)
+
+    # Every frame under the instantaneous limit, but the average is over.
+    slow = v.summarize_times([0.055] * 100)
+    holds, why = v.timing_verdict(slow)
+    check("a mean over the average limit fails even with no spike", not holds)
+    check("and the reason names the average limit", "40 ms" in why, why)
+
+    # Both limits are strict "<" upstream (assert max(ts) < instant_max), so sitting exactly on
+    # the line is a miss, not a pass.
+    on_the_line = v.summarize_times([v.BUDGET_INSTANT_S])
+    check("sitting exactly on the instantaneous limit is not a pass", not v.timing_verdict(on_the_line)[0])
+
+    # Drift guard. These constants are only meaningful because they are the numbers the car is
+    # actually held to; if upstream retunes test_onroad.py, this tells us instead of us quietly
+    # validating against a budget nobody enforces.
+    onroad = ONROAD_TEST.read_text(encoding="utf-8")
+    m = re.search(r'\(\s*"modelV2"\s*,\s*([0-9.]+)\s*,\s*([0-9.]+)\s*\)', onroad)
+    check("test_onroad.py still states a modelV2 budget", m is not None)
+    if m:
+        case("our instantaneous limit is upstream's", v.BUDGET_INSTANT_S, float(m.group(1)))
+        case("our average limit is upstream's", v.BUDGET_MEAN_S, float(m.group(2)))
+
+
 def main() -> int:
     print("eGPU vendor logic")
     with tempfile.TemporaryDirectory(prefix="egpu-test-") as raw_tmp:
@@ -1170,6 +1302,7 @@ def main() -> int:
         test_stock_runner_gate()
         test_loading_flag_is_released()
         test_sunnypilot_runner_degrades()
+        test_frame_timing()
 
     print("\n" + "-" * 60)
     if failures:

@@ -50,9 +50,13 @@ def idle_reason(bridge_present: bool, vendor: str, assumed: bool,
   if not bridge_present:
     return "No chestnut detected. Check the USB cable and that the dock has power."
   if not asic_supported:
-    return ((asic_name or "This card") + " cannot be driven over the chestnut: tinygrad's "
-            + "driverless AMD driver supports RDNA3 and RDNA4 only. The dock stays powered "
-            + "and the driving model runs on the device.")
+    # Deliberately says nothing about which architectures the driver covers. The previous
+    # wording ("supports RDNA3 and RDNA4 only") was true when it was written and false the day
+    # RDNA2 was ported, and the driver is not what gates these cards anyway -- it brings them
+    # up. What they are missing is a numerical validation on a recorded route from this car.
+    return ((asic_name or "This card") + " is not enabled for driving: its model output has "
+            + "not been validated on this car yet. The dock stays powered and the driving "
+            + "model runs on the device.")
   if vendor == AMD:
     return None
   if assumed:
