@@ -40,6 +40,14 @@ from overlay import (
     NV_DELTA_PATHS, NV_DEVICE_METHOD, NV_IFACE_REGISTRY, NV_SENTINEL_EXEMPT, NV_SENTINELS,
 )
 
+# gfx majors we block in asics.py even though AM drives them, and why. See check_am_arch.
+BLOCKED_PENDING_VALIDATION = {
+    # A Navi 23 runs kernels (sum -> 6, 64x64 ones matmul -> 262144). validate_numerics.py has
+    # not been run against a real segment, and wrong-but-finite model output is what the
+    # blocklist is actually protecting against.
+    10: "kernels run; numerical validation against a real segment has not",
+}
+
 CONFLICT_MARKER = re.compile(r"^(<{7}|>{7}) ", re.MULTILINE)
 
 _failures: list[str] = []
@@ -176,8 +184,8 @@ def gfx_major(gfx: str) -> int:
     return int(gfx[len("gfx"):-2])
 
 
-def supported_am_targets(source: str) -> tuple[set[int], set[tuple[int, ...]]] | None:
-    """(supported gfx majors, exactly-supported targets) as ops_amd.py itself declares them.
+def supported_am_targets(source: str) -> tuple[set[int], set[tuple[int, ...]], set[tuple[int, ...]]] | None:
+    """(gfx majors, exact targets, target prefixes) as ops_amd.py itself declares them.
 
     Read off the assert rather than restated, because restating it is exactly the mistake
     this check exists to catch. Matched by AST so reflowing the line changes nothing.
@@ -190,11 +198,21 @@ def supported_am_targets(source: str) -> tuple[set[int], set[tuple[int, ...]]] |
             continue
         majors: set[int] = set()
         exact: set[tuple[int, ...]] = set()
+        prefixes: set[tuple[int, ...]] = set()
         for cmp_node in ast.walk(node.test):
-            if not isinstance(cmp_node, ast.Compare) or not isinstance(cmp_node.ops[0], ast.In):
+            if not isinstance(cmp_node, ast.Compare):
                 continue
             right = cmp_node.comparators[0]
             if not isinstance(right, ast.Tuple):
+                continue
+            if isinstance(cmp_node.ops[0], ast.Eq):
+                # self.target[:2] == (10,3) -- a whole family admitted by prefix. Reading only
+                # `in` comparisons made this form invisible, so widening the assert this way
+                # slipped past the very check that exists to notice it.
+                if isinstance(cmp_node.left, ast.Subscript) and isinstance(cmp_node.left.slice, ast.Slice):
+                    prefixes.add(tuple(e.value for e in right.elts if isinstance(e, ast.Constant)))
+                continue
+            if not isinstance(cmp_node.ops[0], ast.In):
                 continue
             if isinstance(cmp_node.left, ast.Subscript):        # self.target[0] in (11, 12)
                 majors |= {e.value for e in right.elts if isinstance(e, ast.Constant)}
@@ -202,7 +220,7 @@ def supported_am_targets(source: str) -> tuple[set[int], set[tuple[int, ...]]] |
                 for elt in right.elts:
                     if isinstance(elt, ast.Tuple):
                         exact.add(tuple(e.value for e in elt.elts if isinstance(e, ast.Constant)))
-        return majors, exact
+        return majors, exact, prefixes
     return None
 
 
@@ -226,16 +244,29 @@ def check_am_arch(tinygrad: Path) -> None:
     if declared is None:
         return
 
-    majors, exact = declared
+    majors, exact, prefixes = declared
     print("        AM supports gfx majors " + str(sorted(majors))
-          + " plus exact targets " + str(sorted(exact)))
-    check("AM still supports at least one architecture", bool(majors or exact))
+          + " plus exact targets " + str(sorted(exact))
+          + " plus prefixes " + str(sorted(prefixes)))
+    check("AM still supports at least one architecture", bool(majors or exact or prefixes))
 
+    am_majors = majors | {p[0] for p in prefixes} | {t[0] for t in exact}
     blocked = {gfx_major(spec.gfx) for spec in UNSUPPORTED_AMD.values()}
-    check("nothing in our blocklist is an architecture AM supports",
-          not (blocked & majors),
-          "asics.py blocks gfx major(s) " + str(sorted(blocked & majors))
-          + " that tinygrad now drives -- delete those entries")
+
+    # Blocking something AM can drive is allowed, because the driver working is not the same
+    # claim as the model producing correct output -- a kernel returning 6 says nothing about a
+    # 1.76 GB pickle over a real segment. But it has to be deliberate: an unexplained over-block
+    # is how a table quietly starts switching off eGPUs that would now work, which is the exact
+    # failure this whole check was written for. Emptying this map is what retires an entry, and
+    # nothing should empty it before .elantra/validate_numerics.py has passed on that card.
+    unexplained = (blocked & am_majors) - set(BLOCKED_PENDING_VALIDATION)
+    check("every architecture we block that AM now drives has a stated reason",
+          not unexplained,
+          "asics.py blocks gfx major(s) " + str(sorted(unexplained))
+          + " that tinygrad now drives, with no entry in BLOCKED_PENDING_VALIDATION")
+    stale = set(BLOCKED_PENDING_VALIDATION) - (blocked & am_majors)
+    check("no stale entries in BLOCKED_PENDING_VALIDATION", not stale,
+          "these are no longer both blocked and driveable: " + str(sorted(stale)))
     check("our blocklist is not empty", bool(UNSUPPORTED_AMD))
     check("every blocked entry names a real gfx target",
           all(spec.gfx.startswith("gfx") and spec.gfx[3:].isalnum()
@@ -251,9 +282,19 @@ def check_am_arch(tinygrad: Path) -> None:
         first = regs.read_text(encoding="utf-8", errors="replace").split(chr(10), 1)[0]
         have_gc = set(re.findall(r"gc_(\d+)_", first))
         if "10" in have_gc:
-            check("gfx10 registers exist, so AM must still refuse gfx10.3 at the assert",
-                  10 not in majors and not any(t[0] == 10 for t in exact),
-                  "registers alone are not support; the blocklist stays until a card runs")
+            # Registers may land ahead of the assert, never behind it. That ordering held while
+            # the port was unfinished; a Navi 23 has since run kernels, so the assert admits
+            # (10,3) and the invariant that remains is the blocklist not quietly disappearing
+            # with it.
+            admits_gfx10 = 10 in am_majors
+            if admits_gfx10:
+                check("AM admits gfx10.3, so the blocklist must still be there and explained",
+                      10 in blocked and 10 in BLOCKED_PENDING_VALIDATION,
+                      "a card running kernels does not retire the entry -- numerical validation does")
+            else:
+                check("gfx10 registers exist, so AM must still refuse gfx10.3 at the assert",
+                      not any(t[0] == 10 for t in exact),
+                      "registers alone are not support; the blocklist stays until a card runs")
         else:
             print("        no gc_10_* register set yet (port stage 1 not applied to this tree)")
 
