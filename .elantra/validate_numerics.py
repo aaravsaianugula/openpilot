@@ -579,7 +579,13 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
     from tinygrad.helpers import Context
     from tinygrad.nn.onnx import OnnxRunner
     from tinygrad.tensor import Tensor
-    runner = OnnxRunner(str(model_file))
+    # Inside the Context, not outside it. OnnxRunner materialises every initializer at
+    # construction (tinygrad/nn/onnx.py Tensor(data, ...)), and outside this block those land on
+    # Device.DEFAULT -- whatever tinygrad auto-picked -- while the inputs below are created on
+    # `device`. The first comparison then dies with "all buffers must be on the same device"
+    # before a single number is produced.
+    with Context(DEV=device):
+      runner = OnnxRunner(str(model_file))
     info("tinygrad device", Device[device].device)
 
     queues = PolicyInputs(input_shapes, frame_skip, ModelConstants.DESIRE_LEN)
