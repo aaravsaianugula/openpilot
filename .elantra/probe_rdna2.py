@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import array
 import ctypes
+import functools
 import sys
 import time
 from pathlib import Path
@@ -336,10 +337,12 @@ def stage5_discovery(pci_dev):
 
   gc = ip_ver.get(am.GC_HWIP)
   if gc is not None:
-    gfxver = int(f"{gc[0]:02d}{gc[1]:02d}{gc[2]:02d}")
-    target = (gfxver // 10000, (gfxver // 100) % 100, gfxver % 100)
+    target, source = gfx_target_version(gc)
     print("")
-    ok("gfx target", f"gfx{target[0]}{target[1]:x}{target[2]:x} {target}")
+    ok("gfx target", f"gfx{target[0]}{target[1]:x}{target[2]:x} {target} (from {source})")
+    if source != "ops_amd.py GFX_TARGET_VERSION":
+      bad("gfx target is packed, not looked up",
+          "digit-packing is wrong for 5 of 7 gfx10.3 parts; this can name the wrong ASIC")
     if target[0] in (11, 12) or target in ((9, 4, 2), (9, 5, 0)):
       ok("ops_amd.py would accept this target", "AM can drive this card as it stands")
     else:
@@ -408,7 +411,35 @@ def stage6_psp(ip_ver, regs_offset, mmio, timeout_s: float) -> str:
   return NO_GO
 
 
-def stage7_registers(ip_ver) -> bool:
+def gfx_target_version(gc: tuple) -> tuple:
+  """The gfx target for a GC IP version, taken from ops_amd.py's own table.
+
+  Read with ast, never imported: importing ops_amd on the device tears down the session, and
+  reading keeps one source of truth either way. Deriving the target by digit-packing the IP
+  version -- which is what this probe used to do, and what AM used to do -- is wrong for five
+  of the seven gfx10.3 parts. GC 10.3.4 packs to gfx1034 but is really gfx1032, so a probe
+  that packs its own answer names a plausible target belonging to a different ASIC, and
+  anything compiled against it is silently built for the wrong card.
+
+  Returns (target, source). A packed answer is reported as such so the caller can flag it.
+  """
+  import ast
+  import importlib.util
+  try:
+    spec = importlib.util.find_spec("tinygrad.runtime.ops_amd")
+    tree = ast.parse(Path(spec.origin).read_text())
+    table = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign)
+                 and any(getattr(t, "id", None) == "GFX_TARGET_VERSION" for t in n.targets))
+  except Exception:
+    table = {}
+  if (gfxver := table.get(tuple(gc))) is not None:
+    source = "ops_amd.py GFX_TARGET_VERSION"
+  else:
+    gfxver, source = int(f"{gc[0]:02d}{gc[1]:02d}{gc[2]:02d}"), "digit-packing (NOT the table)"
+  return (gfxver // 10000, (gfxver // 100) % 100, gfxver % 100), source
+
+
+def stage7_registers(ip_ver, regs_offset=None) -> bool:
   """Whether tinygrad can build this card's register set. True if everything resolves.
 
   This list is not a guess: it is exactly what AMDev._build_regs walks (amdev.py:327), plus
@@ -458,9 +489,46 @@ def stage7_registers(ip_ver) -> bool:
 
   if missing:
     info("register work remaining", ", ".join(missing))
-  else:
-    ok("every register set AM asks for", "present -- port stage 1 is complete for this card")
-  return not missing
+    return False
+
+  # Importing the module only proves the table exists. AM addresses registers by name through a
+  # bare __dict__ lookup, and every RDNA2 table is spelled mm* while AM is written in reg*, so a
+  # card can have all seven tables present and still not resolve one register. That is exactly
+  # what "1271 gc registers" looked like before the alias layer existed, which is why this stage
+  # now resolves the names instead of counting the tables.
+  from tinygrad.runtime.support.amd import AMDReg, import_asic_regs
+  NEEDED = {"gc": ("regCP_MEC_CNTL", "regGRBM_GFX_CNTL", "regRLC_CNTL", "regGCVM_CONTEXT0_CNTL"),
+            "mp": ("regMP0_SMN_C2PMSG_35", "regMP0_SMN_C2PMSG_64", "regMP0_SMN_C2PMSG_81"),
+            "mmhub": ("regMMVM_CONTEXT0_CNTL", "regMMMC_VM_FB_LOCATION_BASE"),
+            "osssys": ("regIH_RB_CNTL", "regIH_RB_WPTR_ADDR_LO", "regIH_DOORBELL_RPTR"),
+            "nbio": ("regBIF_BX0_REMAP_HDP_MEM_FLUSH_CNTL", "regBIF_BX0_BIF_DOORBELL_INT_CNTL")}
+  HWIPS = {"gc": am.GC_HWIP, "mp": am.MP0_HWIP, "mmhub": am.MMHUB_HWIP,
+           "osssys": am.OSSSYS_HWIP, "nbio": am.NBIO_HWIP}
+  unresolved = []
+  for prefix, names in NEEDED.items():
+    version = ip_ver.get(HWIPS[prefix])
+    if version is None:
+      continue
+    regs = import_asic_regs(prefix, version, cls=functools.partial(AMDReg, bases={}))
+    if absent := [n for n in names if n not in regs]:
+      unresolved += absent
+      bad(f"{prefix} register names", "unresolved: " + ", ".join(absent))
+  if unresolved:
+    info("AM cannot address this card", "the tables are present but the names AM uses are not")
+    return False
+  ok("the register names AM uses", f"all {sum(len(v) for v in NEEDED.values())} resolve")
+
+  # Tie the alias layer to an address this probe already proved on hardware: stage 6 read the
+  # PSP bootloader through regMP0_SMN_C2PMSG_35, so resolving it with the card's real discovery
+  # bases must land on the same address stage 6 used.
+  if regs_offset is not None and am.MP0_HWIP in regs_offset:
+    mp = import_asic_regs("mp", ip_ver[am.MP0_HWIP],
+                          cls=functools.partial(AMDReg, bases=regs_offset[am.MP0_HWIP]))
+    addr = mp["regMP0_SMN_C2PMSG_35"].addr[0]
+    ok("regMP0_SMN_C2PMSG_35 resolves with the card's own bases", f"{addr:#x}")
+
+  ok("every register set AM asks for", "present and addressable -- port stage 2.0 is done")
+  return True
 
 
 def main() -> int:
@@ -468,6 +536,8 @@ def main() -> int:
                                formatter_class=argparse.RawDescriptionHelpFormatter)
   ap.add_argument("--expect", default=None,
                   help="PCI device id the card must report, hex (e.g. 0x73ff)")
+  ap.add_argument("--strict", action="store_true",
+                  help="exit non-zero if any check failed, not just on a stage 6 NO-GO")
   ap.add_argument("--psp-timeout", type=float, default=5.0,
                   help="seconds to wait for the PSP bootloader (default 5)")
   args = ap.parse_args()
@@ -494,18 +564,26 @@ def main() -> int:
   ip_ver, regs_offset, mmio = discovered
 
   result = stage6_psp(ip_ver, regs_offset, mmio, args.psp_timeout)
-  regs_ready = stage7_registers(ip_ver)
+  regs_ready = stage7_registers(ip_ver, regs_offset)
 
   head("Verdict")
   if result == GO:
     print("  GO -- the PSP bootloader came up. Porting AM to this card is worth doing.")
-    # Stage 7 does not move the exit code on purpose: this tool answers one question, and it
-    # is stage 6's. Missing registers are work remaining, not a reason not to start.
+    # By default stage 7 does not move the exit code: this tool answers one question, and it is
+    # stage 6's -- missing registers are work remaining, not a reason not to start. Once the
+    # register layer exists that inverts: registers that stop resolving are a regression, not
+    # remaining work, and a caller checking $? would otherwise read 0 while AM cannot address a
+    # single register. --strict is for that caller.
     if regs_ready:
       print("  Every register set AM asks for now resolves, so port stage 1 is done for this")
       print("  card. The next unknown is PSP: SOS load, TMR setup and ring creation.")
     else:
       print("  Stage 5 lists the IP versions and stage 7 the register sets still missing.")
+    if args.strict and _failed:
+      print("")
+      print("  --strict: a check failed above, so this is a non-zero exit even though the")
+      print("  card itself came up.")
+      return 3
     return 0
   if result == NO_GO:
     print("  NO-GO -- the PSP bootloader was polled and never reported ready. Everything a")

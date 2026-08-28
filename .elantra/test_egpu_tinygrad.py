@@ -25,8 +25,11 @@ from __future__ import annotations
 
 import argparse
 import ast
+import json
 import re
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -313,6 +316,158 @@ def check_gfx_target_table(tinygrad: Path) -> None:
           "blocklist=" + str(sorted(blocked_gfx)))
 
 
+
+# --- Phase 2 stage 2.0: RDNA2 register-name resolution ---------------------------------------
+#
+# gfx10-era AMD headers spell every register mm*; gfx11 and later spell them reg*. AM is written
+# entirely in reg*, and AMDev.reg() is a bare __dict__ lookup, so on a Navi 2x card not one
+# register resolves until an alias layer exists. Counting generated registers does not catch
+# this -- stage 1 generated 1271 gc registers and zero of them were reachable under the names AM
+# asks for. These checks test the thing that actually matters: the names, not the count.
+
+# What AMDev._build_regs resolves for this card's reported IP versions.
+RDNA2_MODULES = (("gc", (10, 3, 4)), ("mp", (11, 0, 12)), ("hdp", (5, 0, 3)),
+                 ("mmhub", (2, 1, 1)), ("osssys", (5, 0, 3)), ("nbio", (3, 3, 2)))
+
+# Strings AM passes as a *base* to wreg_pair() or an f-string, not whole register names. Each is
+# checked with its real suffixes instead.
+RDNA2_PREFIXES = {
+    "regMP0_SMN_C2PMSG": ("_35", "_36", "_64", "_67", "_69", "_70", "_71", "_81"),
+    "regIH_RB_WPTR_ADDR": ("_LO", "_HI"),
+}
+
+# Names AM references that must NOT resolve on gfx10.3. Keeping this exact matters both ways: one
+# that starts resolving means the alias table grew something it should not have, and one that
+# stops being referenced means this list is stale. The value says why -- either the call site is
+# already correctly version-guarded away from gfx10.3, or it is a guard a later stage has to fix.
+RDNA2_EXPECTED_ABSENT = {
+    "regXCC_DOORBELL_FENCE": "MI300 multi-XCC; guarded on NBIO 7.9 at ip.py:31",
+    "regBIFC_GFX_INT_MONITOR_MASK": "MI300 nbio 7.9; guarded at ip.py:31",
+    "regBIFC_DOORBELL_ACCESS_EN_PF": "MI300 nbio 7.9; guarded at ip.py:31",
+    "regTCP_UTCL1_CNTL2": "MI300 golden reg; guarded on GC 9.4.3/9.5.0 at ip.py:278",
+    "regMMMC_VM_XGMI_LFB_CNTL": "XGMI is MI-series; hasattr-guarded at ip.py:55",
+    "regMMMC_VM_XGMI_LFB_SIZE": "XGMI is MI-series; hasattr-guarded at ip.py:56",
+    "regBIF_BX_PF0_RSMU_INDEX": "RSMU is MI-series; nbio 2.3 uses PCIE_INDEX2 (stage 3)",
+    "regBIF_BX_PF0_RSMU_DATA": "RSMU is MI-series; nbio 2.3 uses PCIE_DATA2 (stage 3)",
+    "regBIF_BX0_PCIE_INDEX2_HI": "nbio 4.3+ only; reached only when hi32(addr) > 0",
+    "regCP_MEC_RS64_CNTL": "RS64 is gfx11+; gfx10.3 starts MEC via CP_MEC_CNTL (stage 4)",
+    "regTCP_CNTL": "gfx11 golden reg, written unconditionally at ip.py:264 (stage 4 must guard)",
+    "regIH_MSI_STORM_CTRL": "absent on OSSSYS 5.0; guard at ip.py:431 is wrong (stage 3)",
+    "regRCC_DEV0_EPF2_STRAP2": "nbio 4.3 / nbif 6.3 only; guard at ip.py:37 is wrong (stage 3)",
+    "regSDMA0_RLC_CGCG_CTRL": "not in the gc 10.3 header; guard at ip.py:361 is wrong (stage 3)",
+    "regSDMA1_RLC_CGCG_CTRL": "not in the gc 10.3 header; guard at ip.py:361 is wrong (stage 3)",
+    # f-string bases for paths gfx10.3 does not take. They are whole strings in the source,
+    # so they show up in the scan, but no register is ever built from them on this card.
+    "regMPASP_SMN_C2PMSG": "PSP mailbox prefix for MP0 14+; 11.0.12 uses regMP0_SMN_C2PMSG",
+    "regGDC_S2A0_S2A": "doorbell prefix for GC 12+; gfx10.3 takes the regS2A branch",
+    "regS2A": "doorbell prefix; nbio 2.3 has BIF_{SDMA0,SDMA1,IH}_DOORBELL_RANGE instead (stage 3)",
+    "regSDMA_GFX": "ring prefix for MI300 SDMA 4.4; 5.2.4 takes regSDMA{i}_QUEUE{q}, whose registers are also absent until regs.py is regenerated (stage 5)",
+}
+
+_REG_PROBE = r'''
+import ast, functools, json, re, sys
+sys.path.insert(0, sys.argv[1])
+from tinygrad.runtime.support.amd import AMDReg, import_asic_regs, import_module
+
+# Only register *names* are under test, so no real IP bases are needed.
+NOBASE = functools.partial(AMDReg, bases={})
+
+MODULES = json.loads(sys.argv[2])
+NAME = re.compile(r"reg[A-Z][A-Za-z0-9_]*")
+
+# Every whole reg* name AM references. Constants inside an f-string are fragments, not names.
+static = set()
+for rel in ("tinygrad/runtime/support/am/ip.py", "tinygrad/runtime/support/am/amdev.py"):
+    tree = ast.parse(open(sys.argv[1] + "/" + rel).read())
+    frag = {id(v) for n in ast.walk(tree) if isinstance(n, ast.JoinedStr)
+            for v in n.values if isinstance(v, ast.Constant)}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Attribute) and NAME.fullmatch(n.attr):
+            static.add(n.attr)
+        elif isinstance(n, ast.Constant) and id(n) not in frag \
+                and isinstance(n.value, str) and NAME.fullmatch(n.value):
+            static.add(n.value)
+
+resolved, per_module = {}, {}
+for prefix, ver in MODULES:
+    raw = import_module(prefix, tuple(ver), submod="regs")
+    aliased = import_asic_regs(prefix, tuple(ver), cls=NOBASE)
+    per_module[prefix] = {
+        "raw": len(raw),
+        "raw_mm": sum(1 for k in raw if k.startswith("mm")),
+        "aliased": len(aliased),
+        "unaliased_mm": sorted(k for k in raw if k.startswith("mm") and "reg" + k[2:] not in aliased),
+    }
+    resolved.update(dict.fromkeys(aliased, prefix))
+
+# gfx11 is the control: it is already reg*-keyed, so aliasing must be a no-op on it.
+gfx11_raw = import_module("gc", (11, 0, 0), submod="regs")
+gfx11_aliased = import_asic_regs("gc", (11, 0, 0), cls=NOBASE)
+
+print(json.dumps({
+    "static": sorted(static),
+    "have": sorted(resolved),
+    "per_module": per_module,
+    "gfx11_noop": len(gfx11_raw) == len(gfx11_aliased),
+}))
+'''
+
+
+def _run_reg_probe(tinygrad: Path) -> dict | None:
+    """Resolve registers in a subprocess so importing tinygrad cannot disturb the AST checks."""
+    modules = json.dumps([[p, list(v)] for p, v in RDNA2_MODULES])
+    with tempfile.TemporaryDirectory() as td:
+        script = Path(td) / "reg_probe.py"
+        script.write_text(_REG_PROBE, encoding="utf-8")
+        proc = subprocess.run([sys.executable, str(script), str(tinygrad), modules],
+                              capture_output=True, text=True)
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout).strip().splitlines()
+        check("the RDNA2 register probe runs", False, tail[-1] if tail else "no output")
+        return None
+    return json.loads(proc.stdout)
+
+
+def check_rdna2_registers(tinygrad: Path) -> None:
+    print("\nRDNA2 register-name resolution (Navi 23 / gfx1032):")
+    if (probe := _run_reg_probe(tinygrad)) is None:
+        return
+
+    have = set(probe["have"])
+
+    # 1. Every mm* register is reachable under the reg* name AM uses. This is also what makes the
+    #    45 f-string call sites work, without having to enumerate them.
+    unaliased = {p: d["unaliased_mm"] for p, d in probe["per_module"].items() if d["unaliased_mm"]}
+    check("every mm* register is aliased to its reg* name", not unaliased,
+          "unaliased: " + str({p: v[:3] for p, v in unaliased.items()}))
+
+    # 2. The nbio registers that were renamed outright, not just re-spelled.
+    for name in ("regBIF_BX0_BIF_DOORBELL_INT_CNTL", "regBIF_BX0_REMAP_HDP_MEM_FLUSH_CNTL",
+                 "regBIF_BX0_PCIE_INDEX2", "regBIF_BX0_PCIE_DATA2"):
+        check("nbio rename resolves: " + name, name in have)
+
+    # 3. Every whole register name AM references resolves, unless it is expected-absent.
+    names = set(probe["static"]) - set(RDNA2_PREFIXES) - set(RDNA2_EXPECTED_ABSENT)
+    missing = sorted(n for n in names if n not in have)
+    check("every register AM names resolves on gfx10.3", not missing,
+          str(len(missing)) + " missing, e.g. " + str(missing[:5]))
+
+    # 4. wreg_pair and f-string bases resolve with their real suffixes.
+    bad = [b + s for b, sufs in RDNA2_PREFIXES.items() for s in sufs if b + s not in have]
+    check("wreg_pair and f-string register bases resolve", not bad, str(bad[:5]))
+
+    # 5. The expected-absent list is exact in both directions.
+    leaked = sorted(n for n in RDNA2_EXPECTED_ABSENT if n in have)
+    check("no MI300/gfx11-only register resolves on gfx10.3", not leaked,
+          "these must not exist here: " + str(leaked))
+    stale = sorted(set(RDNA2_EXPECTED_ABSENT) - set(probe["static"]))
+    check("the expected-absent list has no stale entries", not stale,
+          "no longer referenced by AM: " + str(stale))
+
+    # 6. gfx11 is the negative control: already reg*-keyed, so aliasing must not touch it.
+    check("aliasing is a no-op on gfx11 (already reg*-keyed)", probe["gfx11_noop"])
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -330,6 +485,7 @@ def main() -> int:
         check_patch(tinygrad)
         check_am_arch(tinygrad)
         check_gfx_target_table(tinygrad)
+        check_rdna2_registers(tinygrad)
     else:
         print("\nnote: no --tinygrad checkout given; the patch itself was NOT inspected.")
         print("      Only the registry consistency checks ran.")
