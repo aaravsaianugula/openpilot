@@ -84,7 +84,38 @@ not inference:
   `models/recompiled19` … `recompiled22` on the HuggingFace dataset, and the on-SoC
   `driving_models_v21.json` (77 bundles, zero BMRLNAP).
 
-### THE OPEN QUESTION — start here
+### ANSWERED — BMRLNAP v3 cannot run on this card
+
+The open question below has been settled by loading the real model, not by argument. Downloaded
+all 38 chunks (sha256 `502bd18e…`, matches the catalog), decoded openpilot's container format
+(int64 length + pickle opcodes + protocol-5 out-of-band weight buffers, `helpers.py:39 load_oob`
+— the graph is only ~5.8 MB of the 1.7 GB), and walked it under a restricted unpickler with
+`Buffer.allocate` stubbed so no device is opened.
+
+| | |
+|---|---|
+| AMD kernels in `run_policy` | 88, target `USB+AMD:LLVM:gfx1200` |
+| every PROGRAM retains | `src = [SINK, LINEAR, SOURCE, BINARY]` — the AST survives |
+| WMMA-free, would re-render for gfx1032 | **70 of 88** |
+| WMMA baked into both retained ASTs | **18 of 88** |
+| of those 18, any WMMA-free AST retained | **0** |
+
+`do_to_program()` does accept a PROGRAM back and re-render it for a new target, so retargeting is
+architecturally possible and 70 of the 88 kernels would work. The 18 that will not are the
+matmul-heavy ones: the pre-tensor-core AST is not stored, and tinygrad has no WMMA→scalar
+lowering — every handler in `renderer/llvmir.py` and `renderer/ptx.py` maps `Ops.WMMA` onto a
+hardware matrix instruction. gfx1032 has no matrix unit.
+
+The only remaining path is writing a WMMA→scalar lowering pass: unwinding `amd_rdna4`'s tile
+layouts and swizzles into ordinary arithmetic. Substantial, correctness-critical, and those 18
+kernels would be far slower — WMMA exists because scalar matmul is slow. On a card with no clock
+control and a 20 Hz budget, expect it to miss deadlines even if correct. **Do not start this
+without deciding it is worth it; an RDNA3/RDNA4 card runs the published bundles as-is.**
+
+Reproduce with the scripts in the session scratchpad (`inspect_bm3.py`, `sink_pairs.py`) or
+rewrite them from the description above — they are ~80 lines each.
+
+### The original open question, now closed
 
 tinygrad's `CapturedJit.__reduce__` (`tinygrad/engine/jit.py:174`) pickles
 `(ret, _linear, expected_names, expected_input_info)`, and **`_linear` is a UOp graph**, not just
