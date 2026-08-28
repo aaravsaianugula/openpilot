@@ -36,21 +36,28 @@ from the CPU reference's own rollout. Letting each backend feed its own features
 measure how fast a chaotic loop diverges rather than whether the eGPU computes the model
 correctly, and would make the answer depend on how long the route is.
 
-The frames and the per-frame model inputs come out of the route with openpilot's own readers --
-tools/lib/route.py, tools/lib/logreader.py and tools/lib/framereader.py. The warp from camera
-frame to model frame is reproduced in numpy from selfdrive/modeld/compile_modeld.py because both
-backends must be handed byte-identical images; `--check-warp` proves that reproduction against
-tinygrad's own implementation instead of asking you to trust it.
+The frames and the per-frame model inputs come out of the route with openpilot's own readers,
+tools/lib/logreader.py and tools/lib/framereader.py -- no new log parser. Finding the segment
+directories is a listdir instead of tools/lib/route.py, for the reason in resolve_segments. The
+warp from camera frame to model frame is reproduced in numpy from compile_modeld.py because both
+backends must be handed byte-identical images; `--check-warp` holds that reproduction against
+tinygrad's own implementation on CPU instead of asking you to trust it.
 
 Nothing above the stage functions imports tinygrad, onnxruntime or openpilot, so this file reads,
 reviews and --helps on a machine with no card attached.
+
+What stage 2 needs on the device, and what AGNOS 19.6 does not ship: onnxruntime. Everything else
+is there -- ffmpeg and ffprobe in /usr/local/venv/bin, capnp, zstandard, tinygrad. /usr/local/venv
+is not writable by `comma`, so installing it takes root. Expect roughly 250 ms/frame of numpy warp
+on top of the two forward passes, so budget the better part of an hour for 1000 frames.
 
 Usage, on the comma 4, offroad, with modeld stopped:
     cd /data/openpilot
     export PATH=/usr/comma/shims:/usr/local/venv/bin:$PATH
     export PYTHONPATH=/data/openpilot:/data/openpilot/opendbc_repo
-    python3 .elantra/validate_numerics.py --route 00000023--a1b2c3d4e5
+    python3 .elantra/validate_numerics.py --route 0000008b--f5329831c9
     python3 .elantra/validate_numerics.py --stage copyout      # transfer path only
+    python3 .elantra/validate_numerics.py --stage model --check-warp --route 0000008b--f5329831c9
 """
 
 from __future__ import annotations
@@ -78,6 +85,8 @@ COPYOUT_ITERS = 10_000
 COPYOUT_BYTES = 1 << 20
 
 MIN_FRAMES = 1000
+# what PolicyInputs.step builds, and therefore the only model this tool can drive
+POLICY_INPUT_NAMES = frozenset({"img", "big_img", "desire_pulse", "features_buffer", "traffic_convention", "action_t"})
 DEFAULT_DATA_DIR = Path("/data/media/0/realdata")
 DEFAULT_ONNX = REPO / "openpilot" / "selfdrive" / "modeld" / "models" / "big_driving_supercombo.onnx"
 
@@ -112,11 +121,23 @@ def bad(label: str, detail: str = "") -> None:
   print("  FAIL  " + label + ((": " + detail) if detail else ""))
 
 
+def report_tinygrad() -> None:
+  """Say which tinygrad answered.
+
+  This repo carries tinygrad_repo on the rdna2-am branch and the device also has one installed in
+  its venv. A result that does not name the file it tested is not reproducible, and on this
+  project a package resolving to the wrong lineage has already cost a day.
+  """
+  import tinygrad
+  info("tinygrad", str(Path(tinygrad.__file__).resolve().parent))
+
+
 # ---------------------------------------------------------------------------- stage 1: copyout
 
 def stage_copyout(device: str, iters: int, nbytes: int) -> bool:
   head(f"stage 1: {device} _copyout round trip -- {iters} x {nbytes} bytes")
 
+  report_tinygrad()
   from tinygrad.device import Device
 
   dev = Device[device]
@@ -125,16 +146,17 @@ def stage_copyout(device: str, iters: int, nbytes: int) -> bool:
 
   buf = allocator.alloc(nbytes)
   rng = np.random.default_rng(0xC0FFEE)
-  dst = np.empty(nbytes, dtype=np.uint8)
+  src, dst = np.empty(nbytes, dtype=np.uint8), np.empty(nbytes, dtype=np.uint8)
+  src_mv, dst_mv = memoryview(src), memoryview(dst)
   st = time.monotonic()
   try:
     for i in range(iters):
       # a fresh pattern every iteration on purpose: a constant one passes even when the readback
       # returns whatever was in the staging buffer last time, which is a failure we care about
-      src = np.frombuffer(rng.bytes(nbytes), dtype=np.uint8)
-      allocator._copyin(buf, memoryview(bytearray(src)))
+      src[:] = np.frombuffer(rng.bytes(nbytes), dtype=np.uint8)
+      allocator._copyin(buf, src_mv)
       dev.synchronize()
-      allocator._copyout(memoryview(dst), buf)
+      allocator._copyout(dst_mv, buf)
 
       if not np.array_equal(src, dst):
         diff = np.flatnonzero(src != dst)
@@ -175,48 +197,54 @@ def resolve_segments(data_dir: Path, route: str) -> tuple[str, list[Path]]:
 
   segs.sort()
   if seg_slice:
-    start, _, end = seg_slice.partition(":")
+    start, colon, end = seg_slice.partition(":")
     lo = int(start) if start else 0
-    hi = int(end) if end else segs[-1][0] + 1
+    hi = int(end) if end else (segs[-1][0] + 1 if colon else lo + 1)
     segs = [(n, d) for n, d in segs if lo <= n < hi]
     if not segs:
       raise FileNotFoundError(f"route {name!r} has no segments in range {seg_slice}")
   return name, [d for _, d in segs]
 
 
-def read_route_state(seg_dirs: list[Path]) -> tuple[dict, dict]:
-  """Per-frame model inputs and camera indices, read out of the rlogs.
+class RouteScan:
+  """Per-frame model inputs and camera indices, read out of a route's rlogs one segment at a time.
 
-  Returns (frames, cameras). `frames` maps a narrow-road frameId to the state modeld had when it
-  ran that frame; `cameras` maps a camera name to {frameId: (segment dir, index into its hevc)}.
+  `frames` maps a narrow-road frameId to the state modeld had when it ran that frame; `cameras`
+  maps a model input name to {frameId: (segment dir, index into that segment's hevc)}.
 
   Keyed on modelV2 because modeld stamps it with the frame it just ran
   (fill_model_msg: modelV2.frameId = vipc_frame_id) and publishes it at the end of that
   iteration, so every other message already in flight is what modeld's SubMaster had read.
+
+  One segment at a time because a full route is an hour of rlogs -- 5 minutes of parsing on the
+  device to find 50 seconds of frames. The caller stops as soon as it has the run it needs.
   """
-  from openpilot.tools.lib.logreader import LogReader
 
-  frames: dict[int, dict] = {}
-  cameras: dict[str, dict[int, tuple[Path, int]]] = {"img": {}, "big_img": {}}
-  encode_key = {"narrowRoadEncodeIdx": "img", "wideRoadEncodeIdx": "big_img"}
-  car_params = None
-  cur: dict = {"rpy_calib": None, "is_rhd": False, "lat_delay": None, "sensor": None, "device_type": None}
-  # DesireHelper runs after the model, so the state published alongside frame N is what feeds
-  # frame N+1; carried forward here the same way.
-  pending_desire = (0, 0, 0)
+  ENCODE_KEY = {"narrowRoadEncodeIdx": "img", "wideRoadEncodeIdx": "big_img"}
 
-  for seg in seg_dirs:
+  def __init__(self):
+    self.frames: dict[int, dict] = {}
+    self.cameras: dict[str, dict[int, tuple[Path, int]]] = {"img": {}, "big_img": {}}
+    self.long_actuator_delay: float | None = None
+    self._cur: dict = {"rpy_calib": None, "is_rhd": False, "lat_delay": None, "sensor": None, "device_type": None}
+    # DesireHelper runs after the model, so the state published alongside frame N is what feeds
+    # frame N+1; carried across segments here the same way.
+    self._pending_desire = (0, 0, 0)
+
+  def add_segment(self, seg: Path) -> None:
+    from openpilot.tools.lib.logreader import LogReader
+
     rlog = next((p for p in (seg / "rlog.zst", seg / "rlog.bz2", seg / "rlog") if p.is_file()), None)
     if rlog is None:
       raise FileNotFoundError(f"no rlog in {seg}")
 
-    last_model_frame_id = None
+    cur, seen_model = self._cur, False
     for msg in LogReader(str(rlog), sort_by_time=True):
       which = msg.which()
-      if which in encode_key:
+      if which in self.ENCODE_KEY:
         idx = getattr(msg, which)
         if str(idx.type) == "fullHEVC":
-          cameras[encode_key[which]][idx.frameId] = (seg, idx.segmentId)
+          self.cameras[self.ENCODE_KEY[which]][idx.frameId] = (seg, idx.segmentId)
       elif which == "extrinsicsCalibration":
         cur["rpy_calib"] = np.array(msg.extrinsicsCalibration.rpyCalib, dtype=np.float32)
       elif which == "driverMonitoringState":
@@ -227,21 +255,21 @@ def read_route_state(seg_dirs: list[Path]) -> tuple[dict, dict]:
         cur["sensor"] = str(msg.narrowRoadCameraState.sensor)
       elif which == "deviceState":
         cur["device_type"] = str(msg.deviceState.deviceType)
-      elif which == "carParams" and car_params is None:
-        car_params = {"longitudinalActuatorDelay": float(msg.carParams.longitudinalActuatorDelay)}
+      elif which == "carParams" and self.long_actuator_delay is None:
+        self.long_actuator_delay = float(msg.carParams.longitudinalActuatorDelay)
       elif which == "modelV2":
         meta = msg.modelV2.meta
-        last_model_frame_id = int(msg.modelV2.frameId)
-        frames[last_model_frame_id] = {**cur, "desire_state": pending_desire}
-        pending_desire = (int(meta.laneChangeState.raw), int(meta.laneChangeDirection.raw), pending_desire[2])
-      elif which == "modelDataV2SP" and last_model_frame_id is not None:
-        pending_desire = (pending_desire[0], pending_desire[1], int(msg.modelDataV2SP.laneTurnDirection.raw))
+        seen_model = True
+        self.frames[int(msg.modelV2.frameId)] = {**cur, "desire_state": self._pending_desire}
+        self._pending_desire = (enum_int(meta.laneChangeState), enum_int(meta.laneChangeDirection), self._pending_desire[2])
+      elif which == "modelDataV2SP" and seen_model:
+        self._pending_desire = (self._pending_desire[0], self._pending_desire[1], enum_int(msg.modelDataV2SP.laneTurnDirection))
 
-  if car_params is None:
-    raise LookupError("no carParams in the route's rlogs; cannot reconstruct the model's action_t input")
-  for f in frames.values():
-    f["longitudinal_actuator_delay"] = car_params["longitudinalActuatorDelay"]
-  return frames, cameras
+
+def enum_int(v) -> int:
+  """pycapnp hands back a plain int for a schema enumerant and a _DynamicEnum for one read off a
+  message; the latter compares equal to its int but is not one."""
+  return int(v.raw) if hasattr(v, "raw") else int(v)
 
 
 def desire_index(lane_change_state: int, lane_change_direction: int, lane_turn_direction: int) -> int:
@@ -254,17 +282,17 @@ def desire_index(lane_change_state: int, lane_change_direction: int, lane_turn_d
   from openpilot.cereal import custom, log
 
   turn_desires = {
-    custom.ModelDataV2SP.TurnDirection.turnLeft.raw: log.Desire.turnLeft.raw,
-    custom.ModelDataV2SP.TurnDirection.turnRight.raw: log.Desire.turnRight.raw,
+    enum_int(custom.ModelDataV2SP.TurnDirection.turnLeft): enum_int(log.Desire.turnLeft),
+    enum_int(custom.ModelDataV2SP.TurnDirection.turnRight): enum_int(log.Desire.turnRight),
   }
   if lane_turn_direction in turn_desires:
     return turn_desires[lane_turn_direction]
-  if lane_change_state == log.LaneChangeState.laneChangeStarting.raw:
-    if lane_change_direction == log.LaneChangeDirection.left.raw:
-      return log.Desire.laneChangeLeft.raw
-    if lane_change_direction == log.LaneChangeDirection.right.raw:
-      return log.Desire.laneChangeRight.raw
-  return log.Desire.none.raw
+  if lane_change_state == enum_int(log.LaneChangeState.laneChangeStarting):
+    if lane_change_direction == enum_int(log.LaneChangeDirection.left):
+      return enum_int(log.Desire.laneChangeLeft)
+    if lane_change_direction == enum_int(log.LaneChangeDirection.right):
+      return enum_int(log.Desire.laneChangeRight)
+  return enum_int(log.Desire.none)
 
 
 # ----------------------------------------------------------------- camera frame -> model frame
@@ -321,14 +349,15 @@ def frame_prepare(nv12_buf: np.ndarray, m_inv: np.ndarray, cam_wh: tuple[int, in
   return frames_to_tensor(np.concatenate([y, u, v]).reshape(model_h * 3 // 2, model_w))
 
 
-def pack_nv12(decoded: np.ndarray, cam_w: int, cam_h: int, stride: int, y_height: int) -> np.ndarray:
+def pack_nv12(decoded: np.ndarray, cam_w: int, cam_h: int, stride: int, y_height: int, uv_height: int) -> np.ndarray:
   """Lay a decoded NV12 frame out the way camerad's buffer is, padding and all.
 
   ffmpeg hands back tight rows; camerad's buffer is stride-aligned (system/camerad/cameras/
   nv12_info.py) and the warp indexes straight into it, so the padding has to be there for the
-  gather indices to land where modeld's would.
+  gather indices to land where modeld's would. uv_height, not cam_h // 2: at 1344x760 the UV
+  plane is padded from 380 to 384 rows and the warp slices the full padded plane.
   """
-  buf = np.zeros(stride * (y_height + cam_h // 2), dtype=np.uint8)
+  buf = np.zeros(stride * (y_height + uv_height), dtype=np.uint8)
   buf[:cam_h * stride].reshape(cam_h, stride)[:, :cam_w] = decoded[:cam_h * cam_w].reshape(cam_h, cam_w)
   uv_off = stride * y_height
   buf[uv_off:uv_off + (cam_h // 2) * stride].reshape(cam_h // 2, stride)[:, :cam_w] = \
@@ -444,30 +473,34 @@ def materialize_onnx(path: Path) -> tuple[Path, Path | None]:
 
 def build_frame_plan(frames: dict, cameras: dict, want: int) -> tuple[list[int], bool]:
   """The longest run of consecutive frameIds we have everything for, capped at `want`."""
+  have_wide = bool(cameras["big_img"])
   usable = sorted(fid for fid, st in frames.items()
-                  if fid in cameras["img"] and st["rpy_calib"] is not None
-                  and st["lat_delay"] is not None and st["sensor"] and st["device_type"])
+                  if fid in cameras["img"] and (not have_wide or fid in cameras["big_img"])
+                  and st["rpy_calib"] is not None and st["lat_delay"] is not None
+                  and st["sensor"] and st["device_type"])
   if not usable:
-    return [], False
-  have_wide = all(fid in cameras["big_img"] for fid in usable)
-  if have_wide:
-    usable = [fid for fid in usable if fid in cameras["big_img"]]
+    return [], have_wide
 
-  best: list[int] = []
-  run = [usable[0]]
-  for prev, fid in zip(usable, usable[1:], strict=True):
-    run = run + [fid] if fid == prev + 1 else [fid]
-    if len(run) > len(best):
-      best = run
-    if len(best) >= want:
+  best_start, best_len, start = 0, 1, 0
+  for i in range(1, len(usable)):
+    if usable[i] != usable[i - 1] + 1:
+      start = i
+    if i - start + 1 > best_len:
+      best_start, best_len = start, i - start + 1
+    if best_len >= want:
       break
-  return best[:want], have_wide
+  return usable[best_start:best_start + min(best_len, want)], have_wide
 
 
 def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_frames: int) -> int:
   head("stage 2: eGPU vs onnxruntime CPUExecutionProvider on a recorded route")
 
-  import onnxruntime as ort
+  try:
+    import onnxruntime as ort
+  except ImportError:
+    bad("onnxruntime is not installed", "there is no reference to compare the eGPU against, so this stage cannot run")
+    info("fix", "install onnxruntime into the venv that runs modeld, then re-run; AGNOS 19.6 ships without it")
+    return EXIT_FAIL
 
   from openpilot.common.realtime import DT_MDL
   from openpilot.common.transformations.camera import DEVICE_CAMERAS
@@ -480,7 +513,7 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
 
   route_name, seg_dirs = resolve_segments(data_dir, route)
   info("route", route_name)
-  info("segments", f"{seg_dirs[0].name} .. {seg_dirs[-1].name} ({len(seg_dirs)} segments)")
+  info("segments available", f"{seg_dirs[0].name} .. {seg_dirs[-1].name} ({len(seg_dirs)} segments)")
   info("onnx", str(onnx_path))
 
   model_file, tmpdir = materialize_onnx(onnx_path)
@@ -493,11 +526,28 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
     model_h, model_w = input_shapes["img"][2] * 2, input_shapes["img"][3] * 2
     frame_skip = ModelConstants.MODEL_RUN_FREQ // ModelConstants.MODEL_CONTEXT_FREQ
 
-    frames, cameras = read_route_state(seg_dirs)
-    plan, have_wide = build_frame_plan(frames, cameras, want_frames)
+    scan = RouteScan()
+    plan: list[int] = []
+    have_wide = False
+    for i, seg in enumerate(seg_dirs):
+      scan.add_segment(seg)
+      plan, have_wide = build_frame_plan(scan.frames, scan.cameras, want_frames)
+      info(f"scanned {seg.name}", f"{len(plan)}/{want_frames} consecutive frames")
+      if len(plan) >= want_frames:
+        seg_dirs = seg_dirs[:i + 1]
+        break
+    frames, cameras = scan.frames, scan.cameras
+
+    if not cameras["img"]:
+      bad("no narrow road camera frames in this route",
+          "the main model stream and the DEVICE_CAMERAS lookup both come from the narrow camera; pick a route with fcamera.hevc")
+      return EXIT_FAIL
     if len(plan) < want_frames:
       bad("not enough usable consecutive frames",
           f"longest run with calibration, logs and frames is {len(plan)}, need {want_frames}")
+      return EXIT_FAIL
+    if scan.long_actuator_delay is None:
+      bad("no carParams in the rlogs read", "cannot reconstruct the model's action_t input")
       return EXIT_FAIL
     info("frame ids", f"{plan[0]} .. {plan[-1]} ({len(plan)} consecutive)")
     info("cameras", "fcamera.hevc + ecamera.hevc" if have_wide else "fcamera.hevc only (no wide camera in this route)")
@@ -520,10 +570,11 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
     ort_dtypes = {i.name: np.dtype(ORT_DTYPES[i.type]) for i in sess.get_inputs()}
     ort_out_names = [o.name for o in sess.get_outputs()]
     info("onnxruntime", f"{ort.__version__}, inputs {len(ort_dtypes)}, outputs {len(ort_out_names)}")
-    missing = set(ort_dtypes) - set(input_shapes)
+    missing = set(ort_dtypes) - POLICY_INPUT_NAMES
     if missing:
       raise LookupError(f"the model wants inputs this tool does not build: {sorted(missing)}")
 
+    report_tinygrad()
     from tinygrad.device import Device
     from tinygrad.helpers import Context
     from tinygrad.nn.onnx import OnnxRunner
@@ -536,6 +587,7 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
     max_diff = dict.fromkeys(ort_out_names, 0.0)
     worst_frame = dict.fromkeys(ort_out_names, -1)
     slice_diff = dict.fromkeys(output_slices, 0.0)
+    nonfinite: list[tuple[str, int, int, int]] = []
 
     st = time.monotonic()
     for n, fid in enumerate(plan):
@@ -552,7 +604,7 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
         if (cam_w, cam_h) not in nv12_cache:
           nv12_cache[(cam_w, cam_h)] = get_nv12_info(cam_w, cam_h)
         stride, y_height, uv_height, _ = nv12_cache[(cam_w, cam_h)]
-        buf = pack_nv12(reader.get(seg_idx), cam_w, cam_h, stride, y_height)
+        buf = pack_nv12(reader.get(seg_idx), cam_w, cam_h, stride, y_height, uv_height)
         tfm = get_warp_matrix(state["rpy_calib"], intrinsics, big).astype(np.float32)
         warped[key] = frame_prepare(buf, tfm, (cam_w, cam_h), (model_w, model_h), stride, y_height, uv_height)
 
@@ -562,7 +614,7 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
       traffic_convention[int(state["is_rhd"])] = 1
       # modeld.py: one DT_MDL for the age of the frame, half of one for the middle of the interval
       lat_action_t = state["lat_delay"] + LAT_SMOOTH_SECONDS + DT_MDL + DT_MDL / 2
-      long_action_t = state["longitudinal_actuator_delay"] + LONG_SMOOTH_SECONDS + DT_MDL + DT_MDL / 2
+      long_action_t = scan.long_actuator_delay + LONG_SMOOTH_SECONDS + DT_MDL + DT_MDL / 2
       action_t = np.array([lat_action_t, long_action_t], dtype=np.float32)
 
       inputs = queues.step(warped, desire_pulse, traffic_convention, action_t, prev_feat)
@@ -573,13 +625,24 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
         gpu_out = [gpu_raw[name].numpy() for name in ort_out_names]
 
       for name, a, b in zip(ort_out_names, cpu_out, gpu_out, strict=True):
+        # A non-finite output has to be caught here rather than folded into the max. np.max of an
+        # array containing NaN is NaN, and every comparison against NaN is False -- so `d >
+        # max_diff` never fires, max_diff keeps its 0.0 initial value, and an eGPU emitting
+        # nothing but NaN is reported as a flawless pass. That is the exact failure this tool
+        # exists to catch, so it is a hard stop, not a large number.
+        if not np.all(np.isfinite(b)):
+          nonfinite.append((name, fid, int(np.count_nonzero(~np.isfinite(b))), int(b.size)))
+          continue
         d = float(np.max(np.abs(a.astype(np.float64) - b.astype(np.float64))))
         if d > max_diff[name]:
           max_diff[name], worst_frame[name] = d, fid
       flat_cpu, flat_gpu = cpu_out[0].reshape(-1), gpu_out[0].reshape(-1)
       for name, sl in output_slices.items():
+        # max(0.0, nan) returns 0.0, so the same hole exists here. Guarded by the check above,
+        # which has already recorded this frame and skipped its diffs.
         d = float(np.max(np.abs(flat_cpu[sl].astype(np.float64) - flat_gpu[sl].astype(np.float64))))
-        slice_diff[name] = max(slice_diff[name], d)
+        if np.isfinite(d):
+          slice_diff[name] = max(slice_diff[name], d)
 
       prev_feat = flat_cpu[output_slices["hidden_state"]].astype(np.float32)
       if (n + 1) % 100 == 0:
@@ -590,7 +653,7 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
 
   head("result")
   print(f"  route          {route_name}")
-  print(f"  segments       {seg_dirs[0].name} .. {seg_dirs[-1].name}")
+  print(f"  segments read  {seg_dirs[0].name} .. {seg_dirs[-1].name}")
   print(f"  frame ids      {plan[0]} .. {plan[-1]} ({len(plan)} consecutive frames)")
   print(f"  model          {onnx_path.name} ({metadata['model_checkpoint']})")
   print(f"  eGPU           {Device[device].device}   reference: onnxruntime CPUExecutionProvider")
@@ -602,6 +665,16 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
   print("  max abs difference per output slice (worst 8)")
   for name, d in sorted(slice_diff.items(), key=lambda kv: -kv[1])[:8]:
     print(f"    {name:<24} {d:>14.6g}")
+
+  # Ahead of the verdict on purpose: a non-finite output is not a large difference to be compared
+  # against a threshold, it is the tool's whole reason for existing. np.max over NaN is NaN and
+  # every comparison against NaN is False, so folding it into `overall` would report a flawless
+  # pass for an eGPU emitting nothing but NaN.
+  if nonfinite:
+    nf_name, nf_fid, nf_bad, nf_total = nonfinite[0]
+    bad("non-finite model output", f"{len(nonfinite)} frame/output pair(s)")
+    info("first occurrence", f"{nf_name} on frameId {nf_fid}: {nf_bad} of {nf_total} values not finite")
+    return EXIT_FAIL
 
   overall = max(max_diff.values())
   print("")
