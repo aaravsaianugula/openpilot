@@ -34,7 +34,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
-from openpilot.sunnypilot.egpu import asics, detect, models, vendors
+from openpilot.sunnypilot.egpu import asics, compile_egpu, detect, models, vendors
 
 EGPU_DIR = REPO / "openpilot/sunnypilot/egpu"
 SCONSCRIPT = REPO / "openpilot/selfdrive/modeld/SConscript"
@@ -281,6 +281,115 @@ def test_assert_pkl(tmp: Path):
     except ValueError as e:
         bad = str(e)
     check("refusing to mark a model with an unknown vendor", bad is not None)
+
+
+def _raises(fn) -> str | None:
+    try:
+        fn()
+    except RuntimeError as e:
+        return str(e)
+    return None
+
+
+def test_marker_target(tmp: Path):
+    """The marker has to say which gfx target the pickle was built for, not just whose card.
+
+    Vendor alone cannot separate a gfx12 bundle from a gfx1032 one, and both are 0x1002. The
+    format therefore grew a `target=` field -- and it had to grow it without orphaning the
+    vendor-only markers already sitting next to models compiled before this change.
+    """
+    print("\n[marker] vendor AND gfx target, with the old vendor-only form still readable")
+    pkl = tmp / "target.pkl"
+    pkl.write_bytes(b"x")
+    marker = Path(str(pkl) + models.MARKER_SUFFIX)
+
+    models.write_marker(str(pkl), vendors.AMD, "gfx1032")
+    case("a written target reads back", models.pkl_target(str(pkl)), "gfx1032")
+    case("and the vendor still reads back", models.pkl_vendor(str(pkl)), "amd")
+    case("read_marker returns both at once",
+         (models.read_marker(str(pkl)).vendor, models.read_marker(str(pkl)).target),
+         ("amd", "gfx1032"))
+
+    models.write_marker(str(pkl), vendors.NVIDIA, "SM_86")
+    case("a target is normalised to lower case", models.pkl_target(str(pkl)), "sm_86")
+
+    models.write_marker(str(pkl), vendors.NVIDIA)
+    case("omitting the target writes no target field", models.pkl_target(str(pkl)),
+         models.UNKNOWN_TARGET)
+    case("and the vendor is still recorded", models.pkl_vendor(str(pkl)), "nvidia")
+
+    marker.write_text("nvidia\n", encoding="utf-8")
+    case("an old vendor-only marker still names its vendor", models.pkl_vendor(str(pkl)), "nvidia")
+    case("an old vendor-only marker reports an unknown target",
+         models.pkl_target(str(pkl)), models.UNKNOWN_TARGET)
+
+    marker.unlink()
+    case("an absent marker reports an unknown target",
+         models.pkl_target(str(pkl)), models.UNKNOWN_TARGET)
+
+    for raw in ["vendor=amd\ntarget=gfx 1032\n", "vendor=amd\ntarget=../../etc\n",
+                "vendor=amd\ntarget=\n"]:
+        marker.write_text(raw, encoding="utf-8")
+        case("an unreadable target degrades to unknown rather than matching " + repr(raw),
+             models.pkl_target(str(pkl)), models.UNKNOWN_TARGET)
+    marker.unlink()
+
+    bad = None
+    try:
+        models.write_marker(str(pkl), vendors.AMD, "gfx 1032")
+    except ValueError as e:
+        bad = str(e)
+    check("refusing to mark a model with an unreadable target", bad is not None)
+
+
+def test_assert_pkl_target(tmp: Path):
+    """A gfx12 pickle reaching a gfx1032 card is the gap this closes.
+
+    tinygrad compiles to one ISA. Handing an AMD-marked gfx12 pickle to an RDNA2 card gets
+    past the vendor gate -- both are 0x1002 -- and lands in `load_oob`, where the only check
+    downstream is `np.all(np.isfinite(...))`. Wrong-but-finite numbers reach the planner.
+    """
+    print("\n[assert_pkl_matches] the gfx target is checked too, whenever both sides know it")
+    pkl = tmp / "gfx12.pkl"
+    pkl.write_bytes(b"x")
+    models.write_marker(str(pkl), vendors.AMD, "gfx1201")
+
+    raised = _raises(lambda: models.assert_pkl_matches(str(pkl), True, "amd", "gfx1032"))
+    check("a gfx12 pickle on a gfx1032 card raises", raised is not None)
+    if raised:
+        check("the message names both targets", "gfx1201" in raised and "gfx1032" in raised)
+        check("the target message names the file", str(pkl) in raised)
+
+    check("the same target passes",
+          _raises(lambda: models.assert_pkl_matches(str(pkl), True, "amd", "gfx1201")) is None)
+
+    check("a vendor mismatch is still rejected, target or no target",
+          _raises(lambda: models.assert_pkl_matches(str(pkl), True, "nvidia", "gfx1201")) is not None)
+
+    check("not routing through the eGPU still skips the whole check",
+          _raises(lambda: models.assert_pkl_matches(str(pkl), False, "amd", "gfx1032")) is None)
+
+    # An unknown target passes on purpose, and the reason is asymmetric knowledge: every
+    # published bundle arrives with no marker at all, and asics.py only knows the gfx string
+    # of cards it has an entry for. Failing closed here would refuse every AMD user's
+    # catalog model -- a regression caused purely by this code existing.
+    check("a device whose target we do not know accepts a targeted pickle",
+          _raises(lambda: models.assert_pkl_matches(str(pkl), True, "amd")) is None)
+    check("and None means the same as unknown",
+          _raises(lambda: models.assert_pkl_matches(str(pkl), True, "amd", None)) is None)
+
+    legacy = tmp / "legacy.pkl"
+    legacy.write_bytes(b"x")
+    Path(str(legacy) + models.MARKER_SUFFIX).write_text("amd\n", encoding="utf-8")
+    check("an old vendor-only marker passes a targeted device",
+          _raises(lambda: models.assert_pkl_matches(str(legacy), True, "amd", "gfx1032")) is None)
+    check("but its vendor is still enforced",
+          _raises(lambda: models.assert_pkl_matches(str(legacy), True, "nvidia", "gfx1032")) is not None)
+
+    unmarked = tmp / "catalog.pkl"
+    unmarked.write_bytes(b"x")
+    check("an unmarked catalog bundle is not refused by the target check",
+          _raises(lambda: models.assert_pkl_matches(str(unmarked), True, "amd", "gfx1032")) is None)
 
 
 # --- which ASIC, not just which vendor ------------------------------------------------------
@@ -669,6 +778,209 @@ def test_probe_tool():
     check("a real no-go says the register was actually polled", "was polled" in verdict_src)
 
 
+# --- compiling for the card that is actually there -------------------------------------------
+
+class _Completed:
+    def __init__(self, returncode: int):
+        self.returncode = returncode
+
+
+class FakeRun:
+    """Stands in for the compile subprocess, which needs a dock, a card and about an hour.
+
+    Records what it was asked to run and produces the file a real compiler would, so main()
+    can be exercised end to end: option stripping, the tinygrad environment, and -- the point
+    of stage 6 -- whether the marker beside the artifact names the gfx target.
+    """
+
+    def __init__(self, returncode: int = 0, produce: bool = True):
+        self.returncode = returncode
+        self.produce = produce
+        self.cmd: list[str] = []
+        self.env: dict[str, str] = {}
+
+    def run(self, cmd, env=None):
+        self.cmd = list(cmd)
+        self.env = dict(env or {})
+        if self.produce and self.returncode == 0:
+            out = None
+            for i, arg in enumerate(cmd):
+                if arg == "--output":
+                    out = cmd[i + 1]
+                elif arg.startswith("--output="):
+                    out = arg.split("=", 1)[1]
+            if out is not None:
+                Path(out).write_bytes(b"compiled")
+
+        return _Completed(self.returncode)
+
+
+def _with_fake_run(fake, fn):
+    real = compile_egpu.subprocess
+    compile_egpu.subprocess = fake
+    try:
+        return fn()
+    finally:
+        compile_egpu.subprocess = real
+
+
+def test_compile_option_plumbing():
+    """Our two options must never reach compile_modeld, which argparses and would abort."""
+    print("\n[compile_egpu] our options are consumed, the compiler's are passed through")
+    argv = ["--egpu-vendor", "nvidia", "--model-type", "supercombo",
+            "--egpu-target=gfx1032", "--output", "/tmp/x.pkl"]
+    rest, vendor = compile_egpu.take_option(argv, compile_egpu.VENDOR_FLAG)
+    case("--egpu-vendor is read", vendor, "nvidia")
+    rest, target = compile_egpu.take_option(rest, compile_egpu.TARGET_FLAG)
+    case("--egpu-target=... is read", target, "gfx1032")
+    case("and nothing of ours is left for the compiler", rest,
+         ["--model-type", "supercombo", "--output", "/tmp/x.pkl"])
+
+    case("a flag that is not there reads as empty",
+         compile_egpu.take_option(["--model-type", "supercombo"], compile_egpu.TARGET_FLAG),
+         (["--model-type", "supercombo"], ""))
+    case("--output is found spaced",
+         compile_egpu.option_value(["--output", "/a/b.pkl"], "--output"), "/a/b.pkl")
+    case("--output is found joined",
+         compile_egpu.option_value(["--output=/a/b.pkl"], "--output"), "/a/b.pkl")
+    case("no --output reads as None",
+         compile_egpu.option_value(["--model-type", "supercombo"], "--output"), None)
+
+
+def test_compile_env_and_target():
+    print("\n[compile_egpu] the environment and the target come from the vendor descriptor")
+    amd = compile_egpu.compile_env(vendors.AMD_SPEC, "QCOM", base={})
+    case("the AMD device string is what SConscript uses", amd.get("DEV"), "USB+AMD:LLVM")
+    case("the AMD env still carries GMMU=0", amd.get("GMMU"), "0")
+    case("WARP_DEV is passed through", amd.get("WARP_DEV"), "QCOM")
+    case("every AMD compile flag reaches the environment",
+         sorted(set(vendors.compile_flags(vendors.AMD_SPEC, "QCOM").split())
+                - {k + "=" + v for k, v in amd.items()}), [])
+
+    nv = compile_egpu.compile_env(vendors.NV_SPEC, "QCOM", base={})
+    case("the NV device string carries no renderer suffix", nv.get("DEV"), "USB+NV")
+    check("GMMU is not invented for NV, where it has no meaning", "GMMU" not in nv)
+
+    case("the environment we inherit is not thrown away",
+         compile_egpu.compile_env(vendors.NV_SPEC, "QCOM", base={"HOME": "/data"}).get("HOME"),
+         "/data")
+
+    case("the 6600 XT's target comes from its PCI id",
+         compile_egpu.resolve_target(vendors.AMD, params=FakeParams(EgpuDevice="73ff")),
+         "gfx1032")
+    case("a card asics.py has no entry for has no known target",
+         compile_egpu.resolve_target(vendors.AMD, params=FakeParams(EgpuDevice="1234")),
+         models.UNKNOWN_TARGET)
+    case("NVIDIA has no gfx table, so no target unless told",
+         compile_egpu.resolve_target(vendors.NVIDIA, params=FakeParams(EgpuDevice="73ff")),
+         models.UNKNOWN_TARGET)
+    case("an explicit target wins over the table",
+         compile_egpu.resolve_target(vendors.AMD, "sm_86", FakeParams(EgpuDevice="73ff")),
+         "sm_86")
+
+    case("NVIDIA compiles to where detect.py looks for it",
+         compile_egpu.default_output(vendors.NVIDIA), detect.NV_MODEL_PATH)
+    case("AMD has no invented default path", compile_egpu.default_output(vendors.AMD), None)
+
+
+def test_compile_refuses_to_guess():
+    """An assumed vendor is a guess, and this one costs hours and produces a mismarked pkl."""
+    print("\n[compile_egpu] an unconfirmed card is refused, not guessed at")
+    case("a confirmed vendor is used",
+         compile_egpu.resolve_vendor("", FakeParams(EgpuVendor="nvidia")), "nvidia")
+    case("a probed vendor is confirmed too",
+         compile_egpu.resolve_vendor("", FakeParams(EgpuVendorDetected="amd")), "amd")
+    case("the flag overrides everything",
+         compile_egpu.resolve_vendor("nvidia", FakeParams(EgpuVendor="amd")), "nvidia")
+
+    raised = None
+    try:
+        compile_egpu.resolve_vendor("", FakeParams())
+    except SystemExit as e:
+        raised = str(e)
+    check("an assumed vendor refuses to compile", raised is not None)
+    if raised:
+        check("and says which flag to pass", compile_egpu.VENDOR_FLAG in raised)
+
+
+def test_compile_writes_a_targeted_marker(tmp: Path):
+    """The whole point of stage 6: the artifact carries the ISA it was built for."""
+    print("\n[compile_egpu] the marker it writes names the target, not just the vendor")
+    params = FakeParams(EgpuVendor="amd", EgpuDevice="73ff")
+    out = tmp / "built.pkl"
+    fake = FakeRun()
+    rc = _with_fake_run(fake, lambda: compile_egpu.main(
+        ["--model-type", "supercombo", "--output", str(out)], params))
+
+    case("a successful compile exits zero", rc, 0)
+    case("the marker records the vendor", models.pkl_vendor(str(out)), "amd")
+    case("the marker records the gfx target", models.pkl_target(str(out)), "gfx1032")
+    check("the compiler was invoked as a module", compile_egpu.COMPILER in fake.cmd)
+    check("no eGPU option leaked into the compiler's argv",
+          not any(a.startswith("--egpu-") for a in fake.cmd))
+    case("the compiler ran against the AMD device", fake.env.get("DEV"), "USB+AMD:LLVM")
+
+    # And the model it just wrote must survive the gate it exists to satisfy.
+    ok = True
+    try:
+        models.assert_pkl_matches(str(out), True, "amd", "gfx1032")
+    except RuntimeError:
+        ok = False
+    check("the model it produced passes assert_pkl_matches on that card", ok)
+    check("and is refused on a gfx12 card",
+          _raises(lambda: models.assert_pkl_matches(str(out), True, "amd", "gfx1201")) is not None)
+
+    failed = tmp / "failed.pkl"
+    rc = _with_fake_run(FakeRun(returncode=3), lambda: compile_egpu.main(
+        ["--model-type", "supercombo", "--output", str(failed)], params))
+    case("a failed compile propagates its exit code", rc, 3)
+    check("and writes no marker", not Path(str(failed) + models.MARKER_SUFFIX).exists())
+
+    missing = tmp / "missing.pkl"
+    rc = _with_fake_run(FakeRun(produce=False), lambda: compile_egpu.main(
+        ["--model-type", "supercombo", "--output", str(missing)], params))
+    check("a compiler that produces no file is not marked as success", rc != 0)
+    check("and writes no marker for a file that is not there",
+          not Path(str(missing) + models.MARKER_SUFFIX).exists())
+
+    rc = _with_fake_run(FakeRun(), lambda: compile_egpu.main(["--model-type", "supercombo"], params))
+    check("AMD without --output is refused rather than guessed", rc != 0)
+
+
+def test_compile_nv_is_a_shim():
+    """compile_nv.py is still an entry point, but must not be a second copy of the logic."""
+    print("\n[compile_nv] the old entry point delegates instead of duplicating")
+    tree = ast.parse((EGPU_DIR / "compile_nv.py").read_text(encoding="utf-8"))
+    top = []
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            top += [a.name.split(".")[0] for a in node.names]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            top.append(node.module.split(".")[0])
+    check("it still exposes a main", _def_node(tree, "main") is not None)
+    check("it does not spawn the compiler itself", "subprocess" not in top)
+    source = (EGPU_DIR / "compile_nv.py").read_text(encoding="utf-8")
+    check("it delegates to compile_egpu", "compile_egpu.main" in source)
+    check("it does not write a marker of its own", "write_marker" not in source)
+
+    case("it pins the vendor to nvidia, ahead of whatever the caller passed",
+         _compile_nv_forwards(),
+         [compile_egpu.VENDOR_FLAG, vendors.NVIDIA, "--model-type", "supercombo"])
+
+
+def _compile_nv_forwards() -> list[str]:
+    """The argv compile_nv.main hands to compile_egpu.main, with nothing else run."""
+    from openpilot.sunnypilot.egpu import compile_nv
+    seen: list[str] = []
+    real = compile_egpu.main
+    compile_egpu.main = lambda argv, params=None: (seen.extend(argv) or 0)
+    try:
+        compile_nv.main(["--model-type", "supercombo"])
+    finally:
+        compile_egpu.main = real
+    return seen
+
+
 # --- an eGPU we cannot drive must not take the car with it -----------------------------------
 
 def _def_node(tree, name: str):
@@ -842,11 +1154,18 @@ def main() -> int:
         test_probe_once(monkey_probe)
         test_pkl_vendor(tmp)
         test_assert_pkl(tmp)
+        test_marker_target(tmp)
+        test_assert_pkl_target(tmp)
         test_descriptor_drift()
         test_chestnut_state_fields()
         test_panel_logic()
         test_import_purity()
         test_probe_tool()
+        test_compile_option_plumbing()
+        test_compile_env_and_target()
+        test_compile_refuses_to_guess()
+        test_compile_writes_a_targeted_marker(tmp)
+        test_compile_nv_is_a_shim()
         test_build_gate()
         test_stock_runner_gate()
         test_loading_flag_is_released()
