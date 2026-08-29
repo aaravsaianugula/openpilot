@@ -20,6 +20,7 @@ import argparse
 import ast
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -208,6 +209,65 @@ def guard_superproject(repo: Path) -> None:
               set(PLATFORMS).issubset(set(manifest.get("elantra_platforms", []))))
 
 
+def _git(cwd: Path, *args: str) -> str | None:
+    """Run git and return stripped stdout, or None if it fails for any reason.
+
+    Guards must never raise: sync.py reads a non-zero exit as "do not publish", and an
+    exception here would be indistinguishable from a real divergence.
+    """
+    try:
+        out = subprocess.run(("git", *args), cwd=str(cwd), capture_output=True,
+                             text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip() or None
+
+
+def _gitlink_sha(repo: Path, path: str) -> str | None:
+    """The commit the superproject's index pins for a submodule path, or None."""
+    line = _git(repo, "ls-files", "-s", "--", path)
+    if not line:
+        return None
+    # "160000 <sha> 0\t<path>" -- any mode other than 160000 is not a gitlink.
+    fields = line.split()
+    if len(fields) < 2 or fields[0] != "160000":
+        return None
+    return fields[1]
+
+
+def guard_opendbc_pin(repo: Path, opendbc: Path) -> None:
+    """The tree the other guards just read must be the tree the superproject actually ships.
+
+    Every guard above opens files under --opendbc. Not one of them looks at the gitlink. So a
+    superproject branch can pass all of them while pinning an opendbc commit that has never
+    heard of the change being guarded -- which is not hypothetical: elantra-torque-test carries
+    the guards for a 409 schedule and pins 69e2e548, which contains none of it, and
+    `git diff master elantra-torque-test -- opendbc_repo` is empty. Every guard was green and
+    the car would have run stock code.
+
+    Equality is the whole check. If the pinned commit is the checkout the guards just verified,
+    then whatever they proved is what actually gets built.
+    """
+    print("\n[superproject <-> opendbc] the guarded tree is the pinned tree")
+    pinned = _gitlink_sha(repo, "opendbc_repo")
+    check("superproject records an opendbc_repo gitlink", pinned is not None,
+          "git ls-files -s opendbc_repo returned no mode-160000 entry")
+    if pinned is None:
+        return
+
+    head = _git(opendbc, "rev-parse", "HEAD")
+    check("the guarded opendbc checkout resolves to a commit", head is not None,
+          "--opendbc is not a git checkout, so the pin cannot be proven")
+    if head is None:
+        return
+
+    check("pinned opendbc is the opendbc these guards just checked", pinned == head,
+          "superproject pins " + pinned[:12] + " but --opendbc is at " + head[:12]
+          + " -- these guards passed against a tree the build will not use")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -234,6 +294,7 @@ def main() -> int:
     guard_torque(opendbc)
     if args.repo:
         guard_superproject(args.repo.resolve())
+        guard_opendbc_pin(args.repo.resolve(), opendbc)
 
     print("\n" + "-" * 60)
     if _failures:
