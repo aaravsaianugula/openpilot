@@ -38,16 +38,16 @@ FILES = (
 
 ENFORCEMENT_CASES = [
     ("panda interpolates on the MAX speed instead of the min",
-     "(vehicle_speed.min / VEHICLE_SPEED_FACTOR) - 1.;\n"
+     "(vehicle_speed.min / VEHICLE_SPEED_FACTOR) - 1.;\n" +
      "      max_torque = safety_interpolate",
-     "(vehicle_speed.max / VEHICLE_SPEED_FACTOR) - 1.;\n"
+     "(vehicle_speed.max / VEHICLE_SPEED_FACTOR) - 1.;\n" +
      "      max_torque = safety_interpolate",
      "vehicle_speed.min"),
 
     ("panda stops shifting the speed down by 1 m/s",
-     "(vehicle_speed.min / VEHICLE_SPEED_FACTOR) - 1.;\n"
+     "(vehicle_speed.min / VEHICLE_SPEED_FACTOR) - 1.;\n" +
      "      max_torque = safety_interpolate",
-     "(vehicle_speed.min / VEHICLE_SPEED_FACTOR);\n"
+     "(vehicle_speed.min / VEHICLE_SPEED_FACTOR);\n" +
      "      max_torque = safety_interpolate",
      "shifts the speed down"),
 
@@ -222,7 +222,7 @@ def main() -> int:
         print("  ok    unmutated checkout passes")
 
         for i, (label, old, new, expect) in enumerate(ENFORCEMENT_CASES):
-            root = Path(td) / ("enf%02d" % i)
+            root = Path(td) / ("enf" + str(i).zfill(2))
             stage(src, root)
             mutate(root, "opendbc/safety/lateral.h", old, new)
             got = run(g, root, "guard_panda_enforcement")
