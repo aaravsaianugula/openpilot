@@ -517,9 +517,9 @@ def main() -> int:
             proc = run([sys.executable, str(repo / ".elantra" / script), *extra], check=False)
             log(proc.stdout)
             if proc.returncode != 0:
-                raise SyncError(script + " failed -- the guards can no longer detect a real "
-                                         "divergence, so a green guard run proves nothing. "
-                                         "Nothing published.")
+                raise SyncError(script + " failed -- the guards can no longer detect a real " +
+                                "divergence, so a green guard run proves nothing. " +
+                                "Nothing published.")
 
         publish(repo, new, prev, args.dry_run)
         log("\nDone." + ("  (dry run -- nothing was published)" if args.dry_run else ""))

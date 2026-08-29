@@ -310,6 +310,12 @@ def routes_under(root: Path) -> dict:
         route, _, idx = seg_dir.rpartition("--")
         if not idx.isdigit():
             continue
+        # Reports are written as <route>.json alongside the leading-underscore marker files,
+        # and cmd_compare filters those out by prefix. A route starting with "_" would have its
+        # report silently excluded from every comparison. Real dongle IDs are lowercase hex and
+        # cannot start with one, so refusing here costs nothing and closes the ambiguity.
+        if route.startswith("_"):
+            continue
         out.setdefault(route, []).append(path)
     for segs in out.values():
         segs.sort(key=lambda p: int(os.path.basename(os.path.dirname(p)).rpartition("--")[2]))
@@ -429,10 +435,10 @@ def summarise(label: str, reports: list, failures: list) -> dict:
     if fa == 0 or fb == 0:
         # Zero frames makes both rates 0.0, which compared equal and printed AGREE over an empty
         # table. Nothing was measured; that is a failure, not a clean result.
-        print("  independent estimators NOT COMPARED -- no engaged frames "
+        print("  independent estimators NOT COMPARED -- no engaged frames " +
               "(A=" + str(fa) + ", B=" + str(fb) + ")")
-        failures.append(label + ": no engaged frames on one or both estimators -- "
-                                "nothing was measured, this is not a clean run")
+        failures.append(label + ": no engaged frames on one or both estimators -- " +
+                        "nothing was measured, this is not a clean run")
     else:
         rel = abs(ra - rb) / max(ra, rb) if max(ra, rb) > 0 else 0.0
         agree = abs(ra - rb) <= ESTIMATOR_TOLERANCE and rel <= ESTIMATOR_REL_TOLERANCE
@@ -487,7 +493,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
     marker = outdir / UNREADABLE_FILE
     if marker.exists():
         for route, why in json.loads(marker.read_text(encoding="utf-8")).items():
-            failures.append("route " + route + " was unreadable (" + why + ") and cannot be "
+            failures.append("route " + route + " was unreadable (" + why + ") and cannot be " +
                             "attributed to either side")
 
     if failures:

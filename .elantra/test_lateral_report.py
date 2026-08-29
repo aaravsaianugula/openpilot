@@ -64,6 +64,79 @@ def main() -> int:
     check("the OEM scale still puts 384 at 3.00 Nm and 409 at 3.20 Nm",
           abs(384 * 0.0078125 - 3.00) < 1e-9 and abs(409 * 0.0078125 - 3.1953125) < 1e-9)
 
+    # --- the refusals: a check that has never been shown to fail is decoration ---------
+    # Both of these guard a vacuous pass that really happened. summarise() used to compare
+    # 0.0 == 0.0 on an empty dataset and print "estimators agree"; cmd_compare used to lose
+    # a whole route silently when its segment 0 would not read. Each case below asserts the
+    # refusal fires, and a positive control asserts it does NOT fire on good data -- a
+    # refusal that always fires is as useless as one that never does.
+    import contextlib
+    import io
+    import json as _json
+    import tempfile
+
+    def band_report(frames: int, pinned: int) -> dict:
+        bands = {}
+        for est in ("estimator_a", "estimator_b"):
+            bands[est] = {b: m.new_band() for b in m.BAND_NAMES}
+            first = m.BAND_NAMES[1]
+            bands[est][first]["frames"] = frames
+            bands[est][first]["pinned"]["384"] = pinned
+        return {"bands": bands, "segments_total": 1, "segments_read": 1,
+                "segments_skipped": []}
+
+    def summarise_failures(report: dict) -> list:
+        out: list = []
+        with contextlib.redirect_stdout(io.StringIO()):
+            m.summarise("t", [report], out)
+        return out
+
+    check("zero engaged frames is refused, not reported as agreement",
+          len(summarise_failures(band_report(0, 0))) == 1)
+    check("a real dataset with agreeing estimators still passes",
+          summarise_failures(band_report(10000, 100)) == [])
+
+    # 5% vs 0.1% is only 4.9 points apart, inside the 2pp-era absolute tolerance once the
+    # rates are small -- the relative bound is what catches it.
+    disagree = band_report(10000, 500)
+    disagree["bands"]["estimator_b"][m.BAND_NAMES[1]]["pinned"]["384"] = 10
+    check("estimators that disagree relatively are caught even when close in points",
+          len(summarise_failures(disagree)) == 1)
+
+    prov = {"git_branch": "b", "git_commit": "c", "safety_param": 12, "lat_accel_factor": 3.169,
+            "friction": 0.0819, "params": {}, "nnlc_model": None, "dirty": False,
+            "fingerprint": "HYUNDAI_ELANTRA_2024"}
+
+    def compare_rc(with_marker: bool) -> tuple[int, str]:
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            for name, tag in (("r1--aaaaaaaaaa", "before"), ("r2--bbbbbbbbbb", "after")):
+                (out / (name + ".json")).write_text(
+                    _json.dumps({**band_report(10000, 100), "tag": tag, "provenance": prov}),
+                    encoding="utf-8")
+            if with_marker:
+                (out / m.UNREADABLE_FILE).write_text(_json.dumps({"badroute": "OSError"}),
+                                                     encoding="utf-8")
+
+            class Args:
+                pass
+            args = Args()
+            args.out = str(out)
+            args.before = "before"
+            args.after = "after"
+            with contextlib.redirect_stdout(io.StringIO()) as buf:
+                rc = m.cmd_compare(args)
+            return rc, buf.getvalue()
+
+    rc_clean, text_clean = compare_rc(False)
+    check("two clean sides compare successfully (positive control)", rc_clean == 0)
+    check("the unreadable marker is not itself read as a route report",
+          "_unreadable" not in text_clean)
+
+    rc_bad, text_bad = compare_rc(True)
+    check("an unreadable route makes compare REFUSE rather than quietly drop it",
+          rc_bad == 1 and "badroute" in text_bad)
+
     # --- MDPS12 fault bit -------------------------------------------------------------
     check("CF_Mdps_ToiFlt reads bit 14", m.decode_toiflt(mdps12(1)) == 1)
     check("bit 14 clear reads as no fault", m.decode_toiflt(mdps12(0)) == 0)

@@ -367,7 +367,7 @@ def guard_panda_enforcement(opendbc: Path) -> None:
     # Without the clamp the +1 could push the low-speed end past .max_torque, which is the only
     # absolute bound anywhere in this path.
     check("panda clamps the interpolated ceiling to +/- max_torque",
-          re.search(r"SAFETY_CLAMP\(\s*max_torque\s*,\s*-\s*limits\.max_torque\s*,"
+          re.search(r"SAFETY_CLAMP\(\s*max_torque\s*,\s*-\s*limits\.max_torque\s*," +
                     r"\s*limits\.max_torque\s*\)", body) is not None)
 
     # That slack is dynamic-path-only. A write-up on this branch claimed it was present on the
