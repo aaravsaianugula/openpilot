@@ -32,7 +32,35 @@ FILES = (
     "opendbc/car/hyundai/interface.py",
     "opendbc/safety/modes/hyundai.h",
     "opendbc/safety/modes/hyundai_common.h",
+    "opendbc/safety/lateral.h",
 )
+
+
+ENFORCEMENT_CASES = [
+    ("panda interpolates on the MAX speed instead of the min",
+     "(vehicle_speed.min / VEHICLE_SPEED_FACTOR) - 1.;\n"
+     "      max_torque = safety_interpolate",
+     "(vehicle_speed.max / VEHICLE_SPEED_FACTOR) - 1.;\n"
+     "      max_torque = safety_interpolate",
+     "vehicle_speed.min"),
+
+    ("panda stops shifting the speed down by 1 m/s",
+     "(vehicle_speed.min / VEHICLE_SPEED_FACTOR) - 1.;\n"
+     "      max_torque = safety_interpolate",
+     "(vehicle_speed.min / VEHICLE_SPEED_FACTOR);\n"
+     "      max_torque = safety_interpolate",
+     "shifts the speed down"),
+
+    ("panda stops adding the one-count slack",
+     "safety_interpolate(limits.max_torque_lookup, fudged_speed) + 1;",
+     "safety_interpolate(limits.max_torque_lookup, fudged_speed);",
+     "adds one count"),
+
+    ("panda drops the clamp to +/- max_torque",
+     "max_torque = SAFETY_CLAMP(max_torque, -limits.max_torque, limits.max_torque);",
+     "max_torque = max_torque + 0;",
+     "clamps the interpolated ceiling"),
+]
 
 
 def load_guards():
@@ -137,13 +165,13 @@ CASES = [
 ]
 
 
-def run(g, root: Path) -> list[str]:
+def run(g, root: Path, which: str = "guard_dynamic_torque_pair") -> list[str]:
     g._failures.clear()
     g._passes.clear()
     import contextlib
     import io
     with contextlib.redirect_stdout(io.StringIO()):
-        g.guard_dynamic_torque_pair(root)
+        getattr(g, which)(root)
     return list(g._failures)
 
 
@@ -183,13 +211,42 @@ def main() -> int:
                 print("  FAIL  MISSED: " + label)
                 failures.append(label)
 
+        # guard_panda_enforcement: what lateral.h actually DOES with those declarations.
+        print("\nguard_panda_enforcement")
+        base = run(g, clean, "guard_panda_enforcement")
+        if base:
+            print("  FAIL  the unmutated checkout is already failing")
+            for f in base:
+                print("          " + f)
+            return 1
+        print("  ok    unmutated checkout passes")
+
+        for i, (label, old, new, expect) in enumerate(ENFORCEMENT_CASES):
+            root = Path(td) / ("enf%02d" % i)
+            stage(src, root)
+            mutate(root, "opendbc/safety/lateral.h", old, new)
+            got = run(g, root, "guard_panda_enforcement")
+            # Not just "something went red" -- the RIGHT check has to be the one that did.
+            # A mutation that trips an unrelated guard is not evidence this guard works.
+            if any(expect in f for f in got):
+                print("  ok    caught: " + label)
+            elif got:
+                print("  FAIL  WRONG CHECK fired for: " + label)
+                print("          expected a failure mentioning " + repr(expect))
+                print("          got: " + "; ".join(got))
+                failures.append(label + " (wrong check)")
+            else:
+                print("  FAIL  MISSED: " + label)
+                failures.append(label)
+
     print("\n" + "-" * 58)
     if failures:
         print("FAILED: %d mutation(s) slipped past the guards" % len(failures))
         for f in failures:
             print("  - " + f)
         return 1
-    print("PASSED: every single-link break in the torque chain is caught (%d cases)" % len(CASES))
+    print("PASSED: every single-link break is caught (%d chain + %d enforcement cases)"
+          % (len(CASES), len(ENFORCEMENT_CASES)))
     return 0
 
 

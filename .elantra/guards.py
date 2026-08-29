@@ -333,6 +333,52 @@ def _lookup_assigned_in_else(source: str) -> bool:
     return False
 
 
+def guard_panda_enforcement(opendbc: Path) -> None:
+    """The four details in lateral.h that make panda's schedule usable as a backstop.
+
+    Every other check in this file reads a DECLARATION -- the macro body, the lookup row, the
+    flag word. None of them reads the code that consumes those declarations. lateral.h decides
+    what the numbers mean, and all four details below exist to keep panda strictly more
+    permissive than what openpilot commands. Change any one of them upstream and every other
+    guard here stays green while the two halves silently stop agreeing.
+    """
+    print("\n" + "[lateral.h] what panda actually enforces")
+    lat = read(opendbc / "opendbc/safety/lateral.h")
+
+    m = re.search(r"if\s*\(limits\.dynamic_max_torque\)\s*\{(.*?)\n\s*\}", lat, re.S)
+    check("lateral.h has a dynamic_max_torque branch", m is not None)
+    if m is None:
+        return
+    body = m.group(1)
+
+    # vehicle_speed.min, not .max and not .values[0]. The minimum over the sample window is the
+    # slowest recent reading, and on a descending schedule slower means MORE torque allowed --
+    # the permissive direction. .max would let panda reject what openpilot legitimately commands.
+    check("panda interpolates on vehicle_speed.min",
+          re.search(r"vehicle_speed\.min\s*/\s*VEHICLE_SPEED_FACTOR", body) is not None)
+
+    # The -1 m/s shift and the +1 count are the entire margin between the two halves. openpilot
+    # interpolates on instantaneous vEgoRaw with no fudge at all.
+    check("panda shifts the speed down by 1 m/s before interpolating",
+          re.search(r"-\s*1\.", body) is not None)
+    check("panda adds one count to the interpolated ceiling",
+          re.search(r"safety_interpolate\([^)]*\)\s*\+\s*1", body) is not None)
+
+    # Without the clamp the +1 could push the low-speed end past .max_torque, which is the only
+    # absolute bound anywhere in this path.
+    check("panda clamps the interpolated ceiling to +/- max_torque",
+          re.search(r"SAFETY_CLAMP\(\s*max_torque\s*,\s*-\s*limits\.max_torque\s*,"
+                    r"\s*limits\.max_torque\s*\)", body) is not None)
+
+    # That slack is dynamic-path-only. A write-up on this branch claimed it was present on the
+    # static limits too; it is not, and if it ever moves outside the branch every static Hyundai
+    # silently gains a count of headroom.
+    before = lat[:m.start()]
+    static_init = re.search(r"int\s+max_torque\s*=\s*limits\.max_torque\s*;", before)
+    check("the +1 slack is inside the dynamic branch, not on the static path",
+          static_init is not None and "+ 1" not in before[static_init.end():])
+
+
 def guard_dynamic_torque_pair(opendbc: Path) -> None:
     """The CN7 low-speed torque schedule, end to end.
 
@@ -483,6 +529,7 @@ def main() -> int:
     guard_hyundaican(opendbc)
     guard_lfahda_pair(opendbc)
     guard_dynamic_torque_pair(opendbc)
+    guard_panda_enforcement(opendbc)
     guard_car_list(opendbc)
     guard_torque(opendbc)
     if args.repo:

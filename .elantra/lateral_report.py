@@ -73,6 +73,11 @@ THRESHOLDS = (384, 409)
 # The two estimators watch the same drive through different messages, so they differ by a few
 # frames of timing. Past this it is a defect in one of them, not noise.
 ESTIMATOR_TOLERANCE = 0.02
+# The absolute tolerance above is 2 percentage points, several times the headline pinned
+# rate this tool reports -- on its own it can never fail. The relative bound is what makes
+# the cross-check an actual check.
+ESTIMATOR_REL_TOLERANCE = 0.25
+UNREADABLE_FILE = "_unreadable.json"
 
 # Params that change lateral behaviour. Part of the provenance tag: a route recorded with NNLC
 # on is not comparable to one recorded with it off, and must never share a bin.
@@ -320,6 +325,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         print("no routes under " + str(root))
         return 1
 
+    unreadable: dict = {}
     names = sorted(routes)
     if args.limit:
         names = names[-args.limit:]
@@ -335,7 +341,12 @@ def cmd_scan(args: argparse.Namespace) -> int:
         try:
             prov = provenance(segs[0])
         except Exception as exc:            # noqa: BLE001
-            print(head + "  SKIPPED: unreadable segment 0 (" + type(exc).__name__ + ")")
+            # Counted, not skipped. A route that vanished here used to leave every denominator
+            # silently -- the exact failure this file's docstring claims to prevent. It cannot be
+            # attributed to a tag either (the tag comes from the provenance we just failed to
+            # read), so `compare` refuses outright rather than guessing which side it belonged to.
+            print(head + "  UNREADABLE segment 0 (" + type(exc).__name__ + ") -- recorded")
+            unreadable[route] = type(exc).__name__
             continue
         report = scan_route(route, segs)
         report["provenance"] = prov
@@ -349,6 +360,13 @@ def cmd_scan(args: argparse.Namespace) -> int:
         print(head + "  tag=" + report["tag"]
               + "  engaged=" + str(report["engaged_frames"]["estimator_a"])
               + "  lost=" + str(len(report["segments_skipped"])) + note)
+
+    marker = outdir / UNREADABLE_FILE
+    if unreadable:
+        marker.write_text(json.dumps(unreadable, indent=2), encoding="utf-8")
+        print(str(len(unreadable)) + " route(s) could not be read; recorded in " + marker.name)
+    elif marker.exists():
+        marker.unlink()
     return 0
 
 
@@ -408,19 +426,30 @@ def summarise(label: str, reports: list, failures: list) -> dict:
     rb = pb / fb if fb else 0.0
     print("  estimator A (carOutput): %8d frames, pinned>=384 %d (%.2f%%)" % (fa, pa, 100 * ra))
     print("  estimator B (LKAS11 TX): %8d frames, pinned>=384 %d (%.2f%%)" % (fb, pb, 100 * rb))
-    agree = abs(ra - rb) <= ESTIMATOR_TOLERANCE
-    print("  independent estimators %s (delta %.2f pp, tolerance %.0f pp)"
-          % ("AGREE" if agree else "DISAGREE", 100 * abs(ra - rb), 100 * ESTIMATOR_TOLERANCE))
-    if not agree:
-        failures.append(label + ": estimators disagree -- one of them is wrong, "
-                                "do not average them")
+    if fa == 0 or fb == 0:
+        # Zero frames makes both rates 0.0, which compared equal and printed AGREE over an empty
+        # table. Nothing was measured; that is a failure, not a clean result.
+        print("  independent estimators NOT COMPARED -- no engaged frames "
+              "(A=" + str(fa) + ", B=" + str(fb) + ")")
+        failures.append(label + ": no engaged frames on one or both estimators -- "
+                                "nothing was measured, this is not a clean run")
+    else:
+        rel = abs(ra - rb) / max(ra, rb) if max(ra, rb) > 0 else 0.0
+        agree = abs(ra - rb) <= ESTIMATOR_TOLERANCE and rel <= ESTIMATOR_REL_TOLERANCE
+        print("  independent estimators %s (delta %.2f pp / %.0f%% rel; tol %.0f pp and %.0f%%)"
+              % ("AGREE" if agree else "DISAGREE", 100 * abs(ra - rb), 100 * rel,
+                 100 * ESTIMATOR_TOLERANCE, 100 * ESTIMATOR_REL_TOLERANCE))
+        if not agree:
+            failures.append(label + ": estimators disagree -- one of them is wrong, "
+                                    "do not average them")
     print_table("[" + label + "] estimator A, binned medians", a)
     return a
 
 
 def cmd_compare(args: argparse.Namespace) -> int:
     outdir = Path(args.out)
-    reports = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(outdir.glob("*.json"))]
+    reports = [json.loads(p.read_text(encoding="utf-8"))
+               for p in sorted(outdir.glob("*.json")) if not p.name.startswith("_")]
     if not reports:
         print("no reports in " + str(outdir) + " -- run `scan` first")
         return 1
@@ -455,6 +484,12 @@ def cmd_compare(args: argparse.Namespace) -> int:
     summarise("after  " + args.after, by_tag[args.after], failures)
 
     print("\n" + "-" * 60)
+    marker = outdir / UNREADABLE_FILE
+    if marker.exists():
+        for route, why in json.loads(marker.read_text(encoding="utf-8")).items():
+            failures.append("route " + route + " was unreadable (" + why + ") and cannot be "
+                            "attributed to either side")
+
     if failures:
         print("COMPARISON REFUSED:")
         for f in failures:

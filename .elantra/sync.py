@@ -505,6 +505,22 @@ def main() -> int:
         if proc.returncode != 0:
             raise SyncError("guards failed on the assembled tree. Nothing published.")
 
+        # A guard suite that has never been shown to fail is decoration. These scripts run
+        # the same guards against deliberately broken copies of the tree and require them to
+        # go red. Without this the guards could quietly stop checking anything -- a regex that
+        # matches nothing, a check whose subject moved -- and every sync would still pass.
+        # They were written for this branch and, until now, ran nowhere.
+        log("\n=== negative tests: prove the guards can still fail ===")
+        for script, extra in (("test_guard_torque_chain.py", ["--opendbc", str(workdir / "opendbc")]),
+                              ("test_guard_opendbc_pin.py", []),
+                              ("test_lateral_report.py", [])):
+            proc = run([sys.executable, str(repo / ".elantra" / script), *extra], check=False)
+            log(proc.stdout)
+            if proc.returncode != 0:
+                raise SyncError(script + " failed -- the guards can no longer detect a real "
+                                         "divergence, so a green guard run proves nothing. "
+                                         "Nothing published.")
+
         publish(repo, new, prev, args.dry_run)
         log("\nDone." + ("  (dry run -- nothing was published)" if args.dry_run else ""))
         return 0
