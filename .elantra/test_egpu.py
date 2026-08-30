@@ -1214,6 +1214,20 @@ def test_frame_timing():
           "Tensor(v, device=device)" not in vsrc,
           "the tensor would carry the spec string as its device name")
 
+    # Linux cpu lists. Getting this wrong either wastes the big cores (the whole point) or
+    # schedules onto the cores the kernel isolated for modeld, which would make the car's own
+    # model miss frames while this tool runs.
+    case("a single cpu", v.parse_cpu_list("3"), {3})
+    case("a range is inclusive at both ends", v.parse_cpu_list("0-3"), {0, 1, 2, 3})
+    case("a comma list", v.parse_cpu_list("6,7"), {6, 7})
+    case("ranges and singles mixed", v.parse_cpu_list("0-2,5,7"), {0, 1, 2, 5, 7})
+    case("trailing newline from sysfs is tolerated", v.parse_cpu_list("0-7\n"), set(range(8)))
+    case("an empty isolated list is empty, not everything", v.parse_cpu_list(""), set())
+    case("a lone newline is empty too", v.parse_cpu_list("\n"), set())
+    # the case this device actually presents
+    case("this device's online minus isolated leaves the big cores it may use",
+         v.parse_cpu_list("0-7") - v.parse_cpu_list("6-7"), {0, 1, 2, 3, 4, 5})
+
     # An empty run must raise, not return a flattering zero. Same class of bug as the all-NaN
     # model output that used to report a perfect pass: the absence of evidence read as success.
     try:

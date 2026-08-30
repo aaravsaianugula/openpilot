@@ -90,6 +90,8 @@ COPYOUT_ITERS = 10_000
 COPYOUT_BYTES = 1 << 20
 
 MIN_FRAMES = 1000
+# eager run, capture run, first replay -- see the TinyJit comment in stage_model
+JIT_WARMUP_FRAMES = 3
 # what PolicyInputs.step builds, and therefore the only model this tool can drive
 POLICY_INPUT_NAMES = frozenset({"img", "big_img", "desire_pulse", "features_buffer", "traffic_convention", "action_t"})
 DEFAULT_DATA_DIR = Path("/data/media/0/realdata")
@@ -145,6 +147,49 @@ def report_tinygrad() -> None:
 
 
 # ---------------------------------------------------------------------------- stage 1: copyout
+
+def parse_cpu_list(s: str) -> set[int]:
+  """Parse a Linux cpu list -- "0-3", "6,7", "0-2,5" -- into a set of cpu numbers."""
+  out: set[int] = set()
+  for part in s.strip().split(","):
+    if not part:
+      continue
+    lo, _, hi = part.partition("-")
+    out.update(range(int(lo), int(hi or lo) + 1))
+  return out
+
+
+def widen_affinity() -> None:
+  """Run on every online core except the ones openpilot's realtime path is isolated onto.
+
+  An ssh session on this device inherits affinity for 0-3, the little cluster, and cores 4-7 are
+  hotplugged offline entirely while openpilot is stopped. The reference forward pass is by far
+  the slowest thing in the frame loop, so that alone turned a 1000-frame run into a five-hour
+  one. compile_modeld's driver widens for the same reason ("taskset -c 7 fails over ssh; the
+  boot build does this too").
+
+  The isolated cores are excluded rather than taken. The kernel is booted with isolcpus=6,7 and
+  modeld runs there; this tool is allowed to be slow, and is not allowed to make the car's own
+  model miss frames while it runs.
+  """
+  if not hasattr(os, "sched_setaffinity"):
+    return
+  try:
+    online = parse_cpu_list(Path("/sys/devices/system/cpu/online").read_text())
+    isolated = parse_cpu_list(Path("/sys/devices/system/cpu/isolated").read_text())
+  except OSError as e:
+    info("cpu topology unreadable, leaving affinity alone", str(e))
+    return
+  if not (usable := online - isolated):
+    info("no non-isolated cores online", "leaving affinity alone")
+    return
+  try:
+    os.sched_setaffinity(0, usable)
+  except OSError as e:
+    info("could not widen cpu affinity", str(e))
+  info("cpu affinity", f"{sorted(os.sched_getaffinity(0))} (online {sorted(online)},"
+       + f" isolated for openpilot {sorted(isolated)})")
+
 
 def summarize_times(samples) -> dict:
   """min / p50 / p99 / max / mean over per-frame device times, in seconds.
@@ -619,7 +664,20 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
     readers: dict[tuple[str, Path], FrameReader] = {}
     nv12_cache: dict[tuple[int, int], tuple[int, int, int, int]] = {}
 
-    sess = ort.InferenceSession(str(model_file), providers=["CPUExecutionProvider"])
+    # onnxruntime defaults to setting thread affinity, which fails on this device --
+    # "pthread_setaffinity_np failed ... Specify the number of threads explicitly so the affinity
+    # is not set" -- and leaves it running on about a third of the cores. The reference forward
+    # pass is the slowest thing in this loop by a wide margin, so that is hours on a 1000-frame
+    # run. Setting the count explicitly is what the error message asks for.
+    #
+    # This changes only the reference side, and only how its arithmetic is partitioned across
+    # threads; the eGPU output under test is untouched. Any reassociation this causes is orders
+    # of magnitude below the 0.2 threshold.
+    sess_options = ort.SessionOptions()
+    sess_options.intra_op_num_threads = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else 0
+    sess_options.inter_op_num_threads = 1
+    sess = ort.InferenceSession(str(model_file), sess_options, providers=["CPUExecutionProvider"])
+    info("onnxruntime threads", f"intra_op={sess_options.intra_op_num_threads}")
     ort_dtypes = {i.name: np.dtype(ORT_DTYPES[i.type]) for i in sess.get_inputs()}
     ort_out_names = [o.name for o in sess.get_outputs()]
     info("onnxruntime", f"{ort.__version__}, inputs {len(ort_dtypes)}, outputs {len(ort_out_names)}")
@@ -630,6 +688,7 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
     report_tinygrad()
     from tinygrad.device import Device
     from tinygrad.helpers import Context
+    from tinygrad.engine.jit import TinyJit
     from tinygrad.nn.onnx import OnnxRunner
     from tinygrad.tensor import Tensor
     # Inside the Context, not outside it. OnnxRunner materialises every initializer at
@@ -639,6 +698,14 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
     # before a single number is produced.
     with Context(DEV=device):
       runner = OnnxRunner(str(model_file))
+      # Captured, not dispatched kernel by kernel. modeld runs a TinyJit'd graph -- that is what
+      # compile_modeld builds and what the 1.77 GB pickle contains -- and over a USB link each
+      # individual dispatch costs a round trip. Un-captured, one frame took tens of seconds and
+      # the timing number would have described a path nothing ships. TinyJit replays with fresh
+      # input tensors as long as the names, shapes and dtypes match, which they do here.
+      # cnt 0 runs eagerly, cnt 1 captures, cnt >= 2 replays; the first frames are excluded from
+      # the timing summary below for exactly that reason.
+      jit_policy = TinyJit(lambda **tens: runner(tens))
       # Resolved here, inside the Context, because `device` may be a full target spec
       # (USB+AMD:LLVM) while Device[] and Tensor(device=) both want the bare key. Held for the
       # report and for the per-frame inputs: a Tensor built with the spec reports its device as
@@ -694,7 +761,7 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
       # car is modelV2.modelExecutionTime from an onroad rlog.
       t_frame = time.perf_counter()
       with Context(DEV=device):
-        gpu_raw = runner({k: Tensor(v, device=tg_key) for k, v in feeds.items()})
+        gpu_raw = jit_policy(**{k: Tensor(v, device=tg_key) for k, v in feeds.items()})
         gpu_out = [gpu_raw[name].numpy() for name in ort_out_names]
       frame_times.append(time.perf_counter() - t_frame)
 
@@ -719,7 +786,7 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
           slice_diff[name] = max(slice_diff[name], d)
 
       prev_feat = flat_cpu[output_slices["hidden_state"]].astype(np.float32)
-      if (n + 1) % 100 == 0:
+      if (n + 1) % 25 == 0:
         info(f"{n + 1}/{len(plan)}", f"max abs diff so far {max(max_diff.values()):.6g}, {time.monotonic() - st:.0f}s")
   finally:
     if tmpdir is not None:
@@ -745,11 +812,15 @@ def stage_model(device: str, onnx_path: Path, data_dir: Path, route: str, want_f
   # and the gate that decides whether this drives is modelV2.modelExecutionTime onroad. Reported
   # worst-case first for the same reason the diffs are -- a card that averages 30 ms and spikes to
   # 90 ms drops frames, and a mean is exactly what hides that.
-  if frame_times:
-    t = summarize_times(frame_times)
+  # The first three frames are TinyJit's eager run, its capture run, and the first replay. They
+  # describe compilation, not steady state, and folding them in would make the max meaningless.
+  steady = frame_times[JIT_WARMUP_FRAMES:]
+  if steady:
+    t = summarize_times(steady)
     holds, why = timing_verdict(t)
     print("")
-    print(f"  frame time on {tg_device}   ({t['n']} frames, upper bound: includes host->device upload)")
+    print(f"  frame time on {tg_device}   ({t['n']} frames after {JIT_WARMUP_FRAMES} JIT warmup,"
+          + " upper bound: includes host->device upload)")
     print(f"    min {t['min'] * 1e3:>8.1f} ms     p50 {t['p50'] * 1e3:>8.1f} ms"
           + f"     p99 {t['p99'] * 1e3:>8.1f} ms     max {t['max'] * 1e3:>8.1f} ms"
           + f"     mean {t['mean'] * 1e3:>8.1f} ms")
@@ -800,6 +871,8 @@ def main() -> int:
   # modeld sets these for the usbgpu path; the eGPU behaves differently without them
   os.environ.setdefault("GMMU", "0")
   os.environ.setdefault("HCQDEV_WAIT_TIMEOUT_MS", "3000")
+
+  widen_affinity()
 
   if args.stage in ("all", "copyout"):
     if not stage_copyout(args.device, args.copyout_iters, args.copyout_bytes):

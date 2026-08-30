@@ -83,7 +83,10 @@ OVERLAY_HOOKS = {
                                                  "small_model"],
     "openpilot/sunnypilot/models/manager.py": ["uses_amd_catalog", "probe_once"],
     "openpilot/selfdrive/modeld/SConscript": ["egpu_build_ok"],
-    "openpilot/selfdrive/modeld/modeld.py": ["sunnypilot.egpu", "egpu.enabled"],
+    # smu.metrics() is the third hook because the inline read it replaced used SMU 13 field
+    # names, which an SMU 11 card does not have; a sync that reverted it would put a 6600 XT
+    # back to publishing no chestnutState at all, silently.
+    "openpilot/selfdrive/modeld/modeld.py": ["sunnypilot.egpu", "egpu.enabled", "smu.metrics()"],
 }
 
 # The NV-USB delta may touch these and only these. Restricting the generated patch to them

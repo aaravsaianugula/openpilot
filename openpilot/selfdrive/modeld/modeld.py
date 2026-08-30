@@ -93,16 +93,19 @@ class ChestnutState:
     self.sends += 1
     if self.big and "AMD" in Device._opened_devices and self.sends % 100 == 1:
       try:
-        smu = Device["AMD"].iface.dev_impl.smu
-        smu._send_msg(smu.smu_mod.PPSMC_MSG_TransferTableSmu2Dram, smu.smu_mod.TABLE_SMU_METRICS, timeout=100)
-        metrics = smu.read_table(smu.smu_mod.SmuMetricsExternal_t, smu.smu_mod.TABLE_SMU_METRICS).SmuMetrics
-        self.metrics = {'tempC': metrics.AvgTemperature[smu.smu_mod.TEMP_HOTSPOT],
-                        'memoryTempC': metrics.AvgTemperature[smu.smu_mod.TEMP_MEM],
-                        'powerDrawW': metrics.AverageSocketPower,
+        # AM_SMU.metrics() reads the fields by whatever name this SMU generation gives them.
+        # Reading them inline here used SMU 13's names (AvgTemperature[], AvgFanRpm), which an
+        # SMU 11 card -- every RDNA2 one -- does not have. The AttributeError landed in the
+        # except below, so a 6600 XT published no chestnutState at all and, in particular, no
+        # gpuClockMhz: the only signal that says whether a clock request did anything.
+        m = Device["AMD"].iface.dev_impl.smu.metrics()
+        self.metrics = {'tempC': m['temp_hotspot'],
+                        'memoryTempC': m['temp_mem'],
+                        'powerDrawW': m['socket_power'],
                         'powerLimitW': self.power_limit,
-                        'gpuUsagePercent': metrics.AverageGfxActivity,
-                        'gpuClockMhz': metrics.AverageGfxclkFrequencyPostDs,
-                        'fanSpeedRpm': metrics.AvgFanRpm}
+                        'gpuUsagePercent': m['gfx_activity'],
+                        'gpuClockMhz': m['gfxclk'],
+                        'fanSpeedRpm': m['fan_rpm']}
         self.valid = True
       except Exception:
         if self.valid:

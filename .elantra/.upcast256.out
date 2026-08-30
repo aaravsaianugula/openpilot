@@ -1,0 +1,702 @@
+  cleared r_12_8_32_8_4_768_4_4                      142afb2c7d956465 (1 row)
+  cleared r_24_32_32_2_4_384_4_4                     726d0cf7554f7eeb (1 row)
+  cleared r_24_32_32_4_4_768_4                       f2adcba44e70fdcb (1 row)
+  cleared r_24_8_16_2_8_4_4_384_4                    c0810637e4a6a619 (1 row)
+  cleared r_32_12_16_8_2_4_4_192_4                   4161db5366c1f321 (1 row)
+  cleared r_32_16_2_3_12288_32                       a64d3fcb263e1b6b (1 row)
+  cleared r_48_2_16_16_4_4_768_4                     a3e22c7d48edc0b7 (1 row)
+  cleared r_8_1536_16_7_7                            524688d0015b677d (1 row)
+  8 rows cleared, 110 kept -- only the cleared ones will re-search
+
+  LTSSM before: 0x78
+  LTSSM off   : 0x00
+  LTSSM up    : 0x78 after 0.5s
+=== compile_model.sh tag=upcast256  2026-08-28T18:31:22-07:00 ===
+env  BEAM=2
+env  BEAM_PADTO=<unset>
+env  BEAM_LOCAL_MAX=256
+env  BEAM_UPCAST_MAX=256
+env  BEAM_DEV_TIMEOUT=0
+env  IGNORE_BEAM_CACHE=0
+env  CACHEDB=/root/tgcache_upcast256/cache.db
+env  AMD_FMA_MIX=<unset>
+env  AMD_DOT2=<unset>
+env  AMD_WGP_MODE=<unset>
+env  PCONTIG=<unset>
+env  FLOAT16=1
+env  JIT_BATCH_SIZE=0
+env  GMMU=0
+env  TC_OPT=2
+env  NOOPT=<unset>
+out  /root/models/big_driving_gfx1032_upcast256.pkl
+opened device DISK:/root/models/big_driving_supercombo.onnx.unchunked from pid:391
+opened device PYTHON from pid:391
+am usb:2-5: product string: 'custom ed4e39b7-CLEAN'
+am usb:2-5: AM_SOC initialized
+am usb:2-5: AM_GMC initialized
+am usb:2-5: AM_IH initialized
+am usb:2-5: loading sos component: PSP_FW_TYPE_PSP_KDB
+am usb:2-5: loading sos component: PSP_FW_TYPE_PSP_SPL
+am usb:2-5: loading sos component: PSP_FW_TYPE_PSP_SYS_DRV
+am usb:2-5: loading sos component: PSP_FW_TYPE_PSP_SOS
+am usb:2-5: loading fw: GFX_FW_TYPE_SMU
+am usb:2-5: loading fw: GFX_FW_TYPE_SDMA0
+am usb:2-5: loading fw: GFX_FW_TYPE_CP_PFP
+am usb:2-5: loading fw: GFX_FW_TYPE_CP_ME
+am usb:2-5: loading fw: GFX_FW_TYPE_CP_CE
+am usb:2-5: loading fw: GFX_FW_TYPE_CP_MEC
+am usb:2-5: loading fw: GFX_FW_TYPE_RLC_IRAM
+am usb:2-5: loading fw: GFX_FW_TYPE_RLC_DRAM_BOOT
+am usb:2-5: loading fw: GFX_FW_TYPE_RLC_G
+am usb:2-5: AM_PSP initialized
+am usb:2-5: patched 292 bytes of VBIOS board data into the pptable
+am usb:2-5: not enabling DS_GFXCLK, GFX_ULV, GFXOFF, MM_DPM_PG, MMHUB_PG, ATHUB_PG: no handshake to wake a gated block
+am usb:2-5: running features 0x00003463a32bedfb
+am usb:2-5: AM_SMU initialized
+am usb:2-5: AM_GFX initialized
+am usb:2-5: AM_SDMA initialized
+am usb:2-5: GPU power limit set to 100W
+am usb:2-5: clock request accepted for PPCLK_GFXCLK, PPCLK_SOCCLK, PPCLK_UCLK
+am usb:2-5: boot done
+AMDDevice: opening 0 with target (10, 3, 2) arch gfx1032
+opened device AMD from pid:391
+[32m*** AMD        1[0m [33mcopy        2 B,     AMD <- DISK:/r[0m            arg  2 mem   0.00 GB tm   3372.34us/     3.37ms (      0 GFLOPS    0|0      GB/s)
+*** AMD        2 [33mcopy        2 B,     AMD <- DISK:/r[0m            arg  2 mem   0.00 GB tm   4384.05us/     7.76ms (      0 GFLOPS    0|0      GB/s)
+[32m*** AMD        3[0m [33mcopy        8 B,     AMD <- DISK:/r[0m            arg  2 mem   0.00 GB tm   3737.37us/    11.49ms (      0 GFLOPS    0|0      GB/s)
+*** AMD        4 [33mcopy        2 B,     AMD <- DISK:/r[0m            arg  2 mem   0.00 GB tm   3851.70us/    15.35ms (      0 GFLOPS    0|0      GB/s)
+*** AMD        5 [33mcopy        2 B,     AMD <- DISK:/r[0m            arg  2 mem   0.00 GB tm   3303.51us/    18.65ms (      0 GFLOPS    0|0      GB/s)
+*** AMD        6 [33mcopy        8 B,     AMD <- DISK:/r[0m            arg  2 mem   0.00 GB tm   4124.64us/    22.77ms (      0 GFLOPS    0|0      GB/s)
+capture + replay
+opened device NPY from pid:391
+[32m*** AMD        7[0m [33mcopy  960.00 KB,     AMD <- NPY    [0m            arg  2 mem   0.00 GB tm [33m    10.68ms[0m/    33.46ms (      0 GFLOPS    0|0      GB/s)
+*** AMD        8 [33mcopy  960.00 KB,     AMD <- NPY    [0m            arg  2 mem   0.00 GB tm   9551.84us/    43.01ms (      0 GFLOPS    0|0      GB/s)
+[32m*** AMD        9[0m [33mcopy  192.00 KB,     AMD <- NPY    [0m            arg  2 mem   0.00 GB tm   3911.34us/    46.92ms (      0 GFLOPS    0|0      GB/s)
+[32m*** AMD       10[0m [33mcopy    3.12 KB,     AMD <- NPY    [0m            arg  2 mem   0.00 GB tm   3448.38us/    50.37ms (      0 GFLOPS    0|0      GB/s)
+scheduled     5 kernels in    85.23 ms | CACHE MISS 07271cab |    4746 uops in cache | /root/src/openpilot/selfdrive/modeld/compile_modeld.py:50
+/root/src/tinygrad_repo/tinygrad/codegen/opt/search.py:137: FutureWarning: Possible nested set at position 2
+  _ANSI = re.compile("\x1b[[0-9;]*m")
+opened device CPU from pid:391
+[32m*** CPU       11[0m [33mcopy        8 B,     CPU <- PYTHON [0m            arg  2 mem   0.00 GB tm     47.28us/    50.41ms (      0 GFLOPS    0|0      GB/s)
+*** CPU       12 [33mcopy        8 B,     CPU <- PYTHON [0m            arg  2 mem   0.00 GB tm     21.92us/    50.44ms (      0 GFLOPS    0|0      GB/s)
+[32m*** CPU       13[0m E[90m_[0m[33m2[0m[90m[0m                                            arg  1 mem   0.01 GB tm      0.13us/    50.44ms (      0 GFLOPS    0|0      GB/s)
+[32m*** CPU       14[0m E[90m_[0m[97m65536[0m[90m_[0m[33m2[0m[90m_[0m[33m3[0m[90m[0m                                    arg  3 mem   0.01 GB tm   1107.52us/    51.54ms (     23 GFLOPS    1|1      GB/s)
+[32m*** CPU       15[0m E[90m_[0m[97m32768[0m[90m_[0m[94m4[0m[90m_[0m[33m3[0m[90m[0m                                    arg  2 mem   0.01 GB tm    362.66us/    51.91ms (      1 GFLOPS    5|5      GB/s)
+scheduled     2 kernels in     3.61 ms | CACHE MISS 30a92e1f |    5279 uops in cache | /root/src/openpilot/selfdrive/modeld/compile_modeld.py:202
+[32m*** AMD       16[0m [33mcopy    2.05 KB,     AMD <- NPY    [0m            arg  2 mem   0.01 GB tm   3615.54us/    55.52ms (      0 GFLOPS    0|0      GB/s)
+[32m*** AMD       17[0m [33mcopy  384.00 KB,     AMD <- CPU    [0m            arg  2 mem   0.01 GB tm   4202.39us/    59.72ms (      0 GFLOPS    0|0      GB/s)
+/root/src/tinygrad_repo/tinygrad/nn/onnx.py:409: UserWarning: input desire_pulse has mismatch on dtype. Expected dtypes.half, received dtypes.float.
+  if tensor.dtype is not spec.dtype: warnings.warn(f"input {name} has mismatch on dtype. Expected {spec.dtype}, received {tensor.dtype}.")
+/root/src/tinygrad_repo/tinygrad/nn/onnx.py:409: UserWarning: input traffic_convention has mismatch on dtype. Expected dtypes.half, received dtypes.float.
+  if tensor.dtype is not spec.dtype: warnings.warn(f"input {name} has mismatch on dtype. Expected {spec.dtype}, received {tensor.dtype}.")
+/root/src/tinygrad_repo/tinygrad/nn/onnx.py:409: UserWarning: input action_t has mismatch on dtype. Expected dtypes.half, received dtypes.float.
+  if tensor.dtype is not spec.dtype: warnings.warn(f"input {name} has mismatch on dtype. Expected {spec.dtype}, received {tensor.dtype}.")
+/root/src/tinygrad_repo/tinygrad/nn/onnx.py:409: UserWarning: input features_buffer has mismatch on dtype. Expected dtypes.half, received dtypes.float.
+  if tensor.dtype is not spec.dtype: warnings.warn(f"input {name} has mismatch on dtype. Expected {spec.dtype}, received {tensor.dtype}.")
+*** AMD       18 [33mcopy        8 B,     AMD <- DISK:/r[0m            arg  2 mem   0.01 GB tm   3373.80us/    63.10ms (      0 GFLOPS    0|0      GB/s)
+*** AMD       19 [33mcopy        8 B,     AMD <- DISK:/r[0m            arg  2 mem   0.01 GB tm   2694.87us/    65.79ms (      0 GFLOPS    0|0      GB/s)
+*** AMD       20 [33mcopy        8 B,     AMD <- DISK:/r[0m            arg  2 mem   0.01 GB tm   3062.64us/    68.86ms (      0 GFLOPS    0|0      GB/s)
+*** AMD       21 [33mcopy        8 B,     AMD <- DISK:/r[0m            arg  2 mem   0.01 GB tm   3330.95us/    72.19ms (      0 GFLOPS    0|0      GB/s)
+*** AMD       22 [33mcopy        8 B,     AMD <- DISK:/r[0m            arg  2 mem   0.01 GB tm   2794.68us/    74.98ms (      0 GFLOPS    0|0      GB/s)
+[32m*** AMD       23[0m [33mcopy       16 B,     AMD <- DISK:/r[0m            arg  2 mem   0.01 GB tm   3935.26us/    78.92ms (      0 GFLOPS    0|0      GB/s)
+*** AMD       24 [33mcopy       16 B,     AMD <- DISK:/r[0m            arg  2 mem   0.01 GB tm   3711.55us/    82.63ms (      0 GFLOPS    0|0      GB/s)
+*** AMD       25 [33mcopy       16 B,     AMD <- DISK:/r[0m            arg  2 mem   0.01 GB tm   4027.61us/    86.66ms (      0 GFLOPS    0|0      GB/s)
+[32m*** AMD       26[0m [33mcopy       24 B,     AMD <- DISK:/r[0m            arg  2 mem   0.01 GB tm   5327.75us/    91.98ms (      0 GFLOPS    0|0      GB/s)
+[32m*** AMD       27[0m [33mcopy       40 B,     AMD <- DISK:/r[0m            arg  2 mem   0.01 GB tm   3404.23us/    95.39ms (      0 GFLOPS    0|0      GB/s)
+*** AMD       28 [33mcopy       24 B,     AMD <- DISK:/r[0m            arg  2 mem   0.01 GB tm   4319.80us/    99.71ms (      0 GFLOPS    0|0      GB/s)
+[32m*** AMD       29[0m [33mcopy       32 B,     AMD <- DISK:/r[0m            arg  2 mem   0.01 GB tm   5080.49us/   104.79ms (      0 GFLOPS    0|0      GB/s)
+*** AMD       30 [33mcopy       24 B,     AMD <- DISK:/r[0m            arg  2 mem   0.01 GB tm   3645.74us/   108.43ms (      0 GFLOPS    0|0      GB/s)
+[32m*** CPU       31[0m E[90m[0m                                              arg  1 mem   0.01 GB tm      8.29us/   108.44ms (      0 GFLOPS    0|0      GB/s)
+scheduled  1105 kernels in  3228.63 ms | CACHE MISS d3c5d085 |   50437 uops in cache | /root/src/openpilot/selfdrive/modeld/compile_modeld.py:240
+memory reduced from 177.32 MB -> 14.17 MB, 485 -> 1 bufs
+   0.00s:                from   1 ->   1 actions [34m 512[0m [34m3072[0m [31m 768[0m
+/root/src/tinygrad_repo/tinygrad/codegen/opt/search.py:137: FutureWarning: Possible nested set at position 2
+  _ANSI = re.compile("\x1b[[0-9;]*m")
+/root/src/tinygrad_repo/tinygrad/codegen/opt/search.py:137: FutureWarning: Possible nested set at position 2
+  _ANSI = re.compile("\x1b[[0-9;]*m")
+/root/src/tinygrad_repo/tinygrad/codegen/opt/search.py:137: FutureWarning: Possible nested set at position 2
+  _ANSI = re.compile("\x1b[[0-9;]*m")
+/root/src/tinygrad_repo/tinygrad/codegen/opt/search.py:137: FutureWarning: Possible nested set at position 2
+  _ANSI = re.compile("\x1b[[0-9;]*m")
+/root/src/tinygrad_repo/tinygrad/codegen/opt/search.py:137: FutureWarning: Possible nested set at position 2
+  _ANSI = re.compile("\x1b[[0-9;]*m")
+/root/src/tinygrad_repo/tinygrad/codegen/opt/search.py:137: FutureWarning: Possible nested set at position 2
+  _ANSI = re.compile("\x1b[[0-9;]*m")
+/root/src/tinygrad_repo/tinygrad/codegen/opt/search.py:137: FutureWarning: Possible nested set at position 2
+  _ANSI = re.compile("\x1b[[0-9;]*m")
+/root/src/tinygrad_repo/tinygrad/codegen/opt/search.py:137: FutureWarning: Possible nested set at position 2
+  _ANSI = re.compile("\x1b[[0-9;]*m")
+/root/src/tinygrad_repo/tinygrad/codegen/opt/search.py:137: FutureWarning: Possible nested set at position 2
+  _ANSI = re.compile("\x1b[[0-9;]*m")
+/root/src/tinygrad_repo/tinygrad/codegen/opt/search.py:137: FutureWarning: Possible nested set at position 2
+  _ANSI = re.compile("\x1b[[0-9;]*m")
+/root/src/tinygrad_repo/tinygrad/codegen/opt/search.py:137: FutureWarning: Possible nested set at position 2
+  _ANSI = re.compile("\x1b[[0-9;]*m")
+/root/src/tinygrad_repo/tinygrad/codegen/opt/search.py:137: FutureWarning: Possible nested set at position 2
+  _ANSI = re.compile("\x1b[[0-9;]*m")
+/root/src/tinygrad_repo/tinygrad/codegen/opt/search.py:137: FutureWarning: Possible nested set at position 2
+  _ANSI = re.compile("\x1b[[0-9;]*m")
+/root/src/tinygrad_repo/tinygrad/codegen/opt/search.py:137: FutureWarning: Possible nested set at position 2
+  _ANSI = re.compile("\x1b[[0-9;]*m")
+/root/src/tinygrad_repo/tinygrad/codegen/opt/search.py:137: FutureWarning: Possible nested set at position 2
+  _ANSI = re.compile("\x1b[[0-9;]*m")
+/root/src/tinygrad_repo/tinygrad/codegen/opt/search.py:137: FutureWarning: Possible nested set at position 2
+  _ANSI = re.compile("\x1b[[0-9;]*m")
+   1.61s:       171.43ms          1/  24         [34m 512[0m [34m1536[0m [33m   2[0m [31m 768[0m[K   1.91s:       396.48ms          2/  24         [34m 512[0m [34m3072[0m [91m  16[0m [31m  48[0m[K   2.24s:       123.10ms          3/  24         [34m 256[0m [34m3072[0m [36m   2[0m [31m 768[0m[K   2.54s:       132.54ms          4/  24         [34m 256[0m [34m3072[0m [33m   2[0m [31m 768[0m[K   2.91s:        27.89ms          5/  24         [34m  32[0m [34m3072[0m [36m  16[0m [31m 768[0m[K   3.23s:        38.10ms          6/  24         [34m  64[0m [34m3072[0m [36m   8[0m [31m 768[0m[K   3.58s:       104.33ms          7/  24         [34m 512[0m [34m1024[0m [33m   3[0m [31m 768[0m[K   3.92s:       138.75ms          8/  24         [34m 512[0m [34m1536[0m [36m   2[0m [31m 768[0m[K   4.34s:        74.33ms          9/  24         [34m 128[0m [34m3072[0m [33m   4[0m [31m 768[0m[K   4.73s:        26.04ms         10/  24         [34m 512[0m [34m 192[0m [36m  16[0m [31m 768[0m[K   5.08s:       209.00ms         11/  24         [34m 512[0m [34m3072[0m [31m 192[0m [35m   4[0m[K   5.45s:        50.40ms         12/  24         [34m 512[0m [34m 384[0m [36m   8[0m [31m 768[0m[K   5.81s:        85.25ms         13/  24         [34m 512[0m [34m 768[0m [36m   4[0m [31m 768[0m[K   6.15s:       102.83ms         14/  24         [34m 512[0m [34m 768[0m [33m   4[0m [31m 768[0m[K   6.45s:        62.10ms         15/  24         [34m 128[0m [34m3072[0m [36m   4[0m [31m 768[0m[K   6.78s:        92.18ms         16/  24         [34m 512[0m [34m1024[0m [36m   3[0m [31m 768[0m[K   7.12s:        23.36ms         17/  24         [34m  16[0m [34m3072[0m [36m  32[0m [31m 768[0m[K   7.45s:       683.05ms         18/  24         [34m3072[0m [34m 512[0m [31m 768[0m[K   7.77s:       457.97ms         19/  24         [34m 512[0m [34m3072[0m [91m  32[0m [31m  24[0m[K   8.07s:       507.71ms         20/  24         [34m 512[0m [34m3072[0m [91m 256[0m [31m   3[0m[K   8.37s:       211.40ms         21/  24         [34m 512[0m [34m3072[0m [91m   4[0m [31m 192[0m[K   8.67s:       355.70ms         22/  24         [34m 512[0m [34m3072[0m [91m  16[0m [31m  48[0m[K   8.98s:       504.49ms         23/  24         [34m 512[0m [34m3072[0m [91m  64[0m [31m  12[0m[K   9.28s:       275.91ms         24/  24         [34m 512[0m [34m3072[0m [91m   8[0m [31m  96[0m[K   9.28s:        23.36ms from  24 ->  24 actions[K [34m  16[0m [34m3072[0m [36m  32[0m [31m 768[0m
+  10.44s:        25.10ms          1/  42         [34m  16[0m [34m3072[0m [36m  32[0m [31m 192[0m [35m   4[0m[K  14.04s:        26.12ms          2/  42         [34m   4[0m [34m3072[0m [36m  32[0m [36m   4[0m [31m 768[0m[K  14.44s:        29.00ms          3/  42         [34m   2[0m [34m3072[0m [36m  32[0m [36m   8[0m [31m 768[0m[K  14.83s:        20.27ms          4/  42         [34m  16[0m [34m 384[0m [36m  32[0m [36m   8[0m [31m 768[0m[K  15.23s:        22.69ms          5/  42         [34m  16[0m [34m1536[0m [36m  32[0m [36m   2[0m [31m 768[0m[K  15.63s:        21.46ms          6/  42         [34m  16[0m [34m1024[0m [36m  32[0m [33m   3[0m [31m 768[0m[K  16.01s:        21.60ms          7/  42         [34m  16[0m [34m 768[0m [36m  32[0m [36m   4[0m [31m 768[0m[K  16.38s:        20.90ms          8/  42         [34m  16[0m [34m3072[0m [36m  16[0m [33m   2[0m [31m 768[0m[K  16.79s:        24.08ms          9/  42         [34m   8[0m [34m3072[0m [36m  32[0m [36m   2[0m [31m 768[0m[K  17.18s:        22.41ms         10/  42         [34m  16[0m [34m1024[0m [36m  32[0m [36m   3[0m [31m 768[0m[K  17.41s:       121.67ms         11/  42         [34m3072[0m [36m  32[0m [33m  16[0m [31m 768[0m[K  17.82s:        34.66ms         12/  42         [34m   4[0m [34m3072[0m [36m  32[0m [33m   4[0m [31m 768[0m[K  22.93s:        13.00ms         13/  42         [34m 256[0m [34m 192[0m [36m  16[0m [36m   2[0m [31m 768[0m[K  23.26s:        26.26ms         14/  42         [34m 512[0m [34m 192[0m [36m  16[0m [31m 192[0m [35m   4[0m[K  23.57s:        12.87ms         15/  42         [34m 512[0m [34m  64[0m [36m  16[0m [33m   3[0m [31m 768[0m[K  24.40s:      7125.24us         16/  42         [34m 128[0m [34m 192[0m [36m  16[0m [33m   4[0m [31m 768[0m[K  24.72s:        12.55ms         17/  42         [34m 128[0m [34m 192[0m [36m  16[0m [36m   4[0m [31m 768[0m[K  25.05s:        13.74ms         18/  42         [34m 512[0m [34m  96[0m [36m  16[0m [36m   2[0m [31m 768[0m[K  27.22s:        10.59ms         19/  42         [34m 512[0m [34m  12[0m [36m  16[0m [36m  16[0m [31m 768[0m[K  27.56s:        24.58ms         20/  42         [34m 512[0m [34m 192[0m [36m  16[0m [91m   4[0m [31m 192[0m[K  27.93s:        24.41ms         21/  42         [34m 512[0m [34m 192[0m [36m  16[0m [91m  16[0m [31m  48[0m[K  28.26s:        12.11ms         22/  42         [34m  32[0m [34m 192[0m [36m  16[0m [36m  16[0m [31m 768[0m[K  28.57s:        24.86ms         23/  42         [34m 512[0m [34m 192[0m [36m  16[0m [91m  16[0m [31m  48[0m[K  87.05s:      7125.24us from  42 ->  23 actions[K [34m 128[0m [34m 192[0m [36m  16[0m [33m   4[0m [31m 768[0m
+  87.94s:      4886.44us          1/  37         [34m 128[0m [34m  96[0m [36m  16[0m [33m   4[0m [33m   2[0m [31m 768[0m[K  88.26s:      9445.00us          2/  37         [34m 128[0m [34m 192[0m [36m   8[0m [33m   4[0m [33m   2[0m [31m 768[0m[K  88.55s:      4227.76us          3/  37         [34m  64[0m [34m 192[0m [36m  16[0m [36m   2[0m [33m   4[0m [31m 768[0m[K  88.83s:      3672.68us          4/  37         [34m 128[0m [34m  48[0m [36m  16[0m [36m   4[0m [33m   4[0m [31m 768[0m[K  89.11s:      3612.56us          5/  37         [34m 128[0m [34m  24[0m [36m  16[0m [36m   8[0m [33m   4[0m [31m 768[0m[K  89.38s:      4772.84us          6/  37         [34m  16[0m [34m 192[0m [36m  16[0m [36m   8[0m [33m   4[0m [31m 768[0m[K  89.66s:      4888.12us          7/  37         [34m 128[0m [34m  64[0m [36m  16[0m [36m   3[0m [33m   4[0m [31m 768[0m[K  89.95s:      3775.44us          8/  37         [34m 128[0m [34m  96[0m [36m  16[0m [36m   2[0m [33m   4[0m [31m 768[0m[K  90.26s:      4588.48us          9/  37         [34m  32[0m [34m 192[0m [36m  16[0m [36m   4[0m [33m   4[0m [31m 768[0m[K  90.54s:      7297.28us         10/  37         [34m 128[0m [34m 192[0m [36m  16[0m [33m   4[0m [31m 192[0m [35m   4[0m[K  90.84s:      5347.68us         11/  37         [34m   8[0m [34m 192[0m [36m  16[0m [36m  16[0m [33m   4[0m [31m 768[0m[K  91.16s:      3596.76us         12/  37         [34m 128[0m [34m  12[0m [36m  16[0m [36m  16[0m [33m   4[0m [31m 768[0m[K  91.49s:      7606.84us         13/  37         [34m  64[0m [34m 192[0m [36m  16[0m [33m   4[0m [33m   2[0m [31m 768[0m[K  91.85s:        15.48ms         14/  37         [34m 192[0m [34m 128[0m [36m  16[0m [33m   4[0m [31m 768[0m[K  92.17s:      7004.44us         15/  37         [34m 128[0m [34m 192[0m [36m  16[0m [91m   8[0m [33m   4[0m [31m  96[0m[K  92.55s:      4434.24us         16/  37         [34m 128[0m [34m  64[0m [36m  16[0m [33m   4[0m [33m   3[0m [31m 768[0m[K  92.90s:      6985.64us         17/  37         [34m 128[0m [34m 192[0m [36m  16[0m [91m   4[0m [33m   4[0m [31m 192[0m[K  93.20s:      7546.88us         18/  37         [34m 128[0m [34m 192[0m [36m  16[0m [91m  16[0m [33m   4[0m [31m  48[0m[K  93.52s:        13.41ms         19/  37         [34m 512[0m [34m   6[0m [36m  16[0m [36m  16[0m [33m   2[0m [31m 768[0m[K  93.80s:      4069.24us         20/  37         [34m 128[0m [34m  48[0m [36m  16[0m [33m   4[0m [33m   4[0m [31m 768[0m[K  94.13s:        12.94ms         21/  37         [34m 128[0m [34m 192[0m [36m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m[K  94.44s:      7360.84us         22/  37         [34m 128[0m [34m 192[0m [36m  16[0m [91m  16[0m [33m   4[0m [31m  48[0m[K  94.72s:      6577.24us         23/  37         [34m 256[0m [34m  12[0m [36m  16[0m [36m  16[0m [33m   2[0m [31m 768[0m[K  95.01s:      7730.04us         24/  37         [34m 512[0m [34m  12[0m [36m  16[0m [36m   8[0m [33m   2[0m [31m 768[0m[K  95.29s:      7711.24us         25/  37         [34m 512[0m [34m  12[0m [36m   8[0m [36m  16[0m [33m   2[0m [31m 768[0m[K  95.58s:      8726.80us         26/  37         [34m  12[0m [34m 512[0m [36m  16[0m [36m  16[0m [31m 768[0m[K  95.89s:        13.64ms         27/  37         [34m 512[0m [34m   4[0m [36m  16[0m [36m  16[0m [33m   3[0m [31m 768[0m[K  96.20s:        13.33ms         28/  37         [34m 512[0m [36m  16[0m [36m  16[0m [33m  12[0m [31m 768[0m[K  96.51s:        12.89ms         29/  37         [34m 512[0m [34m  12[0m [36m  16[0m [36m  16[0m [31m 192[0m [35m   4[0m[K  96.91s:        12.63ms         30/  37         [34m  32[0m [34m 192[0m [36m  16[0m [33m   4[0m [33m   4[0m [31m 768[0m[K  97.23s:        13.78ms         31/  37         [34m 512[0m [34m   3[0m [36m  16[0m [36m  16[0m [33m   4[0m [31m 768[0m[K  97.54s:      7077.28us         32/  37         [34m 512[0m [34m  12[0m [36m  16[0m [36m   4[0m [33m   4[0m [31m 768[0m[K  97.82s:      6790.56us         33/  37         [34m 512[0m [34m  12[0m [36m   4[0m [36m  16[0m [33m   4[0m [31m 768[0m[K  98.13s:      7158.36us         34/  37         [34m 512[0m [34m  12[0m [36m  16[0m [33m  16[0m [31m 768[0m[K  98.48s:      6152.16us         35/  37         [34m 512[0m [34m  12[0m [36m  16[0m [33m  16[0m [31m 768[0m[K  98.87s:        18.80ms         36/  37         [34m 128[0m [34m 192[0m [33m   4[0m [33m  16[0m [31m 768[0m[K  98.87s:      3596.76us from  37 ->  36 actions[K [34m 128[0m [34m  12[0m [36m  16[0m [36m  16[0m [33m   4[0m [31m 768[0m
+  99.91s:      3578.16us          1/  29         [34m  12[0m [34m 128[0m [36m  16[0m [36m  16[0m [33m   4[0m [31m 768[0m[K 100.30s:      3145.00us          2/  29         [34m 128[0m [34m   6[0m [36m  16[0m [36m  16[0m [33m   4[0m [33m   2[0m [31m 768[0m[K 100.61s:      2420.84us          3/  29         [34m 128[0m [34m  12[0m [36m   8[0m [36m  16[0m [33m   4[0m [33m   2[0m [31m 768[0m[K 100.90s:      2896.64us          4/  29         [34m 128[0m [34m  12[0m [36m  16[0m [36m  16[0m [33m   4[0m [31m 192[0m [35m   4[0m[K 101.19s:      3867.16us          5/  29         [34m 128[0m [34m   4[0m [36m  16[0m [36m  16[0m [33m   4[0m [33m   3[0m [31m 768[0m[K 101.49s:      2493.52us          6/  29         [34m 128[0m [34m  12[0m [36m  16[0m [36m   8[0m [33m   4[0m [33m   2[0m [31m 768[0m[K 101.78s:      3530.64us          7/  29         [34m  64[0m [34m  12[0m [36m  16[0m [36m  16[0m [33m   4[0m [33m   2[0m [31m 768[0m[K 102.08s:      2291.44us          8/  29         [34m 128[0m [34m  12[0m [36m  16[0m [36m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 102.37s:      3792.64us          9/  29         [34m  64[0m [34m  24[0m [36m  16[0m [36m   8[0m [33m   4[0m [33m   2[0m [31m 768[0m[K 102.66s:      3841.24us         10/  29         [34m 128[0m [34m  12[0m [36m  16[0m [36m   8[0m [33m   4[0m [33m   2[0m [31m 768[0m[K 102.94s:      2438.72us         11/  29         [34m 128[0m [34m  24[0m [36m   8[0m [36m   8[0m [33m   4[0m [33m   2[0m [31m 768[0m[K 103.23s:      4525.64us         12/  29         [34m 128[0m [34m   3[0m [36m  16[0m [36m  16[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 103.52s:      2175.00us         13/  29         [34m 128[0m [34m  12[0m [36m   4[0m [36m  16[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 103.82s:      6461.76us         14/  29         [34m  32[0m [34m  12[0m [36m  16[0m [36m  16[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 104.12s:      2502.12us         15/  29         [34m 128[0m [34m  24[0m [36m  16[0m [36m   4[0m [33m   4[0m [33m   2[0m [31m 768[0m[K 104.42s:      3684.48us         16/  29         [34m  64[0m [34m  24[0m [36m  16[0m [36m   8[0m [36m   2[0m [33m   4[0m [31m 768[0m[K 104.74s:      3867.56us         17/  29         [34m 128[0m [34m   8[0m [36m  16[0m [36m   8[0m [33m   4[0m [33m   3[0m [31m 768[0m[K 105.04s:      3484.68us         18/  29         [34m 128[0m [34m  24[0m [36m  16[0m [36m   8[0m [33m   4[0m [31m 192[0m [35m   4[0m[K 105.34s:      3574.56us         19/  29         [34m 128[0m [34m  12[0m [36m  16[0m [36m   8[0m [36m   2[0m [33m   4[0m [31m 768[0m[K 105.65s:      3407.52us         20/  29         [34m 128[0m [34m   6[0m [36m  16[0m [36m   8[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 105.95s:      7047.40us         21/  29         [34m  32[0m [34m  24[0m [36m  16[0m [36m   8[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 106.25s:      5695.20us         22/  29         [34m  24[0m [34m 128[0m [36m  16[0m [36m   8[0m [33m   4[0m [31m 768[0m[K 106.54s:      2281.32us         23/  29         [34m 128[0m [34m  24[0m [36m   4[0m [36m   8[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 106.86s:      3858.64us         24/  29         [34m 128[0m [34m  24[0m [36m  16[0m [33m   4[0m [33m   8[0m [31m 768[0m[K 107.22s:      2517.08us         25/  29         [34m 128[0m [34m  24[0m [36m  16[0m [36m   2[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 107.55s:      3069.20us         26/  29         [34m 128[0m [36m  16[0m [36m  16[0m [33m   4[0m [33m  12[0m [31m 768[0m[K 107.86s:      3176.92us         27/  29         [34m 128[0m [34m  12[0m [36m  16[0m [33m   4[0m [33m  16[0m [31m 768[0m[K 108.17s:      6029.76us         28/  29         [34m 128[0m [34m  24[0m [36m   8[0m [33m   4[0m [33m  16[0m [31m 768[0m[K 108.17s:      2175.00us from  29 ->  28 actions[K [34m 128[0m [34m  12[0m [36m   4[0m [36m  16[0m [33m   4[0m [33m   4[0m [31m 768[0m
+ 109.75s:      2002.04us          1/  40         [34m 128[0m [34m   6[0m [36m   4[0m [36m  16[0m [36m   2[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 110.85s:      2289.20us          2/  40         [34m  64[0m [34m  12[0m [36m   4[0m [36m  16[0m [36m   2[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 111.27s:      2261.56us          3/  40         [34m  32[0m [34m  12[0m [36m   4[0m [36m  16[0m [36m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 111.63s:      2082.44us          4/  40         [34m 128[0m [34m  12[0m [36m   4[0m [36m  16[0m [33m   4[0m [33m   4[0m [31m 192[0m [35m   4[0m[K 111.98s:      2002.52us          5/  40         [34m 128[0m [34m   4[0m [36m   4[0m [36m  16[0m [36m   3[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 112.31s:      2008.04us          6/  40         [34m 128[0m [34m   3[0m [36m   4[0m [36m  16[0m [36m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 112.64s:      2090.96us          7/  40         [34m 128[0m [34m  12[0m [36m   2[0m [36m  16[0m [33m   4[0m [33m   4[0m [33m   2[0m [31m 768[0m[K 112.98s:      1825.56us          8/  40         [34m 128[0m [34m   6[0m [36m   4[0m [36m  16[0m [33m   4[0m [33m   4[0m [33m   2[0m [31m 768[0m[K 113.33s:      2213.32us          9/  40         [34m 128[0m [34m  12[0m [36m   4[0m [36m   8[0m [33m   4[0m [33m   4[0m [33m   2[0m [31m 768[0m[K 113.69s:      2598.60us         10/  40         [34m 128[0m [34m  12[0m [36m   4[0m [36m  16[0m [91m   4[0m [33m   4[0m [33m   4[0m [31m 192[0m[K 114.01s:      1999.52us         11/  40         [34m  12[0m [34m 128[0m [36m   4[0m [36m  16[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 114.31s:      1737.60us         12/  40         [34m 128[0m [34m   4[0m [36m   4[0m [36m  16[0m [33m   4[0m [33m   4[0m [33m   3[0m [31m 768[0m[K 114.63s:      1878.16us         13/  40         [34m  64[0m [34m  12[0m [36m   4[0m [36m  16[0m [33m   4[0m [33m   4[0m [33m   2[0m [31m 768[0m[K 114.92s:      1891.16us         14/  40         [34m  64[0m [34m  24[0m [36m   4[0m [36m   8[0m [33m   4[0m [33m   4[0m [33m   2[0m [31m 768[0m[K 115.24s:      2237.40us         15/  40         [34m 128[0m [34m  12[0m [36m   4[0m [36m   8[0m [33m   4[0m [33m   4[0m [33m   2[0m [31m 768[0m[K 115.61s:      1705.76us         16/  40         [34m 128[0m [34m   3[0m [36m   4[0m [36m  16[0m [33m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 115.95s:      3350.24us         17/  40         [34m 128[0m [34m  24[0m [36m   2[0m [36m   8[0m [33m   4[0m [33m   4[0m [33m   2[0m [31m 768[0m[K 116.28s:      3496.92us         18/  40         [34m 128[0m [34m  24[0m [36m   4[0m [36m   4[0m [33m   4[0m [33m   4[0m [33m   2[0m [31m 768[0m[K 116.66s:      3191.68us         19/  40         [34m 128[0m [34m  12[0m [36m   4[0m [36m   4[0m [33m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 117.07s:      2297.28us         20/  40         [34m  64[0m [34m  24[0m [36m   4[0m [36m   8[0m [36m   2[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 117.38s:      2198.12us         21/  40         [34m 128[0m [34m  12[0m [36m   4[0m [36m   8[0m [36m   2[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 117.69s:      1753.68us         22/  40         [34m 128[0m [34m   8[0m [36m   4[0m [36m   8[0m [33m   4[0m [33m   4[0m [33m   3[0m [31m 768[0m[K 118.01s:      2151.72us         23/  40         [34m  32[0m [34m  24[0m [36m   4[0m [36m   8[0m [36m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 118.30s:      2104.48us         24/  40         [34m 128[0m [34m  24[0m [36m   4[0m [36m   8[0m [33m   4[0m [33m   4[0m [31m 192[0m [35m   4[0m[K 118.59s:      2071.52us         25/  40         [34m 128[0m [34m   8[0m [36m   4[0m [36m   8[0m [36m   3[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 118.95s:      2702.52us         26/  40         [34m  32[0m [34m  12[0m [36m   4[0m [36m  16[0m [33m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 119.27s:      2313.44us         27/  40         [34m  16[0m [34m  24[0m [36m   4[0m [36m   8[0m [36m   8[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 119.58s:      2009.08us         28/  40         [34m 128[0m [34m   3[0m [36m   4[0m [36m   8[0m [36m   8[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 119.90s:      2000.56us         29/  40         [34m 128[0m [34m   6[0m [36m   4[0m [36m   8[0m [36m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 120.26s:      2997.40us         30/  40         [34m  32[0m [34m  24[0m [36m   4[0m [36m   8[0m [33m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 120.57s:      2666.92us         31/  40         [34m 128[0m [34m  24[0m [36m   4[0m [36m   8[0m [91m   8[0m [33m   4[0m [33m   4[0m [31m  96[0m[K 120.87s:      2652.92us         32/  40         [34m 128[0m [34m  24[0m [36m   4[0m [36m   8[0m [91m   4[0m [33m   4[0m [33m   4[0m [31m 192[0m[K 121.18s:      2125.60us         33/  40         [34m  24[0m [34m 128[0m [36m   4[0m [36m   8[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 121.49s:      1873.36us         34/  40         [34m 128[0m [34m   6[0m [36m   4[0m [36m   8[0m [33m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 121.82s:      6098.80us         35/  40         [34m 128[0m [34m  24[0m [36m   4[0m [36m   2[0m [33m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 121.82s:      1705.76us from  40 ->  35 actions[K [34m 128[0m [34m   3[0m [36m   4[0m [36m  16[0m [33m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m
+ 124.89s:      1723.96us          1/  28         [34m 128[0m [36m   4[0m [36m  16[0m [36m   3[0m [33m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 125.96s:      1838.28us          2/  28         [34m  32[0m [34m   3[0m [36m   4[0m [36m  16[0m [36m   4[0m [33m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 127.10s:      1809.68us          3/  28         [34m   3[0m [34m 128[0m [36m   4[0m [36m  16[0m [33m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 127.57s:      1840.20us          4/  28         [34m  64[0m [34m   3[0m [36m   4[0m [36m  16[0m [36m   2[0m [33m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m[K 128.04s:      1747.36us          5/  28         [34m 128[0m [34m   2[0m [36m   4[0m [36m  16[0m [36m   2[0m [33m   4[0m [33m   4[0m [33m   3[0m [31m 768[0m[K 128.42s:      1960.32us          6/  28         [34m  64[0m [34m   4[0m [36m   4[0m [36m  16[0m [36m   2[0m [33m   4[0m [33m   4[0m [33m   3[0m [31m 768[0m[K 128.80s:      2004.44us          7/  28         [34m  32[0m [34m   4[0m [36m   4[0m [36m  16[0m [36m   4[0m [33m   4[0m [33m   4[0m [33m   3[0m [31m 768[0m[K 129.16s:      1925.20us          8/  28         [34m 128[0m [34m   4[0m [36m   4[0m [36m  16[0m [33m   4[0m [33m   4[0m [33m   3[0m [31m 192[0m [35m   4[0m[K 129.52s:      1836.28us          9/  28         [34m 128[0m [36m   4[0m [36m  16[0m [36m   4[0m [33m   4[0m [33m   4[0m [33m   3[0m [31m 768[0m[K 129.85s:      1722.68us         10/  28         [34m   4[0m [34m 128[0m [36m   4[0m [36m  16[0m [33m   4[0m [33m   4[0m [33m   3[0m [31m 768[0m[K 130.15s:      2938.52us         11/  28         [34m 128[0m [34m   4[0m [36m   4[0m [36m  16[0m [91m   4[0m [33m   4[0m [33m   4[0m [33m   3[0m [31m 192[0m[K 130.15s: [32m     1705.76us[0m from  28 ->  11 actions[K [34m 128[0m [34m   3[0m [36m   4[0m [36m  16[0m [33m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m
+   0.00s:                from   1 ->   1 actions [34m 768[0m [34m 512[0m [31m3072[0m
+   0.54s:        32.51ms          1/  24         [34m 768[0m [34m  32[0m [36m  16[0m [31m3072[0m[K   0.98s:        40.14ms          2/  24         [34m 768[0m [34m  64[0m [36m   8[0m [31m3072[0m[K   1.39s:       295.48ms          3/  24         [34m 768[0m [34m 512[0m [31m 768[0m [35m   4[0m[K   1.81s:        82.43ms          4/  24         [34m 768[0m [34m 128[0m [36m   4[0m [31m3072[0m[K   2.25s:        92.59ms          5/  24         [34m 256[0m [34m 512[0m [36m   3[0m [31m3072[0m[K   2.70s:        84.86ms          6/  24         [34m 768[0m [34m 128[0m [33m   4[0m [31m3072[0m[K   3.10s:       156.93ms          7/  24         [34m 768[0m [34m 256[0m [36m   2[0m [31m3072[0m[K   3.55s:       152.85ms          8/  24         [34m 768[0m [34m 256[0m [33m   2[0m [31m3072[0m[K   3.94s:        74.68ms          9/  24         [34m 192[0m [34m 512[0m [36m   4[0m [31m3072[0m[K   4.37s:        89.26ms         10/  24         [34m 256[0m [34m 512[0m [33m   3[0m [31m3072[0m[K   4.80s:       149.36ms         11/  24         [34m 384[0m [34m 512[0m [36m   2[0m [31m3072[0m[K   5.23s:       128.49ms         12/  24         [34m 384[0m [34m 512[0m [33m   2[0m [31m3072[0m[K   5.66s:       293.38ms         13/  24         [34m 768[0m [34m 512[0m [91m  16[0m [31m 192[0m[K   6.08s:        61.37ms         14/  24         [34m 192[0m [34m 512[0m [33m   4[0m [31m3072[0m[K   6.47s:        23.30ms         15/  24         [34m  48[0m [34m 512[0m [36m  16[0m [31m3072[0m[K   6.87s:       248.93ms         16/  24         [34m 768[0m [34m 512[0m [91m 256[0m [31m  12[0m[K   7.29s:        37.00ms         17/  24         [34m  96[0m [34m 512[0m [36m   8[0m [31m3072[0m[K   7.71s:       290.74ms         18/  24         [34m 768[0m [34m 512[0m [91m  64[0m [31m  48[0m[K   8.12s:       303.76ms         19/  24         [34m 768[0m [34m 512[0m [91m  16[0m [31m 192[0m[K   8.72s:       305.46ms         20/  24         [34m 768[0m [34m 512[0m [91m   4[0m [31m 768[0m[K   9.11s:       148.48ms         21/  24         [34m 512[0m [34m 768[0m [31m3072[0m[K   9.53s:       338.13ms         22/  24         [34m 768[0m [34m 512[0m [91m  32[0m [31m  96[0m[K   9.99s:       300.26ms         23/  24         [34m 768[0m [34m 512[0m [91m   8[0m [31m 384[0m[K  10.34s:        15.83ms         24/  24         [34m  24[0m [34m 512[0m [36m  32[0m [31m3072[0m[K  10.34s:        15.83ms from  24 ->  24 actions[K [34m  24[0m [34m 512[0m [36m  32[0m [31m3072[0m
+  10.98s:        15.99ms          1/  41         [34m  24[0m [34m 256[0m [36m  32[0m [36m   2[0m [31m3072[0m[K  11.32s:        15.80ms          2/  41         [34m   6[0m [34m 512[0m [36m  32[0m [36m   4[0m [31m3072[0m[K  11.63s:        12.77ms          3/  41         [34m  24[0m [34m 256[0m [36m  32[0m [33m   2[0m [31m3072[0m[K  11.95s:        15.67ms          4/  41         [34m   8[0m [34m 512[0m [36m  32[0m [36m   3[0m [31m3072[0m[K  12.28s:        15.58ms          5/  41         [34m  24[0m [34m  64[0m [36m  32[0m [36m   8[0m [31m3072[0m[K  12.61s:        15.96ms          6/  41         [34m  24[0m [34m 128[0m [36m  32[0m [36m   4[0m [31m3072[0m[K  12.95s:        16.34ms          7/  41         [34m  12[0m [34m 512[0m [36m  32[0m [36m   2[0m [31m3072[0m[K  13.30s:        16.86ms          8/  41         [34m  24[0m [34m 512[0m [36m  32[0m [91m   4[0m [31m 768[0m[K  13.64s:      6970.00us          9/  41         [34m  24[0m [34m 128[0m [36m  32[0m [33m   4[0m [31m3072[0m[K  13.98s:        16.57ms         10/  41         [34m  24[0m [34m 512[0m [36m  16[0m [33m   2[0m [31m3072[0m[K  14.31s:        11.71ms         11/  41         [34m   3[0m [34m 512[0m [36m  32[0m [36m   8[0m [31m3072[0m[K  14.64s:      9606.28us         12/  41         [34m   8[0m [34m 512[0m [36m  32[0m [33m   3[0m [31m3072[0m[K  14.95s:      6659.68us         13/  41         [34m   6[0m [34m 512[0m [36m  32[0m [33m   4[0m [31m3072[0m[K  15.28s:        12.32ms         14/  41         [34m  12[0m [34m 512[0m [36m  32[0m [33m   2[0m [31m3072[0m[K  15.64s:        16.57ms         15/  41         [34m  24[0m [34m 512[0m [36m  16[0m [33m   2[0m [31m3072[0m[K  15.97s:        14.51ms         16/  41         [34m 512[0m [34m  24[0m [36m  32[0m [31m3072[0m[K  16.32s:        17.23ms         17/  41         [34m  48[0m [34m 256[0m [36m  16[0m [33m   2[0m [31m3072[0m[K  16.67s:        16.20ms         18/  41         [34m  24[0m [34m 512[0m [36m  32[0m [91m   8[0m [31m 384[0m[K  17.01s:        15.91ms         19/  41         [34m  24[0m [34m 512[0m [36m  32[0m [31m 768[0m [35m   4[0m[K  17.36s:        23.40ms         20/  41         [34m  48[0m [34m 512[0m [36m   8[0m [33m   2[0m [31m3072[0m[K  17.67s:        16.17ms         21/  41         [34m  24[0m [34m 512[0m [36m  16[0m [36m   2[0m [31m3072[0m[K  17.98s:        13.97ms         22/  41         [34m  48[0m [34m 128[0m [36m  16[0m [33m   4[0m [31m3072[0m[K  18.31s:        12.47ms         23/  41         [34m  12[0m [34m 512[0m [36m  16[0m [33m   4[0m [31m3072[0m[K  18.64s:        22.72ms         24/  41         [34m  48[0m [34m 512[0m [36m  16[0m [31m 768[0m [35m   4[0m[K  18.98s:        16.31ms         25/  41         [34m  48[0m [34m 256[0m [36m  16[0m [36m   2[0m [31m3072[0m[K  19.32s:        18.21ms         26/  41         [34m  16[0m [34m 512[0m [36m  16[0m [36m   3[0m [31m3072[0m[K  19.64s:        16.09ms         27/  41         [34m  12[0m [34m 512[0m [36m  16[0m [36m   4[0m [31m3072[0m[K  19.97s:        16.30ms         28/  41         [34m  48[0m [34m 128[0m [36m  16[0m [36m   4[0m [31m3072[0m[K  20.30s:        16.38ms         29/  41         [34m  48[0m [34m  64[0m [36m  16[0m [36m   8[0m [31m3072[0m[K  20.61s:        13.86ms         30/  41         [34m  16[0m [34m 512[0m [36m  16[0m [33m   3[0m [31m3072[0m[K  20.94s:        15.96ms         31/  41         [34m   6[0m [34m 512[0m [36m  16[0m [36m   8[0m [31m3072[0m[K  21.24s:        11.61ms         32/  41         [34m   3[0m [34m 512[0m [36m  16[0m [36m  16[0m [31m3072[0m[K  21.69s:        15.71ms         33/  41         [34m  48[0m [34m  32[0m [36m  16[0m [36m  16[0m [31m3072[0m[K  22.03s:        18.54ms         34/  41         [34m 512[0m [34m  48[0m [36m  16[0m [31m3072[0m[K  22.38s:        18.44ms         35/  41         [34m  48[0m [34m 512[0m [33m  16[0m [31m3072[0m[K  22.73s:        16.23ms         36/  41         [34m  24[0m [34m 512[0m [36m   8[0m [33m   4[0m [31m3072[0m[K  23.10s:        23.90ms         37/  41         [34m  48[0m [34m 512[0m [36m  16[0m [91m   4[0m [31m 768[0m[K  23.60s:        24.86ms         38/  41         [34m  48[0m [34m 512[0m [36m  16[0m [91m  16[0m [31m 192[0m[K  23.96s:        23.60ms         39/  41         [34m  48[0m [34m 512[0m [36m  16[0m [91m   8[0m [31m 384[0m[K  24.32s:        23.34ms         40/  41         [34m  48[0m [34m 512[0m [36m   4[0m [33m   4[0m [31m3072[0m[K  24.71s:        22.19ms         41/  41         [34m  48[0m [34m 512[0m [36m  16[0m [91m  16[0m [31m 192[0m[K  24.71s:      6659.68us from  41 ->  41 actions[K [34m   6[0m [34m 512[0m [36m  32[0m [33m   4[0m [31m3072[0m
+  25.31s:      8124.72us          1/  34         [34m 512[0m [34m   6[0m [36m  32[0m [33m   4[0m [31m3072[0m[K  25.66s:      4974.08us          2/  34         [34m   6[0m [34m 512[0m [36m  32[0m [33m   4[0m [31m 768[0m [35m   4[0m[K  25.94s:      7050.04us          3/  34         [34m   2[0m [34m 512[0m [36m  32[0m [36m   3[0m [33m   4[0m [31m3072[0m[K  26.23s:      6682.28us          4/  34         [34m   6[0m [34m  64[0m [36m  32[0m [36m   8[0m [33m   4[0m [31m3072[0m[K  26.56s:        10.46ms          5/  34         [34m   6[0m [34m 512[0m [36m  32[0m [91m   8[0m [33m   4[0m [31m 384[0m[K  26.84s:      6677.20us          6/  34         [34m   6[0m [34m 128[0m [36m  32[0m [36m   4[0m [33m   4[0m [31m3072[0m[K  27.15s:      6595.64us          7/  34         [34m   6[0m [34m 256[0m [36m  32[0m [36m   2[0m [33m   4[0m [31m3072[0m[K  27.51s:        10.10ms          8/  34         [34m   6[0m [34m 512[0m [36m  32[0m [91m   4[0m [33m   4[0m [31m 768[0m[K  27.86s:      3317.96us          9/  34         [34m   6[0m [34m 256[0m [36m  32[0m [33m   4[0m [33m   2[0m [31m3072[0m[K  28.20s:      5632.80us         10/  34         [34m   3[0m [34m 512[0m [36m  32[0m [36m   2[0m [33m   4[0m [31m3072[0m[K  28.53s:      5920.72us         11/  34         [34m   6[0m [34m 512[0m [36m  16[0m [33m   4[0m [33m   2[0m [31m3072[0m[K  28.86s:      6360.40us         12/  34         [34m   2[0m [34m 512[0m [36m  32[0m [33m   4[0m [33m   3[0m [31m3072[0m[K  29.19s:      5300.00us         13/  34         [34m   3[0m [34m 512[0m [36m  32[0m [33m   4[0m [33m   2[0m [31m3072[0m[K  29.51s:      3079.76us         14/  34         [34m  12[0m [34m 128[0m [36m  32[0m [33m   4[0m [33m   2[0m [31m3072[0m[K  29.83s:      8030.40us         15/  34         [34m   6[0m [34m 512[0m [36m   8[0m [33m   4[0m [33m   4[0m [31m3072[0m[K  30.14s:      4739.08us         16/  34         [34m  12[0m [34m 128[0m [36m  32[0m [36m   2[0m [33m   4[0m [31m3072[0m[K  30.46s:      5914.88us         17/  34         [34m   8[0m [34m 128[0m [36m  32[0m [36m   3[0m [33m   4[0m [31m3072[0m[K  30.80s:      2878.12us         18/  34         [34m   6[0m [34m 128[0m [36m  32[0m [33m   4[0m [33m   4[0m [31m3072[0m[K  31.14s:      6893.32us         19/  34         [34m  24[0m [34m  64[0m [36m  32[0m [36m   2[0m [33m   4[0m [31m3072[0m[K  31.50s:      6351.72us         20/  34         [34m  24[0m [34m  64[0m [36m  32[0m [33m   4[0m [33m   2[0m [31m3072[0m[K  31.85s:      7073.24us         21/  34         [34m  24[0m [34m 128[0m [36m  16[0m [33m   4[0m [33m   2[0m [31m3072[0m[K  32.26s:      5142.00us         22/  34         [34m   6[0m [34m 128[0m [36m  32[0m [36m   4[0m [33m   4[0m [31m3072[0m[K  32.62s:      6624.16us         23/  34         [34m  24[0m [34m  32[0m [36m  32[0m [36m   4[0m [33m   4[0m [31m3072[0m[K  32.93s:      4678.52us         24/  34         [34m  24[0m [34m 128[0m [36m  32[0m [33m   4[0m [31m 768[0m [35m   4[0m[K  33.23s:      3761.84us         25/  34         [34m   8[0m [34m 128[0m [36m  32[0m [33m   4[0m [33m   3[0m [31m3072[0m[K  33.54s:      5984.64us         26/  34         [34m  24[0m [34m  16[0m [36m  32[0m [36m   8[0m [33m   4[0m [31m3072[0m[K  33.87s:      5653.40us         27/  34         [34m 128[0m [34m  24[0m [36m  32[0m [33m   4[0m [31m3072[0m[K  34.22s:      7044.92us         28/  34         [34m  24[0m [34m  32[0m [36m  32[0m [33m   4[0m [33m   4[0m [31m3072[0m[K  34.58s:      8238.96us         29/  34         [34m  24[0m [34m 128[0m [36m   8[0m [33m   4[0m [33m   4[0m [31m3072[0m[K  34.90s:      7002.40us         30/  34         [34m  24[0m [34m 128[0m [36m  32[0m [91m   4[0m [33m   4[0m [31m 768[0m[K  35.21s:      6961.64us         31/  34         [34m  24[0m [34m 128[0m [36m  32[0m [91m   8[0m [33m   4[0m [31m 384[0m[K  35.56s:      3628.80us         32/  34         [34m 512[0m [36m  32[0m [33m   4[0m [33m   6[0m [31m3072[0m[K  35.87s:      4286.52us         33/  34         [34m   3[0m [34m 128[0m [36m  32[0m [36m   8[0m [33m   4[0m [31m3072[0m[K  35.87s:      2878.12us from  34 ->  33 actions[K [34m   6[0m [34m 128[0m [36m  32[0m [33m   4[0m [33m   4[0m [31m3072[0m
+  36.87s:      3299.96us          1/  34         [34m 128[0m [34m   6[0m [36m  32[0m [33m   4[0m [33m   4[0m [31m3072[0m[K  37.16s:      2800.52us          2/  34         [34m   6[0m [34m  32[0m [36m  32[0m [36m   4[0m [33m   4[0m [33m   4[0m [31m3072[0m[K  37.52s:      2812.12us          3/  34         [34m   6[0m [34m  64[0m [36m  32[0m [36m   2[0m [33m   4[0m [33m   4[0m [31m3072[0m[K  37.89s:      2566.80us          4/  34         [34m   3[0m [34m 128[0m [36m  32[0m [36m   2[0m [33m   4[0m [33m   4[0m [31m3072[0m[K  38.22s:      2688.68us          5/  34         [34m   6[0m [34m  16[0m [36m  32[0m [36m   8[0m [33m   4[0m [33m   4[0m [31m3072[0m[K  38.57s:      3071.84us          6/  34         [34m   6[0m [34m 128[0m [36m  32[0m [91m   8[0m [33m   4[0m [33m   4[0m [31m 384[0m[K  38.90s:      2576.80us          7/  34         [34m   2[0m [34m 128[0m [36m  32[0m [36m   3[0m [33m   4[0m [33m   4[0m [31m3072[0m[K  39.21s:      2560.00us          8/  34         [34m   3[0m [34m 128[0m [36m  32[0m [33m   4[0m [33m   4[0m [33m   2[0m [31m3072[0m[K  39.52s:      3050.20us          9/  34         [34m   6[0m [34m 128[0m [36m  32[0m [91m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m[K  39.84s:      2371.56us         10/  34         [34m   6[0m [34m 128[0m [36m  32[0m [33m   4[0m [33m   4[0m [31m 768[0m [35m   4[0m[K  40.15s:      3913.96us         11/  34         [34m   6[0m [34m 128[0m [36m  16[0m [33m   4[0m [33m   4[0m [33m   2[0m [31m3072[0m[K  40.45s:      4173.92us         12/  34         [34m  12[0m [34m  64[0m [36m  32[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m3072[0m[K  40.74s:      2700.80us         13/  34         [34m   6[0m [34m  64[0m [36m  32[0m [33m   4[0m [33m   4[0m [33m   2[0m [31m3072[0m[K  41.08s:      2805.08us         14/  34         [34m   2[0m [34m 128[0m [36m  32[0m [33m   4[0m [33m   4[0m [33m   3[0m [31m3072[0m[K  41.41s:      6674.44us         15/  34         [34m   6[0m [34m 128[0m [36m   8[0m [33m   4[0m [33m   4[0m [33m   4[0m [31m3072[0m[K  41.72s:      4502.52us         16/  34         [34m  12[0m [34m 128[0m [36m  16[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m3072[0m[K  42.07s:      2873.40us         17/  34         [34m   3[0m [34m 128[0m [36m  32[0m [36m   4[0m [33m   4[0m [33m   2[0m [31m3072[0m[K  42.45s:      2919.12us         18/  34         [34m   4[0m [34m 128[0m [36m  32[0m [36m   3[0m [33m   4[0m [33m   2[0m [31m3072[0m[K  42.75s:      3018.16us         19/  34         [34m  12[0m [34m  64[0m [36m  32[0m [36m   2[0m [33m   4[0m [33m   2[0m [31m3072[0m[K  43.05s:      2919.16us         20/  34         [34m  12[0m [34m  16[0m [36m  32[0m [36m   8[0m [33m   4[0m [33m   2[0m [31m3072[0m[K  43.37s:      2978.44us         21/  34         [34m  12[0m [34m  32[0m [36m  32[0m [36m   4[0m [33m   4[0m [33m   2[0m [31m3072[0m[K  43.67s:      2665.00us         22/  34         [34m   4[0m [34m 128[0m [36m  32[0m [33m   4[0m [33m   2[0m [33m   3[0m [31m3072[0m[K  43.96s:      3093.00us         23/  34         [34m 128[0m [34m  12[0m [36m  32[0m [33m   4[0m [33m   2[0m [31m3072[0m[K  44.25s:      3040.44us         24/  34         [34m  12[0m [34m  32[0m [36m  32[0m [33m   4[0m [33m   2[0m [33m   4[0m [31m3072[0m[K  44.55s:      3043.32us         25/  34         [34m   6[0m [34m  32[0m [36m  32[0m [33m   4[0m [33m   4[0m [33m   4[0m [31m3072[0m[K  44.84s:      4178.84us         26/  34         [34m  12[0m [34m 128[0m [36m  32[0m [91m   8[0m [33m   4[0m [33m   2[0m [31m 384[0m[K  45.16s:      6892.96us         27/  34         [34m  12[0m [34m 128[0m [36m   8[0m [33m   4[0m [33m   2[0m [33m   4[0m [31m3072[0m[K  45.49s:      2532.88us         28/  34         [34m  12[0m [34m 128[0m [36m  32[0m [33m   4[0m [33m   2[0m [31m 768[0m [35m   4[0m[K  45.79s:      4228.96us         29/  34         [34m  12[0m [34m 128[0m [36m  32[0m [91m   4[0m [33m   4[0m [33m   2[0m [31m 768[0m[K  46.16s:      2852.76us         30/  34         [34m   6[0m [34m 128[0m [36m  32[0m [36m   2[0m [33m   4[0m [33m   2[0m [31m3072[0m[K  46.48s:      3221.24us         31/  34         [34m 128[0m [36m  32[0m [33m   4[0m [33m   2[0m [33m  12[0m [31m3072[0m[K  46.78s:      3223.40us         32/  34         [34m 128[0m [36m  32[0m [33m   4[0m [33m   4[0m [33m   6[0m [31m3072[0m[K  46.78s:      2371.56us from  34 ->  32 actions[K [34m   6[0m [34m 128[0m [36m  32[0m [33m   4[0m [33m   4[0m [31m 768[0m [35m   4[0m
+  48.34s:      2618.72us          1/  32         [34m   6[0m [34m  32[0m [36m  32[0m [36m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m [35m   4[0m[K  48.69s:      2446.04us          2/  32         [34m   6[0m [34m 128[0m [36m  32[0m [91m   4[0m [33m   4[0m [33m   4[0m [31m 192[0m [35m   4[0m[K  49.04s:      2583.32us          3/  32         [34m   6[0m [34m  16[0m [36m  32[0m [36m   8[0m [33m   4[0m [33m   4[0m [31m 768[0m [35m   4[0m[K  49.35s:      2381.28us          4/  32         [34m   3[0m [34m 128[0m [36m  32[0m [36m   2[0m [33m   4[0m [33m   4[0m [31m 768[0m [35m   4[0m[K  49.68s:      2641.52us          5/  32         [34m   6[0m [34m  64[0m [36m  32[0m [36m   2[0m [33m   4[0m [33m   4[0m [31m 768[0m [35m   4[0m[K  50.01s:      2402.44us          6/  32         [34m 128[0m [34m   6[0m [36m  32[0m [33m   4[0m [33m   4[0m [31m 768[0m [35m   4[0m[K  50.30s:      2401.96us          7/  32         [34m   2[0m [34m 128[0m [36m  32[0m [36m   3[0m [33m   4[0m [33m   4[0m [31m 768[0m [35m   4[0m[K  50.61s:      2448.40us          8/  32         [34m   6[0m [34m 128[0m [36m  32[0m [91m   8[0m [33m   4[0m [33m   4[0m [31m  96[0m [35m   4[0m[K  50.91s:      2291.44us          9/  32         [34m  12[0m [34m  64[0m [36m  32[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 768[0m [35m   4[0m[K  51.26s:      4211.48us         10/  32         [34m  12[0m [34m 128[0m [36m  16[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 768[0m [35m   4[0m[K  51.58s:      2541.60us         11/  32         [34m   6[0m [34m 128[0m [36m  32[0m [36m   2[0m [33m   4[0m [33m   2[0m [31m 768[0m [35m   4[0m[K  51.90s:      2197.36us         12/  32         [34m   6[0m [34m  64[0m [36m  32[0m [33m   4[0m [33m   4[0m [33m   2[0m [31m 768[0m [35m   4[0m[K  52.23s:      2933.24us         13/  32         [34m  12[0m [34m  64[0m [36m  32[0m [36m   2[0m [33m   4[0m [33m   2[0m [31m 768[0m [35m   4[0m[K  52.57s:      3992.92us         14/  32         [34m   6[0m [34m 128[0m [36m  16[0m [33m   4[0m [33m   4[0m [33m   2[0m [31m 768[0m [35m   4[0m[K  52.86s:      2555.44us         15/  32         [34m   3[0m [34m 128[0m [36m  32[0m [36m   4[0m [33m   4[0m [33m   2[0m [31m 768[0m [35m   4[0m[K  53.16s:      2392.84us         16/  32         [34m   2[0m [34m 128[0m [36m  32[0m [33m   4[0m [33m   4[0m [33m   3[0m [31m 768[0m [35m   4[0m[K  53.44s:      3026.00us         17/  32         [34m  12[0m [34m  32[0m [36m  32[0m [36m   4[0m [33m   4[0m [33m   2[0m [31m 768[0m [35m   4[0m[K  53.74s:      2337.48us         18/  32         [34m   3[0m [34m 128[0m [36m  32[0m [33m   4[0m [33m   4[0m [33m   2[0m [31m 768[0m [35m   4[0m[K  54.04s:      1773.88us         19/  32         [34m   6[0m [34m 128[0m [36m  32[0m [33m   4[0m [33m   4[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  54.32s:      2547.00us         20/  32         [34m   4[0m [34m 128[0m [36m  32[0m [36m   3[0m [33m   4[0m [33m   2[0m [31m 768[0m [35m   4[0m[K  54.66s:      2910.12us         21/  32         [34m  12[0m [34m  16[0m [36m  32[0m [36m   8[0m [33m   4[0m [33m   2[0m [31m 768[0m [35m   4[0m[K  55.02s:      2323.04us         22/  32         [34m   4[0m [34m 128[0m [36m  32[0m [33m   4[0m [33m   2[0m [33m   3[0m [31m 768[0m [35m   4[0m[K  55.33s:      3834.60us         23/  32         [34m  12[0m [34m 128[0m [36m  32[0m [91m   4[0m [33m   4[0m [33m   2[0m [31m 192[0m [35m   4[0m[K  55.63s:      2041.52us         24/  32         [34m  12[0m [34m 128[0m [36m  32[0m [33m   4[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  55.76s:      7554.84us         25/  32         [34m   6[0m [34m 128[0m [36m   8[0m [33m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m [35m   4[0m[K  56.05s:      4093.28us         26/  32         [34m  12[0m [34m 128[0m [36m  32[0m [91m   8[0m [33m   4[0m [33m   2[0m [31m  96[0m [35m   4[0m[K  56.34s:      2588.76us         27/  32         [34m 128[0m [34m  12[0m [36m  32[0m [33m   4[0m [33m   2[0m [31m 768[0m [35m   4[0m[K  56.45s:      7583.28us         28/  32         [34m  12[0m [34m 128[0m [36m   8[0m [33m   4[0m [33m   2[0m [33m   4[0m [31m 768[0m [35m   4[0m[K  56.80s:      2185.16us         29/  32         [34m   6[0m [34m  32[0m [36m  32[0m [33m   4[0m [33m   4[0m [33m   4[0m [31m 768[0m [35m   4[0m[K  57.12s:      2240.48us         30/  32         [34m  12[0m [34m  32[0m [36m  32[0m [33m   4[0m [33m   2[0m [33m   4[0m [31m 768[0m [35m   4[0m[K  57.12s:      1773.88us from  32 ->  30 actions[K [34m   6[0m [34m 128[0m [36m  32[0m [33m   4[0m [33m   4[0m [31m 192[0m [35m   4[0m [35m   4[0m
+  58.67s:      2117.40us          1/  20         [34m  12[0m [34m  64[0m [36m  32[0m [36m   2[0m [33m   4[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  59.05s:      2253.80us          2/  20         [34m   6[0m [34m 128[0m [36m  32[0m [36m   2[0m [33m   4[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  59.36s:      1875.32us          3/  20         [34m   3[0m [34m 128[0m [36m  32[0m [36m   4[0m [33m   4[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  59.69s:      2098.56us          4/  20         [34m  12[0m [34m  32[0m [36m  32[0m [36m   4[0m [33m   4[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  60.01s:      1849.60us          5/  20         [34m   3[0m [34m 128[0m [36m  32[0m [36m   2[0m [33m   4[0m [33m   4[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  60.35s:      2073.20us          6/  20         [34m   6[0m [34m  32[0m [36m  32[0m [36m   4[0m [33m   4[0m [33m   4[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  60.73s:      2337.04us          7/  20         [34m 128[0m [34m   6[0m [36m  32[0m [33m   4[0m [33m   4[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  61.04s:      2137.20us          8/  20         [34m   6[0m [34m  16[0m [36m  32[0m [36m   8[0m [33m   4[0m [33m   4[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  61.34s:      2459.12us          9/  20         [34m   4[0m [34m 128[0m [36m  32[0m [36m   3[0m [33m   4[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  61.64s:      2049.12us         10/  20         [34m   6[0m [34m  64[0m [36m  32[0m [36m   2[0m [33m   4[0m [33m   4[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  61.93s:      3106.76us         11/  20         [34m  12[0m [34m 128[0m [36m  16[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  62.20s:      2423.00us         12/  20         [34m   6[0m [34m 128[0m [36m  32[0m [91m   8[0m [33m   4[0m [33m   4[0m [31m  24[0m [35m   4[0m [35m   4[0m[K  62.48s:      3774.84us         13/  20         [34m  12[0m [34m 128[0m [36m  32[0m [91m   4[0m [33m   4[0m [33m   2[0m [31m  48[0m [35m   4[0m [35m   4[0m[K  62.75s:      2342.16us         14/  20         [34m  12[0m [34m  16[0m [36m  32[0m [36m   8[0m [33m   4[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  63.02s:      2056.04us         15/  20         [34m   2[0m [34m 128[0m [36m  32[0m [36m   3[0m [33m   4[0m [33m   4[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  63.29s:      3914.00us         16/  20         [34m  12[0m [34m 128[0m [36m  32[0m [91m   8[0m [33m   4[0m [33m   2[0m [31m  24[0m [35m   4[0m [35m   4[0m[K  63.56s:      1619.88us         17/  20         [34m  12[0m [34m  64[0m [36m  32[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  63.84s:      2085.96us         18/  20         [34m   6[0m [34m 128[0m [36m  32[0m [91m   4[0m [33m   4[0m [33m   4[0m [31m  48[0m [35m   4[0m [35m   4[0m[K  64.14s:      2496.56us         19/  20         [34m 128[0m [34m  12[0m [36m  32[0m [33m   4[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  64.14s:      1619.88us from  20 ->  19 actions[K [34m  12[0m [34m  64[0m [36m  32[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m
+  65.65s:      1613.96us          1/  14         [34m   6[0m [34m  64[0m [36m  32[0m [36m   2[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  65.92s:      1919.08us          2/  14         [34m  12[0m [34m  32[0m [36m  32[0m [36m   2[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  66.20s:      1921.12us          3/  14         [34m   3[0m [34m 128[0m [36m  32[0m [36m   2[0m [91m   4[0m [33m   4[0m [33m   4[0m [31m  48[0m [35m   4[0m [35m   4[0m[K  66.48s:      1862.08us          4/  14         [34m 128[0m [36m  32[0m [36m   2[0m [36m   3[0m [33m   4[0m [33m   4[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  66.76s:      1782.12us          5/  14         [34m  12[0m [34m  64[0m [36m  32[0m [91m   4[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m  48[0m [35m   4[0m [35m   4[0m[K  67.03s:      2141.88us          6/  14         [34m   3[0m [34m  32[0m [36m  32[0m [36m   2[0m [36m   4[0m [33m   4[0m [33m   4[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  67.31s:      1861.60us          7/  14         [34m 128[0m [34m   3[0m [36m  32[0m [36m   2[0m [33m   4[0m [33m   4[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  67.58s:      1614.04us          8/  14         [34m   3[0m [34m  64[0m [36m  32[0m [36m   4[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  67.89s:      1892.36us          9/  14         [34m  12[0m [34m  16[0m [36m  32[0m [36m   4[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  68.18s:      1637.40us         10/  14         [34m  64[0m [34m  12[0m [36m  32[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  68.49s:      2054.04us         11/  14         [34m   3[0m [34m  64[0m [36m  32[0m [36m   2[0m [36m   2[0m [33m   4[0m [33m   4[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  68.84s:      1729.12us         12/  14         [34m   4[0m [34m  64[0m [36m  32[0m [36m   3[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  69.20s:      1788.76us         13/  14         [34m  12[0m [34m  64[0m [36m  32[0m [91m   8[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m  24[0m [35m   4[0m [35m   4[0m[K  69.50s:      1887.28us         14/  14         [34m  12[0m [34m   8[0m [36m  32[0m [36m   8[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  69.50s:      1613.96us from  14 ->  14 actions[K [34m   6[0m [34m  64[0m [36m  32[0m [36m   2[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m
+  70.76s:      1618.60us          1/   8         [34m   2[0m [34m  64[0m [36m  32[0m [36m   2[0m [36m   3[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  71.09s:      1916.12us          2/   8         [34m   3[0m [34m  32[0m [36m  32[0m [36m   4[0m [36m   2[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  71.39s:      1657.56us          3/   8         [34m  64[0m [34m   3[0m [36m  32[0m [36m   4[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  71.68s:      1639.00us          4/   8         [34m  64[0m [34m   6[0m [36m  32[0m [36m   2[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  71.96s:      1900.24us          5/   8         [34m   6[0m [34m  32[0m [36m  32[0m [36m   2[0m [36m   2[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  72.25s:      1899.16us          6/   8         [34m   6[0m [34m  16[0m [36m  32[0m [36m   2[0m [36m   4[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  72.55s:      1840.84us          7/   8         [34m   6[0m [34m  64[0m [36m  32[0m [36m   2[0m [91m   4[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m  48[0m [35m   4[0m [35m   4[0m[K  72.87s:      1616.12us          8/   8         [34m   3[0m [34m  64[0m [36m  32[0m [36m   2[0m [36m   2[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m[K  72.87s: [32m     1613.96us[0m from   8 ->   8 actions[K [34m   6[0m [34m  64[0m [36m  32[0m [36m   2[0m [33m   4[0m [33m   2[0m [33m   2[0m [31m 192[0m [35m   4[0m [35m   4[0m
+   0.00s:                from   1 ->   1 actions [34m   8[0m [34m  16[0m [34m1536[0m [31m   7[0m [31m   7[0m
+   0.54s:      2770.80us          1/  28         [34m   8[0m [34m  16[0m [34m 768[0m [36m   2[0m [31m   7[0m [31m   7[0m[K   0.85s:        10.37ms          2/  28         [34m   8[0m [34m  16[0m [34m 512[0m [33m   3[0m [31m   7[0m [31m   7[0m[K   1.16s:      5593.36us          3/  28         [34m   8[0m [34m   8[0m [34m1536[0m [33m   2[0m [31m   7[0m [31m   7[0m[K   1.46s:      1991.24us          4/  28         [34m   8[0m [34m  16[0m [34m 512[0m [36m   3[0m [31m   7[0m [31m   7[0m[K   1.75s:      5732.80us          5/  28         [34m   8[0m [34m  16[0m [34m 768[0m [33m   2[0m [31m   7[0m [31m   7[0m[K   2.06s:      1587.12us          6/  28         [34m   8[0m [34m   4[0m [34m1536[0m [36m   4[0m [31m   7[0m [31m   7[0m[K   2.36s:      1530.48us          7/  28         [34m   8[0m [34m  16[0m [34m 384[0m [36m   4[0m [31m   7[0m [31m   7[0m[K   2.64s:      2866.00us          8/  28         [34m   8[0m [34m   8[0m [34m1536[0m [36m   2[0m [31m   7[0m [31m   7[0m[K   2.90s:       824.60us          9/  28         [34m  16[0m [34m1536[0m [36m   8[0m [31m   7[0m [31m   7[0m[K   3.18s:      1633.32us         10/  28         [34m   2[0m [34m  16[0m [34m1536[0m [36m   4[0m [31m   7[0m [31m   7[0m[K   3.46s:      2890.80us         11/  28         [34m   4[0m [34m  16[0m [34m1536[0m [36m   2[0m [31m   7[0m [31m   7[0m[K   3.73s:       435.60us         12/  28         [34m   8[0m [34m1536[0m [36m  16[0m [31m   7[0m [31m   7[0m[K   4.01s:       805.80us         13/  28         [34m   8[0m [34m   2[0m [34m1536[0m [36m   8[0m [31m   7[0m [31m   7[0m[K   4.28s:       987.20us         14/  28         [34m   8[0m [34m  16[0m [34m 192[0m [36m   8[0m [31m   7[0m [31m   7[0m[K   4.57s:      5941.12us         15/  28         [34m   4[0m [34m  16[0m [34m1536[0m [33m   2[0m [31m   7[0m [31m   7[0m[K   4.85s:      1506.36us         16/  28         [34m   8[0m [34m  16[0m [34m  96[0m [36m  16[0m [31m   7[0m [31m   7[0m[K   5.12s:      3552.64us         17/  28         [34m   8[0m [34m  16[0m [34m1536[0m [31m   7[0m [35m   7[0m[K   5.41s:      8706.08us         18/  28         [34m   8[0m [34m   4[0m [34m1536[0m [33m   4[0m [31m   7[0m [31m   7[0m[K   5.68s:       871.36us         19/  28         [34m   8[0m [34m  16[0m [34m1536[0m [91m   7[0m [31m   7[0m[K   5.99s:      8864.92us         20/  28         [34m   2[0m [34m  16[0m [34m1536[0m [33m   4[0m [31m   7[0m [31m   7[0m[K   6.35s:      4328.96us         21/  28         [34m   8[0m [34m1536[0m [34m  16[0m [31m   7[0m [31m   7[0m[K   6.63s:      1554.88us         22/  28         [34m   8[0m [34m  16[0m [34m 384[0m [33m   4[0m [31m   7[0m [31m   7[0m[K   6.91s:      4043.68us         23/  28         [34m1536[0m [34m  16[0m [34m   8[0m [31m   7[0m [31m   7[0m[K   7.18s:      4312.64us         24/  28         [34m  16[0m [34m   8[0m [34m1536[0m [31m   7[0m [31m   7[0m[Kam usb:2-5: IH (0x8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc0080000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x10/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x18/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x880000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x20/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x28/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80080000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x30/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80080000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x38/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80880000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x40/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x82080000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x48/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc0080000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x50/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x82080000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x58/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc0080000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x60/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x68/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x2080000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x70/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x880000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x78/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x40080000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x80/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x40080000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x88/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x880000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x90/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc0880000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x98/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0xa0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc2080000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0xa8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80880000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0xb0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80880000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0xb8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc2080000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0xc0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x42080000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0xc8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc0880000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0xd0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x40880000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0xd8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80080000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0xe0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x84080000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0xe8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x880000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0xf0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc2880000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0xf8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x2080000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x100/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x86080000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x108/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x40880000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x110/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x2880000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x118/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x82080000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x120/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc4080000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x128/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x82880000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x130/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x82880000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x138/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x42080000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x140/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x4080000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x148/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc2880000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x150/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x42880000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x158/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc4080000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x160/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x6080000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x168/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x2880000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x170/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x4880000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x178/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x44080000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x180/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x44080000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x188/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x42880000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x190/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc4880000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x198/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x4080000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x1a0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc6080000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x1a8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x84880000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x1b0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x84880000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x1b8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc6080000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x1c0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x46080000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x1c8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc4880000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x1d0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x44880000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x1d8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x84080000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x1e0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc0080000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x1e8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x4880000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x1f0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc6880000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x1f8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x6080000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x200/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80080000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x208/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x44880000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x210/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x6880000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x218/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x86080000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x220/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc2080000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x228/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x86880000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x230/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x86880000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x238/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x46080000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x240/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x2080000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x248/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc6880000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x250/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x46880000, 0x93, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x258/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x40080000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x260/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x40080000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x268/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x6880000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x270/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x880000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x278/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc0080000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x280/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x42080000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x288/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x46880000, 0x83, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x290/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc0880000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x298/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x42080000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x2a0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x82080000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x2a8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80880000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x2b0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80880000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x2b8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc2080000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x2c0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x4080000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x2c8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x880000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x2d0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x40880000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x2d8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80080000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x2e0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc4080000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x2e8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x82880000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x2f0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc2880000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x2f8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x300/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x84080000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x308/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x2880000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x310/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x2880000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x318/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x82080000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x320/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc6080000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x328/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc0880000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x330/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x42880000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x338/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x2080000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x340/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x6080000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x348/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x40880000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x350/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x82880000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x358/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x44080000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x360/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x44080000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x368/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc2880000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x370/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x4880000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x378/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc4080000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x380/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x46080000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x388/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x42880000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x390/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc4880000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x398/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x46080000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x3a0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x86080000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x3a8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x84880000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x3b0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x84880000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x3b8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc6080000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x3c0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80080000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x3c8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x4880000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x3d0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x44880000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x3d8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x84080000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x3e0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc0080000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x3e8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x86880000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x3f0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc6880000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x3f8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x4080000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x400/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x408/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x6880000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x410/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x6880000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x418/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x86080000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x420/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x82080000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x428/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc4880000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x430/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x46880000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x438/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x6080000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x440/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x2080000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x448/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x44880000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x450/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x86880000, 0x92, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x458/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x40080000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x460/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x40080000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x468/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc6880000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x470/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc0880000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x478/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x2080000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x480/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc2080000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x488/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x46880000, 0x82, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x490/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x82880000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x498/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc0080000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x4a0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x42080000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x4a8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80880000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x4b0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x40880000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x4b8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x42080000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x4c0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x84080000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x4c8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x2880000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x4d0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc2880000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x4d8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc2080000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x4e0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc4080000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x4e8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x40880000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x4f0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x2880000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x4f8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x4080000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x500/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x4080000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x508/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc0880000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x510/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x4880000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x518/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x84080000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x520/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x86080000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x528/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x4880000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x530/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x42880000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x538/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x86080000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x540/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x6080000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x548/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x42880000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x550/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x84880000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x558/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x44080000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x560/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x44080000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x568/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x82880000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x570/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc4880000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x578/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x6080000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x580/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc6080000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x588/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc2880000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x590/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x86880000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x598/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc4080000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x5a0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x46080000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x5a8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x84880000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x5b0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x44880000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x5b8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x46080000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x5c0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80080000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x5c8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x6880000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x5d0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc6880000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x5d8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc6080000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x5e0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x40080000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x5e8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x44880000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x5f0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x6880000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x5f8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc0080000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x600/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc2080000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x608/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc4880000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x610/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x46880000, 0x91, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x618/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x620/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x42080000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x628/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x46880000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x630/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80880000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x638/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x40080000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x640/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc4080000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x648/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x86880000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x650/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x40880000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x658/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80080000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x660/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x82080000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x668/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc6880000, 0x81, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x670/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x880000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x678/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc2080000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x680/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x688/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc0880000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x690/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc0880000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x698/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x2080000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x6a0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x2080000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x6a8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x40880000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x6b0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x82880000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x6b8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x82080000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x6c0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x84080000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x6c8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc2880000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x6d0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x42880000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x6d8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x42080000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x6e0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x44080000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x6e8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x80880000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x6f0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc2880000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x6f8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc4080000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x700/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc6080000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x708/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x42880000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x710/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x2880000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x718/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x4080000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x720/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x46080000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x728/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x880000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x730/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x84880000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x738/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x44080000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x740/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x86080000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x748/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x82880000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x750/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x44880000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x758/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x84080000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x760/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x4080000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x768/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x2880000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: auto
+am usb:2-5: IH (0x770/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x4880000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x778/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc6080000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x780/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x6080000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x788/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc4880000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x790/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc4880000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x798/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x6080000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x7a0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x44880000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x7a8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc6880000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x7b0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x86880000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x7b8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x86080000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x7c0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x84880000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x7c8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x46880000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x7d0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x46880000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x7d8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x46080000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x7e0/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x4880000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x7e8/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x86880000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x7f0/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0xc6880000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x7f8/0x800) client=SOC15_IH_CLIENTID_SE1SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x6880000, 0x90, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+am usb:2-5: IH (0x800/0x800) client=SOC15_IH_CLIENTID_SE0SH src=SQ_INTERRUPT_ID(239) ring=0 vmid=0(0) pasid=0 node=0 ctx=[0x6880000, 0x80, 0x0, 0x0]
+am usb:2-5: sq_intr: wave
+ 108.64s:       435.60us from  28 ->  24 actions[K [34m   8[0m [34m1536[0m [36m  16[0m [31m   7[0m [31m   7[0m
+ 343.84s: [32m      435.60us[0m from  48 ->   0 actions[K [34m   8[0m [34m1536[0m [36m  16[0m [31m   7[0m [31m   7[0m
+   0.00s:                from   1 ->   1 actions [34m 128[0m [34m6144[0m [31m1536[0m
+ 120.15s: [32m         infs [0m from  24 ->   0 actions[K [34m 128[0m [34m6144[0m [31m1536[0m
+   0.00s:                from   1 ->   1 actions [34m1536[0m [34m 128[0m [31m6144[0m
+ 120.13s: [32m         infs [0m from  24 ->   0 actions[K [34m1536[0m [34m 128[0m [31m6144[0m
+   0.00s:                from   1 ->   1 actions [34m  32[0m [34m12288[0m [31m3072[0m
+ 120.16s: [32m         infs [0m from  24 ->   0 actions[K [34m  32[0m [34m12288[0m [31m3072[0m
+   0.00s:                from   1 ->   1 actions [34m3072[0m [34m  32[0m [31m12288[0m
+*** BEAM COMPILE TIMEOUT
+*** BEAM COMPILE TIMEOUT
+*** BEAM COMPILE TIMEOUT
+*** BEAM COMPILE TIMEOUT
+*** BEAM COMPILE TIMEOUT
+*** BEAM COMPILE TIMEOUT
+*** BEAM COMPILE TIMEOUT
+*** BEAM COMPILE TIMEOUT
+*** BEAM COMPILE TIMEOUT
+*** BEAM COMPILE TIMEOUT
+*** BEAM COMPILE TIMEOUT
+*** BEAM COMPILE TIMEOUT
+*** BEAM COMPILE TIMEOUT
+*** BEAM COMPILE TIMEOUT
+*** BEAM COMPILE TIMEOUT
+*** BEAM COMPILE TIMEOUT
+*** BEAM COMPILE TIMEOUT
+*** BEAM COMPILE TIMEOUT
+*** BEAM COMPILE TIMEOUT
+/usr/lib/python3.12/multiprocessing/resource_tracker.py:254: UserWarning: resource_tracker: There appear to be 6 leaked semaphore objects to clean up at shutdown
+  warnings.warn('resource_tracker: There appear to be %d '
+compile exit=143   log=/root/runs/upcast256.compile.log   audit=/root/runs/upcast256.audit.jsonl   (56 audited kernels)

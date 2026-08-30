@@ -1,0 +1,16 @@
+########## reference: AMD_ELIDE_FLUSH=0 ##########
+  iter 0: 16637.4 ms  finite=True  sum=+2.110784e+03
+  iter 1:    85.9 ms  finite=True  sum=+2.110784e+03
+  iter 2:    88.0 ms  finite=True  sum=+2.110784e+03
+
+  self-consistency across 3 replays: bit-identical
+  wrote /root/runs/flush_ref.npy  (2580 values)
+
+########## arm: AMD_ELIDE_FLUSH=1, compared bit-for-bit ##########
+  iter 0: 16757.7 ms  finite=True  sum=+2.110784e+03
+  iter 1:    91.7 ms  finite=True  sum=+2.110784e+03
+  iter 2:    87.9 ms  finite=True  sum=+2.110784e+03
+
+  self-consistency across 3 replays: bit-identical
+  wrote /root/runs/flush_arm.npy  (2580 values)
+  MATCH: bit-identical to /root/runs/flush_ref.npy
