@@ -101,20 +101,23 @@ across all of them — is a drive with stock LKAS in full control. In its 40,144
 the factory camera requests up to **157 counts** with `CF_Lkas_ActToi` set. Across all 509
 segments that is the maximum; the other 495 are zero for exactly the reason previously given.
 
-One drive, so 157 is a **floor** on Hyundai's envelope, not a proof of its maximum. But it is a
-real number where there used to be none, and it reframes both ceilings:
+**What it does not mean.** It is not an argument for a 157-count ceiling. Hyundai's LKAS is a
+lane-centring feature: it nudges toward a lane line and hands back rather than pulling harder —
+every peak request in that drive lands at **1.1–2.0 degrees of wheel angle**. openpilot steers
+through turns and intersections at up to ~146 degrees. So 157 bounds what Hyundai's *feature*
+asks for, not what the MDPS can deliver, and not a safety limit.
 
-| | counts | vs factory |
+| | counts | wheel angle at peak |
 |---|---|---|
-| Hyundai's own LKAS, measured | 157 | 1.0x |
-| comma's HKG default (what you ran before) | 384 | **2.45x** |
-| flat, what you are testing | 409 | **2.61x** |
+| Hyundai's LKAS, measured | 157 | 1.1–2.0° |
+| comma's HKG default (what you ran before) | 384 | — |
+| flat, what you are testing | 409 | — |
 
-`values.py` states comma's rule outright: *"find the maximum value that the stock LKAS will
-request. If the max stock LKAS request is <384, add your car to this list"* — the list that sets
-255. Applied literally to a measured 157, the CN7 belongs at 255 or lower. **Neither 384 nor 409
-is derived from that rule.** This change moves 2.45x to 2.61x; it does not move you from inside
-the stock envelope to outside it, because 384 was already well outside.
+`values.py` quotes comma's rule — *"find the maximum value that the stock LKAS will request"* —
+and that rule is simply the wrong instrument here: it was written for cars whose stock LKAS
+attempts the same manoeuvres openpilot does. The CN7's does not. 384 and 409 both rest on fleet
+evidence instead, which is the honest basis to cite. **The MDPS is the arbiter either way** — its
+boost curve, its fault logic, its override arbitration, and it is free to refuse.
 
 ### Two costs, stated plainly
 
@@ -243,20 +246,18 @@ What to look at, in order:
 
 ## The honest limit of this work
 
-The factory envelope is no longer the open question: it is **157 counts**, measured from a real
-drive with stock LKAS in control (Test 1). What that measurement shows is that comma's stated
-rule was never applied to this platform in either direction — 384 is comma's HKG default at 2.4x
-factory, and 409 is carrotpilot's default at 2.6x. carrotpilot ships it with no commit message,
-no comment and no measurement anywhere in its history; the argument for it is that a large Korean
-CN7 fleet runs it without EPS faults. That is fleet evidence, and fleet evidence is real, but it
-is not the same kind of thing as a stock-limit derivation and should not be reported as one.
+The factory envelope is measured — **157 counts** — and it turns out not to be the deciding
+number, because Hyundai's lane-centring feature and openpilot's job are not the same task. What
+is left is that 384 and 409 both rest on fleet evidence rather than on a derivation, and
+carrotpilot ships 409 with no commit message, no comment and no measurement in its history. Fleet
+evidence is real evidence; it just should not be reported as something it is not.
 
 What remains genuinely unknown:
 
-- **Whether 157 is Hyundai's maximum.** It is one drive. A second passive drive on a different
-  road, in worse lane geometry, could raise it. It will not raise it to 384.
 - **Sustained saturation at 409 above 8 m/s.** No road data exists there — that is precisely the
   regime this change opens, and only the highway leg of the drive closes it.
 - **Where the tune settles.** The learner is invalid today, so the +6.51% is uncompensated now
   and will be partly absorbed later. The car you drive tomorrow is not the car you drive in a
   week, and neither is wrong.
+- **What the MDPS does at 409 in a tight turn.** It is the arbiter and it can refuse; nothing
+  desk-side tells you where that line is.
