@@ -32,15 +32,16 @@ PLATFORMS = ("HYUNDAI_ELANTRA_2024", "HYUNDAI_ELANTRA_HEV_2024")
 # a safety allow-list wider than the message it guards.
 LFAHDA_MFC_LEN = 8
 
-# The CN7 speed-scheduled steering torque ceiling, stated here as the third opinion.
+# The CN7 flat raised steering torque ceiling, stated here as the third opinion.
 # opendbc decides what the car commands, panda decides what it will let out, and these
 # literals are what both are checked against -- a guard that only compared the two against
 # each other would stay green while they moved together.
-STEER_MAX_SCHEDULE = ([8.0, 16.0], [409, 384])
+STEER_MAX_RAISED = 409
+STEER_MAX_STOCK = 384
 STEER_RATES = (3, 7)
 
 EXPECTED_FLAGS = {
-    "HYUNDAI_ELANTRA_2024": {"CHECKSUM_CRC8", "CAMERA_SCC", "DYNAMIC_LIMITS"},
+    "HYUNDAI_ELANTRA_2024": {"CHECKSUM_CRC8", "CAMERA_SCC", "RAISED_LIMITS"},
     "HYUNDAI_ELANTRA_HEV_2024": {"CHECKSUM_CRC8", "CAMERA_SCC", "HYBRID"},
 }
 
@@ -274,6 +275,19 @@ def guard_opendbc_pin(repo: Path, opendbc: Path) -> None:
           "superproject pins " + pinned[:12] + " but --opendbc is at " + head[:12]
           + " -- these guards passed against a tree the build will not use")
 
+    # The manifest was checked for the PRESENCE of opendbc_sha and nothing else, so it drifted
+    # three commits behind the gitlink and stayed green. A manifest that records a different
+    # commit from the one being shipped is not provenance, it is decoration -- and it is read
+    # by verify_published.py and by the port panel on the car.
+    manifest_path = repo / ".elantra/build-manifest.json"
+    if manifest_path.is_file():
+        try:
+            recorded = json.loads(manifest_path.read_text(encoding="utf-8")).get("opendbc_sha")
+        except (OSError, ValueError):
+            recorded = None
+        check("manifest opendbc_sha matches the pinned gitlink", recorded == pinned,
+              "manifest says " + str(recorded)[:12] + ", gitlink says " + pinned[:12])
+
 
 def _int_expr(node) -> int | None:
     """Evaluate the integer forms these enums are written in, and nothing else.
@@ -309,13 +323,13 @@ def _enum_members(source: str, enum_name: str) -> dict:
     return out
 
 
-def _lookup_assigned_in_else(source: str) -> bool:
-    """Is STEER_MAX_LOOKUP assigned inside the `else` of the chain that picks STEER_MAX?
+def _raised_assigned_in_else(source: str) -> bool:
+    """Is STEER_MAX raised inside the `else` of the chain that picks STEER_MAX?
 
     Precedence is the whole point. Assigned after the chain instead of inside its last branch,
-    the schedule silently outranks every other ceiling: a car carrying DYNAMIC_LIMITS together
-    with ALT_LIMITS_2 would command 409 at 5 m/s while panda enforced 170. Text matching cannot
-    see the difference, so this walks the tree.
+    the raised ceiling silently outranks every other one: a car carrying RAISED_LIMITS together
+    with ALT_LIMITS_2 would command 409 while panda enforced 170. Text matching cannot see the
+    difference between the two placements, so this walks the tree.
     """
     tree = ast.parse(source)
     for node in ast.walk(tree):
@@ -327,167 +341,155 @@ def _lookup_assigned_in_else(source: str) -> bool:
             # the tail `else` of an if/elif chain, i.e. one whose orelse is not another If
             if not stmt.orelse or isinstance(stmt.orelse[0], ast.If):
                 continue
-            body = "\n".join(ast.dump(x) for x in stmt.orelse)
-            if "STEER_MAX_LOOKUP" in body and "STEER_MAX_LOOKUP_DYNAMIC" in body:
-                return True
+            for inner in ast.walk(ast.Module(body=stmt.orelse, type_ignores=[])):
+                if not isinstance(inner, ast.If):
+                    continue
+                if "RAISED_LIMITS" not in ast.dump(inner.test):
+                    continue
+                for asn in ast.walk(ast.Module(body=inner.body, type_ignores=[])):
+                    if isinstance(asn, ast.Assign) and _int_expr(asn.value) == STEER_MAX_RAISED \
+                            and any(getattr(t, "attr", None) == "STEER_MAX" for t in asn.targets):
+                        return True
     return False
 
 
 def guard_panda_enforcement(opendbc: Path) -> None:
-    """The four details in lateral.h that make panda's schedule usable as a backstop.
+    """What lateral.h actually DOES with the limits hyundai.h declares.
 
-    Every other check in this file reads a DECLARATION -- the macro body, the lookup row, the
-    flag word. None of them reads the code that consumes those declarations. lateral.h decides
-    what the numbers mean, and all four details below exist to keep panda strictly more
-    permissive than what openpilot commands. Change any one of them upstream and every other
-    guard here stays green while the two halves silently stop agreeing.
+    Every other check in this file reads a DECLARATION -- the limit struct, the flag word.
+    None of them reads the code that consumes it. lateral.h decides what the numbers mean.
+
+    The CN7 used to ride the `dynamic_max_torque` branch, which shifts the speed down 1 m/s
+    and adds a count of slack on top of the interpolated ceiling. It does not any more: a flat
+    limit takes the static path, where the declared number IS the number. These checks exist to
+    keep that true, because the slack moving out of that branch would hand every static Hyundai
+    -- not just this one -- a count of headroom nobody asked for.
     """
     print("\n" + "[lateral.h] what panda actually enforces")
     lat = read(opendbc / "opendbc/safety/lateral.h")
 
     m = re.search(r"if\s*\(limits\.dynamic_max_torque\)\s*\{(.*?)\n\s*\}", lat, re.S)
-    check("lateral.h has a dynamic_max_torque branch", m is not None)
+    check("lateral.h still has a dynamic_max_torque branch (rivian uses it)", m is not None)
     if m is None:
         return
-    body = m.group(1)
 
-    # vehicle_speed.min, not .max and not .values[0]. The minimum over the sample window is the
-    # slowest recent reading, and on a descending schedule slower means MORE torque allowed --
-    # the permissive direction. .max would let panda reject what openpilot legitimately commands.
-    check("panda interpolates on vehicle_speed.min",
-          re.search(r"vehicle_speed\.min\s*/\s*VEHICLE_SPEED_FACTOR", body) is not None)
-
-    # The -1 m/s shift and the +1 count are the entire margin between the two halves. openpilot
-    # interpolates on instantaneous vEgoRaw with no fudge at all.
-    check("panda shifts the speed down by 1 m/s before interpolating",
-          re.search(r"-\s*1\.", body) is not None)
-    check("panda adds one count to the interpolated ceiling",
-          re.search(r"safety_interpolate\([^)]*\)\s*\+\s*1", body) is not None)
-
-    # Without the clamp the +1 could push the low-speed end past .max_torque, which is the only
-    # absolute bound anywhere in this path.
-    check("panda clamps the interpolated ceiling to +/- max_torque",
-          re.search(r"SAFETY_CLAMP\(\s*max_torque\s*,\s*-\s*limits\.max_torque\s*," +
-                    r"\s*limits\.max_torque\s*\)", body) is not None)
-
-    # That slack is dynamic-path-only. A write-up on this branch claimed it was present on the
-    # static limits too; it is not, and if it ever moves outside the branch every static Hyundai
-    # silently gains a count of headroom.
+    # The static path: max_torque is taken straight from the struct, with no fudge before it.
     before = lat[:m.start()]
     static_init = re.search(r"int\s+max_torque\s*=\s*limits\.max_torque\s*;", before)
-    check("the +1 slack is inside the dynamic branch, not on the static path",
-          static_init is not None and "+ 1" not in before[static_init.end():])
+    check("the static path takes max_torque straight from the limits struct",
+          static_init is not None)
+    if static_init is not None:
+        check("no slack is added before the dynamic branch",
+              "+ 1" not in before[static_init.end():],
+              "a +1 here would widen every static limit in every brand, silently")
+
+    # Both fudges must stay INSIDE the branch the CN7 no longer takes.
+    body = m.group(1)
+    check("the -1 m/s speed shift is inside the dynamic branch",
+          re.search(r"-\s*1\.", body) is not None)
+    check("the +1 count of slack is inside the dynamic branch",
+          re.search(r"safety_interpolate\([^)]*\)\s*\+\s*1", body) is not None)
+
+    # And the global ceiling check has to compare against that unfudged max_torque, symmetric.
+    check("the global torque check bounds both signs by max_torque",
+          re.search(r"safety_max_limit_check\(\s*desired_torque\s*,\s*max_torque\s*,"
+                    r"\s*-\s*max_torque\s*\)", lat) is not None,
+          "an asymmetric or wider bound here is the whole ceiling, in one line")
 
 
-def guard_dynamic_torque_pair(opendbc: Path) -> None:
-    """The CN7 low-speed torque schedule, end to end.
+def guard_raised_torque_pair(opendbc: Path) -> None:
+    """The CN7 flat raised torque ceiling, end to end.
 
-    The schedule lives in five files that cannot see each other, and every link has a failure
+    The ceiling lives in four files that cannot see each other, and every link has a failure
     mode that looks exactly like success. Each check below exists because breaking that link
     alone leaves every other check green.
     """
-    print("\n[values.py <-> safety] speed-scheduled steering torque")
+    print("\n[values.py <-> safety] flat raised steering torque")
     values = read(opendbc / "opendbc/car/hyundai/values.py")
     carctl = read(opendbc / "opendbc/car/hyundai/carcontroller.py")
     iface = read(opendbc / "opendbc/car/hyundai/interface.py")
     safety = read(opendbc / "opendbc/safety/modes/hyundai.h")
     common_h = read(opendbc / "opendbc/safety/modes/hyundai_common.h")
 
-    bps, torques = STEER_MAX_SCHEDULE
-    low, high = torques
     rate_up, rate_down = STEER_RATES
 
     # --- the opendbc half -------------------------------------------------------------
-    m = re.search(r"STEER_MAX_LOOKUP_DYNAMIC\s*=\s*(\[\[.*?\]\])", values, re.S)
-    check("opendbc declares STEER_MAX_LOOKUP_DYNAMIC", m is not None)
-    if m is not None:
-        try:
-            got = ast.literal_eval(m.group(1))
-        except (SyntaxError, ValueError):
-            got = None
-        check("opendbc schedule is " + str(STEER_MAX_SCHEDULE),
-              got == [list(bps), list(torques)], "found " + str(got))
+    check("opendbc raises STEER_MAX to %d under the flag, inside the else branch"
+          % STEER_MAX_RAISED,
+          _raised_assigned_in_else(values),
+          "assigned outside it, RAISED_LIMITS outranks ALT_LIMITS/ALT_LIMITS_2/CANFD and the "
+          "car commands %d where panda enforces 270 or 170" % STEER_MAX_RAISED)
+    check("the stock ceiling under it is still %d" % STEER_MAX_STOCK,
+          re.search(r"self\.STEER_MAX\s*=\s*%d\b" % STEER_MAX_STOCK, values) is not None)
 
-    check("the schedule is assigned inside the else branch, not after the chain",
-          _lookup_assigned_in_else(values),
-          "assigned outside it, DYNAMIC_LIMITS outranks ALT_LIMITS/ALT_LIMITS_2/CANFD and the "
-          "car commands " + str(low) + " where panda enforces 270 or 170")
-
-    check("carcontroller interpolates the schedule on vEgoRaw",
-          "np.interp(CS.out.vEgoRaw, *self.params.STEER_MAX_LOOKUP)" in carctl)
-    check("carcontroller hands the scheduled ceiling to the rate limiter",
-          re.search(r"apply_driver_steer_torque_limits\([^)]*self\.params,\s*steer_max\)",
-                    carctl, re.S) is not None,
-          "the rate limiter would bound the driver-override envelope at the static STEER_MAX "
-          "while the command used the scheduled one")
-    check("carcontroller normalises the feedback by the same ceiling",
-          "new_actuators.torque = apply_torque / steer_max" in carctl,
-          "dividing by the static STEER_MAX reports a fraction the controller never asked for")
+    # carcontroller must be upstream's shape. The flat ceiling needs no per-frame ceiling at
+    # all, so anything left of the schedule here means a half-applied change.
+    check("carcontroller multiplies by the static STEER_MAX",
+          "int(round(actuators.torque * self.params.STEER_MAX))" in carctl)
+    check("carcontroller normalises the feedback by the same STEER_MAX",
+          "new_actuators.torque = apply_torque / self.params.STEER_MAX" in carctl)
+    for dead in ("STEER_MAX_LOOKUP", "steer_max"):
+        check("no %s left in carcontroller" % dead, dead not in carctl,
+              "a flat ceiling needs none of the schedule machinery; leftovers mean half-applied")
 
     # --- the bridge -------------------------------------------------------------------
     check("interface.py carries the car flag into safetyParam",
-          re.search(r"HyundaiFlags\.DYNAMIC_LIMITS[\s\S]{0,120}?"
-                    r"HyundaiSafetyFlags\.DYNAMIC_LIMITS\.value", iface) is not None,
-          "without this the car commands the raised torque and panda rejects every frame")
+          re.search(r"HyundaiFlags\.RAISED_LIMITS[\s\S]{0,140}?"
+                    r"HyundaiSafetyFlags\.RAISED_LIMITS\.value", iface) is not None,
+          "without this the car commands %d and panda rejects every frame above %d"
+          % (STEER_MAX_RAISED, STEER_MAX_STOCK))
 
     # --- the panda half ---------------------------------------------------------------
-    macro = re.search(r"#define HYUNDAI_LIMITS_DYNAMIC\(([^)]*)\)\s*\{(.*?)\n\}",
-                      safety, re.S)
-    check("panda defines HYUNDAI_LIMITS_DYNAMIC", macro is not None)
-    if macro is not None:
-        body = macro.group(2)
-        # .max_torque doubles as the SAFETY_CLAMP bound on the interpolated value, so it has
-        # to be the LOW-speed number. Set to the high one, the schedule is capped at 384 and
-        # the whole change is a no-op that still passes an arguments-only check.
-        check("panda's max_torque is the low-speed value",
-              re.search(r"\.max_torque\s*=\s*\(steer_low\)", body) is not None,
-              "the schedule would be clamped to the high-speed ceiling and do nothing")
-        check("panda enables the dynamic lookup",
-              re.search(r"\.dynamic_max_torque\s*=\s*true", body) is not None)
-        # Order, not just contents: reversed, panda rejects the raised torque at low speed and
-        # accepts it on the highway, and a set-comparison cannot tell the two apart.
-        check("panda's torque row runs low-speed first",
-              re.search(r"\{\s*\(steer_low\)\s*,\s*\(steer_high\)\s*,\s*\(steer_high\)\s*,?\s*\}",
-                        body) is not None,
-              "inverted, panda rejects " + str(low) + " at low speed and accepts it on the highway")
-        check("panda's breakpoints match opendbc's",
-              re.search(r"\{\s*%g\.\s*,\s*%g\.\s*,\s*%g\.\s*,?\s*\}" % (bps[0], bps[1], bps[1]),
-                        body) is not None,
-              "expected {%g., %g., %g.}" % (bps[0], bps[1], bps[1]))
-
-    inst = re.search(r"HYUNDAI_STEERING_LIMITS_DYNAMIC\s*=\s*HYUNDAI_LIMITS_DYNAMIC\(([^)]*)\)",
-                     safety)
-    check("panda instantiates the dynamic limits", inst is not None)
+    inst = re.search(r"HYUNDAI_STEERING_LIMITS_RAISED\s*=\s*HYUNDAI_LIMITS\(([^)]*)\)", safety)
+    check("panda instantiates the raised limits from the plain HYUNDAI_LIMITS macro",
+          inst is not None,
+          "anything else is a different enforcement path with different fudges")
     if inst is not None:
         args = [a.strip() for a in inst.group(1).split(",")]
-        check("panda torques match opendbc's",
-              args[:2] == [str(low), str(high)], "found " + str(args[:2]))
+        check("panda's ceiling is %d" % STEER_MAX_RAISED,
+              args[:1] == [str(STEER_MAX_RAISED)], "found " + str(args[:1]))
         check("steer ramp rates are unchanged at %d/%d" % (rate_up, rate_down),
-              args[2:4] == [str(rate_up), str(rate_down)], "found " + str(args[2:4]))
+              args[1:3] == [str(rate_up), str(rate_down)], "found " + str(args[1:3]))
 
-    check("panda selects the dynamic limits on the flag",
-          re.search(r"hyundai_dynamic_limits\s*\?\s*HYUNDAI_STEERING_LIMITS_DYNAMIC", safety)
+    # The flat ceiling exists to be speed-independent. If anything puts the CN7 back on the
+    # dynamic path, panda silently regains the -1 m/s shift and the +1 count of slack, and
+    # every "speed cannot move the ceiling" claim on this branch becomes false.
+    for dead in ("dynamic_max_torque", "HYUNDAI_LIMITS_DYNAMIC", "max_torque_lookup"):
+        check("no %s anywhere on the hyundai path" % dead,
+              dead not in safety and dead not in common_h)
+
+    check("panda selects the raised limits on the flag",
+          re.search(r"hyundai_raised_limits\s*\?\s*HYUNDAI_STEERING_LIMITS_RAISED", safety)
           is not None)
     # The ternary mentioning the flag is not enough -- nothing has to ever set it.
-    check("hyundai_dynamic_limits is actually assigned from the safety param",
-          re.search(r"hyundai_dynamic_limits\s*=\s*GET_FLAG\(param,\s*HYUNDAI_PARAM_DYNAMIC_LIMITS\)",
+    check("hyundai_raised_limits is actually assigned from the safety param",
+          re.search(r"hyundai_raised_limits\s*=\s*GET_FLAG\(param,\s*HYUNDAI_PARAM_RAISED_LIMITS\)",
                     common_h) is not None,
-          "the flag would be false forever and the schedule would never apply")
-    check("panda has a vehicle speed to interpolate on",
-          "UPDATE_VEHICLE_SPEED(" in safety,
-          "without a speed sample the lookup is evaluated at 0 forever")
+          "the flag would be false forever and the ceiling would never be raised")
+
+    # Order inside the ternary is precedence. ALT_LIMITS_2 (170) and ALT_LIMITS (270) are
+    # LOWER ceilings; if raised were tested first, a car carrying both flags would be handed
+    # 409 by panda. This is the panda-side twin of the else-branch check above.
+    tern = re.search(r"const TorqueSteeringLimits limits =(.*?);", safety, re.S)
+    check("panda's limit ternary parsed", tern is not None)
+    if tern is not None:
+        order = [n for n in re.findall(r"hyundai_(alt_limits_2|alt_limits|raised_limits)",
+                                       tern.group(1))]
+        check("the raised ceiling is tested last, after both ALT_LIMITS",
+              order and order[-1] == "raised_limits",
+              "found order " + str(order) + "; a lower ceiling must always win")
 
     # --- the two flag words must agree ------------------------------------------------
     sf = _enum_members(values, "HyundaiSafetyFlags")
     cf = _enum_members(values, "HyundaiFlags")
     check("HyundaiSafetyFlags parsed", len(sf) > 0)
     check("HyundaiFlags parsed", len(cf) > 0)
-    param = re.search(r"HYUNDAI_PARAM_DYNAMIC_LIMITS\s*=\s*(\d+)", common_h)
-    check("panda declares HYUNDAI_PARAM_DYNAMIC_LIMITS", param is not None)
-    if param is not None and sf.get("DYNAMIC_LIMITS") is not None:
+    param = re.search(r"HYUNDAI_PARAM_RAISED_LIMITS\s*=\s*(\d+)", common_h)
+    check("panda declares HYUNDAI_PARAM_RAISED_LIMITS", param is not None)
+    if param is not None and sf.get("RAISED_LIMITS") is not None:
         check("safety flag values agree",
-              int(param.group(1)) == sf["DYNAMIC_LIMITS"],
-              "opendbc says " + str(sf["DYNAMIC_LIMITS"]) + ", panda says " + param.group(1))
+              int(param.group(1)) == sf["RAISED_LIMITS"],
+              "opendbc says " + str(sf["RAISED_LIMITS"]) + ", panda says " + param.group(1))
 
     # IntFlag turns a duplicate value into a silent alias, so a platform carrying one member
     # tests True for the other. That is how the hybrid could have inherited this ceiling.
@@ -501,8 +503,8 @@ def guard_dynamic_torque_pair(opendbc: Path) -> None:
 
     # --- and only the car it was measured on gets it -----------------------------------
     hev = _flags_in_assignment(values, "HYUNDAI_ELANTRA_HEV_2024") or set()
-    check("the Elantra Hybrid does NOT get the schedule",
-          "DYNAMIC_LIMITS" not in hev,
+    check("the Elantra Hybrid does NOT get the raised ceiling",
+          "RAISED_LIMITS" not in hev,
           "heavier car, no fleet data, and it borrows HYUNDAI_SONATA torque params")
 
 
@@ -528,7 +530,7 @@ def main() -> int:
     guard_fingerprints(opendbc)
     guard_hyundaican(opendbc)
     guard_lfahda_pair(opendbc)
-    guard_dynamic_torque_pair(opendbc)
+    guard_raised_torque_pair(opendbc)
     guard_panda_enforcement(opendbc)
     guard_car_list(opendbc)
     guard_torque(opendbc)
