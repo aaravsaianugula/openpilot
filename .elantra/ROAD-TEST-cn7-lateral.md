@@ -9,30 +9,28 @@ driver-override arbitration. We are adjusting a request it is free to refuse.
 
 ## Read this first — what is actually on the car
 
-An earlier revision of this document said the torque schedule was "not on the car yet" and told
-you to test NNLC alone. **That was wrong**, and its pre-flight check agreed with it for a reason
-worth understanding, because the same trap will catch you again.
+The speed schedule that used to be here is gone. The ceiling is now a **flat 409 counts at every
+speed**, which is what carrotpilot ships for HKG. Everything below was rewritten for it; an
+earlier revision told you to feel for a torque step at 8 and 16 m/s, and to expect the freeway to
+be bit-identical. Both are now false.
 
-State as of 2026-08-29, read off the device and verified after a reboot:
+State as of 2026-08-30, read off the device:
 
 | | |
 |---|---|
-| `/data/openpilot` | `elantra-lateral`, working tree clean |
-| `opendbc_repo` | pinned, matching |
-| panda firmware | rebuilt from the installed source, byte-identical, signature verified on the live board |
-| `NeuralNetworkLateralControl` | **0 — deliberately off, so the schedule is the only live change** |
+| `/data/openpilot` | `elantra-lateral` @ `a9c94550`, working tree clean |
+| `opendbc_repo` | pinned at `150a7e7c`, matching the gitlink and the manifest |
+| panda firmware | rebuilt from the installed source, two clean builds byte-identical, signature verified on the live board |
+| `NeuralNetworkLateralControl` | **0 — deliberately off, so the ceiling is the only live change** |
 | `LateralJerkTorqueController` | 0 |
-| lateral tune | `latAccelFactor = 3.169`, `friction = 0.0819` |
+| lateral tune | `latAccelFactor = 3.169`, `friction = 0.0819` (offline; the live learner is **invalid**, see below) |
 | `DisableUpdates` | 1 — nothing will move the branch under you mid-test |
-
-**The torque schedule is live and will arm on your next ignition.** Test it on its own. NNLC is
-a separate change with its own drive, below.
 
 ### Pre-flight — and why the obvious check lies
 
 `CarParamsPersistent` is written **at the start of a drive**. Read it while parked and you get
-the *previous* drive's value, which is how the old pre-flight reported `DYNAMIC_LIMITS: False`
-on a car that was fully flashed and one ignition away from commanding 409.
+the *previous* drive's value, which is how an older pre-flight reported the flag as False on a
+car that was fully flashed and one ignition away from commanding 409.
 
 Compute it from the installed source instead. This does not depend on drive state:
 
@@ -42,97 +40,131 @@ from opendbc.car.hyundai.interface import CarInterface
 from opendbc.car.hyundai.values import CAR, CarControllerParams
 CP = CarInterface.get_params(CAR.HYUNDAI_ELANTRA_2024, {0:{0x391:8},1:{},2:{}}, [], True, False, False)
 sp = CP.safetyConfigs[-1].safetyParam
-print(\"safetyParam\", sp, \"| DYNAMIC_LIMITS:\", bool(sp & 1024))
-print(\"schedule    \", CarControllerParams(CP).STEER_MAX_LOOKUP)"'
+print(\"safetyParam\", sp, \"| RAISED_LIMITS:\", bool(sp & 1024))
+print(\"STEER_MAX   \", CarControllerParams(CP).STEER_MAX)"'
 ```
 
-Expect `safetyParam 1036 | DYNAMIC_LIMITS: True` and `[[8.0, 16.0], [409, 384]]`.
-
-Once the drive has started, `CarParamsPersistent` becomes trustworthy and should agree.
+Expect `safetyParam 1036 | RAISED_LIMITS: True` and `STEER_MAX 409`. The safetyParam is
+unchanged from the schedule build — the bit values were kept deliberately — so **the safetyParam
+alone does not tell you which build is on the car.** `STEER_MAX 409` with no lookup does.
 
 ---
 
-## Test 1 — the low-speed torque schedule
+## Test 1 — the flat torque ceiling
 
 ### What it does
 
-Below 8 m/s the LKAS11 torque ceiling goes 384 → **409 counts**, ramping back to 384 by 16 m/s.
-Above 16 m/s the command is bit-for-bit unchanged.
+The LKAS11 torque ceiling is **409 counts at every speed**, replacing 384 (and replacing the
+schedule that already gave 409 below 8 m/s). Panda accepts exactly 409 and rejects 410, at every
+speed, including before it has received a single speed frame.
 
 409 against 384 is **+6.5%**. This platform's DBC carries `CR_Lkas_StrToqReq` as raw counts —
 `16|11@1+ (1.0,-1024.0)` — so the familiar "3.20 Nm vs 3.00 Nm" is an inference from the Nm
 scaling in `hyundai_2015_ccan.dbc`, a file this car does not use. Treat the Nm figure as
 indicative, not measured. The wire maximum is 1023 counts; nothing here goes near it.
 
-### What the measurement actually says
+### Where the change actually lands — and it is not where you think
 
-Re-derived 2026-08-29 over 62 one-minute segments sampled evenly across the 496 then on the
-device — 225,275 frames with lateral control active, command read from
-`carOutput.actuatorsOutput.torqueOutputCan`:
+Measured over **all 509 recorded segments, 1,672,068 engaged frames**, by re-running the real
+limiter frame-by-frame under both ceilings seeded from the torque the car was actually applying
+(`.elantra/torque_projection.py`):
 
-| speed | frames | at the 384 ceiling |
+| speed | frames | frames changed | mean \|Δ\| | max \|Δ\| |
+|---|---|---|---|---|
+| 0–3 m/s | 117,741 | **0.00%** | — | 0 |
+| 3–7 m/s | 253,136 | **0.00%** | — | 0 |
+| 7–10 m/s | 184,012 | 4.92% | 1.30 | 6 |
+| 10–14 m/s | 215,269 | 34.69% | 1.52 | 10 |
+| 14–18 m/s | 289,502 | 55.58% | 1.96 | 10 |
+| 18+ m/s | 612,408 | 53.73% | 1.92 | 10 |
+| **all** | **1,672,068** | **34.31%** | ~1.9 | 10 |
+
+**Read that table before you drive.** The car already had 409 below 8 m/s under the schedule, so
+this change does **nothing at all** in the low-speed band the original shortfall measurement was
+about. Its entire practical effect is at road and highway speed, where it moves about half of all
+frames by roughly two counts, and where the car has no prior road data at 409.
+
+That inverts the old test plan. The freeway used to be the control. It is now the experiment.
+
+For reference, how often the command is actually pinned at its ceiling on the current build:
+0.279% of frames at 0–3 m/s, 0.346% at 3–7, 0.023% at 7–10, ~0 above. The schedule already
+largely closed the low-speed deficit.
+
+### The factory envelope: 157 counts, and it IS measured
+
+An earlier revision of this document said your own logs could not answer this, because the
+camera never actuates while openpilot is engaged, and set up a passive watcher that "may never
+appear". That was wrong, and the answer was already in the logs.
+
+Route `000000b9--0c339ed202` — 18 segments, **zero** LKAS11 frames transmitted by openpilot
+across all of them — is a drive with stock LKAS in full control. In its 40,144 actuating frames
+the factory camera requests up to **157 counts** with `CF_Lkas_ActToi` set. Across all 509
+segments that is the maximum; the other 495 are zero for exactly the reason previously given.
+
+One drive, so 157 is a **floor** on Hyundai's envelope, not a proof of its maximum. But it is a
+real number where there used to be none, and it reframes both ceilings:
+
+| | counts | vs factory |
 |---|---|---|
-| 0–3 m/s | 13,487 | **2.21%** |
-| 3–7 m/s | 32,617 | **4.56%** |
-| 7–10 m/s | 26,869 | 0.64% |
-| 10–14 m/s | 36,682 | 0.25% |
-| 14–18 m/s | 29,797 | 0.09% |
-| 18+ m/s | 85,823 | 0.02% |
+| Hyundai's own LKAS, measured | 157 | 1.0x |
+| comma's HKG default (what you ran before) | 384 | **2.45x** |
+| flat, what you are testing | 409 | **2.61x** |
 
-An earlier 40-segment sample put the 3–7 band at 9.7% and reported exactly zero outside
-3–14 m/s. Neither survived the full population. The ceiling does bind at low speed, and it binds
-**about half as often as first claimed**, with small but non-zero tails.
-
-Note the shape: **0–3 m/s is the second-most-pinned band**, and the schedule is flat at its most
-permissive value from 0 to 8 m/s. The extra authority is largest where the evidence for it is
-weakest. Whether to raise the lower breakpoint is the open question this data leaves — which is
-why step 1 of the drive below is a parking-lot test.
+`values.py` states comma's rule outright: *"find the maximum value that the stock LKAS will
+request. If the max stock LKAS request is <384, add your car to this list"* — the list that sets
+255. Applied literally to a measured 157, the CN7 belongs at 255 or lower. **Neither 384 nor 409
+is derived from that rule.** This change moves 2.45x to 2.61x; it does not move you from inside
+the stock envelope to outside it, because 384 was already well outside.
 
 ### Two costs, stated plainly
 
-- **Driver override below 8 m/s.** The ceiling anchors both ends of the override envelope, so
-  the car holds 25 counts more against you before winding down. Measured against the compiled
-  safety, the driver torque that drives the command to zero moves from about −243 to about
-  −255 counts: **+5.2%**. This is the path that has to work when you fight the wheel — test it
-  deliberately.
-- **Above 16 m/s the command is unchanged, but panda's acceptance threshold is 385, not 384.**
-  Earlier text here claimed that single count was upstream slack "present on the stock limits
-  too". It is not: the `+1` and the −1 m/s speed fudge both live inside
-  `if (limits.dynamic_max_torque)` in `lateral.h`, so a stock Hyundai gets exactly 384. Nothing
-  sends the extra count — openpilot commands at most 384 up there — but the claim was wrong and
-  the difference is real. At exactly 16.0 m/s the speed fudge puts the threshold at **388**.
+- **STEER_MAX is a gain, not just a ceiling.** Every command scales by 409/384 = **+6.51%**, at
+  all speeds. Normally the live torque learner absorbs this within a few drives — it has ±100%
+  headroom here and `STEER_MAX` is not in its cache key, so it will not reset. But it is
+  currently **invalid** (`valid=False`, `decay` at the 50 s reset floor, sitting on the offline
+  `latAccelFactor` 3.169), so nothing is compensating it. **Your first drives are the hot ones.**
+- **Driver override yields later.** The ceiling anchors the override envelope:
+  `driver_max_torque = STEER_MAX + (50 + driver)*2`. Override still *begins* reducing authority
+  at driver torque −50 either way, but the point of **full yield** moves from **−242 to −254.5
+  counts** (+5.2%). This is the path that has to work when you fight the wheel — test it
+  deliberately. Confirmed by executable test, not arithmetic
+  (`.elantra/test_torque_projection.py`).
 
 ### Drive it
 
-Empty lot first. Hands on the wheel throughout. The regime that matters is narrow: **tight turns
-at 3–8 m/s**.
+Empty lot first. Hands on the wheel throughout.
 
-1. **Full-lock turns at walking pace.** This is the band the measurement says was believed clean
-   and is not, and the MDPS boost curve is steepest here, so 409 does the most work. Most likely
-   place for a surprise.
-2. **Deliberately override mid-turn at ~5 m/s.** It must wind down the way it does today, from a
-   slightly higher starting point. If overriding feels notably heavier, stop.
-3. Quiet streets, real intersections at 5–8 m/s.
-4. Highway. **Nothing should feel different at all.**
+1. **Full-lock turns at walking pace.** Expect **nothing to have changed** — the ceiling here was
+   already 409. If something feels different, the build is not what this document says it is.
+   Stop and re-run the pre-flight.
+2. **Deliberately override mid-turn at ~5 m/s.** Also unchanged from the schedule build. It must
+   wind down the way it does today.
+3. Quiet streets, real intersections at 5–8 m/s. Still unchanged.
+4. **Highway. This is the test.** ~55% of frames here move, by about two counts, and the loop is
+   ~6.5% hot until the learner converges. Watch for tracking that feels sharper or twitchier than
+   you are used to, and for any oscillation on a long constant-radius curve.
 
 ### Stop if
 
-- Any new EPS fault, or "Steering Assist Temporarily Unavailable". This is the one the raised
-  ceiling could plausibly cause, and the reason `CF_Mdps_ToiFlt` is logged per drive.
-- Any torque step you can feel crossing 8 or 16 m/s.
-- Any oscillation or hunting in a turn.
-- **Anything at all different above 36 mph.** The command is bit-identical up there; a
-  difference means the schedule is not doing what was measured. Stop everything.
-- Overriding is harder than the +5% above would explain.
+- Any new EPS fault, or "Steering Assist Temporarily Unavailable". `CF_Mdps_ToiFlt` is logged per
+  drive for exactly this.
+- Any oscillation or hunting, **especially on the highway** — that is where the gain increase is
+  uncompensated and where there is no prior road data at 409.
+- Overriding is harder than the +5.2% above would explain.
+- Anything at all different below 8 m/s. Nothing changed there; a difference means the build is
+  not what you think it is.
 
 ### Roll it back
 
+Back to the speed-schedule build, which has one clean road test behind it:
+
 ```bash
-ssh comma@192.168.12.238 'cd /data/openpilot && git checkout rdna2 && git submodule update --init --recursive opendbc_repo && sudo reboot'
+ssh comma@192.168.12.238 'cd /data/openpilot && git checkout bb90e6d94 && git submodule update --init --recursive opendbc_repo && sudo reboot'
 ```
 
-This round trip has been executed and verified: the panda reflashes to the rollback firmware and
-back, signature-checked both ways.
+pandad reflashes on boot whenever the running signature differs from the built binary, so the
+panda follows the source automatically. This round trip has been executed and verified in both
+directions — see the rollback section of the handover.
 
 ---
 
@@ -202,26 +234,29 @@ What to look at, in order:
    carries something else on this car.)
 2. **`%` pinned in the 3–7 m/s band.** Baseline **4.56%**.
 3. **`demand` vs `deliv`** where pinned. Closing this gap is the actual goal.
-4. **`FACTORY_ENVELOPE_SEEN.txt`** in `/data/elantra-lateral/`. If it ever appears, the factory
-   camera actuated during a drive and we finally have the number nobody has measured. It may
-   never appear.
+4. **`FACTORY_ENVELOPE_SEEN.txt`** in `/data/elantra-lateral/`. This was set up when the
+   envelope was believed unmeasurable. It has since been measured at **157 counts** from route
+   `000000b9--0c339ed202` (see Test 1). The watcher is still worth keeping — one drive is a
+   floor, not a maximum — but it is no longer the only source.
 
 ---
 
 ## The honest limit of this work
 
-384 is comma's default for most HKG cars, not a CN7 measurement. `values.py` states the rule
-outright: *"find the maximum value that the stock LKAS will request."* Nobody has done that for
-this platform — not comma, not carrotpilot, which ships a flat 409 with no commit message, no
-comment and no measurement anywhere in its history.
+The factory envelope is no longer the open question: it is **157 counts**, measured from a real
+drive with stock LKAS in control (Test 1). What that measurement shows is that comma's stated
+rule was never applied to this platform in either direction — 384 is comma's HKG default at 2.4x
+factory, and 409 is carrotpilot's default at 2.6x. carrotpilot ships it with no commit message,
+no comment and no measurement anywhere in its history; the argument for it is that a large Korean
+CN7 fleet runs it without EPS faults. That is fleet evidence, and fleet evidence is real, but it
+is not the same kind of thing as a stock-limit derivation and should not be reported as one.
 
-Your own logs cannot answer it. The factory camera requested zero torque in every frame
-screened, because it never actuates while openpilot is engaged. The passive collection above
-watches for a window opportunistically; the real answer needs a deliberate drive with openpilot
-passive and factory LFA active, logging bus 2.
+What remains genuinely unknown:
 
-So both 384 and 409 are unverified against the factory envelope. This change moves from one
-unverified number to another 6.5% higher, on the basis of your own shortfall measurement and the
-fact that a large Korean CN7 fleet runs 409 without EPS faults. That is a reasonable basis for a
-bounded, reversible first step. It is not the same thing as knowing the envelope, and no amount
-of desk work closes it.
+- **Whether 157 is Hyundai's maximum.** It is one drive. A second passive drive on a different
+  road, in worse lane geometry, could raise it. It will not raise it to 384.
+- **Sustained saturation at 409 above 8 m/s.** No road data exists there — that is precisely the
+  regime this change opens, and only the highway leg of the drive closes it.
+- **Where the tune settles.** The learner is invalid today, so the +6.51% is uncompensated now
+  and will be partly absorbed later. The car you drive tomorrow is not the car you drive in a
+  week, and neither is wrong.
