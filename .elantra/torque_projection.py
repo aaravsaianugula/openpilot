@@ -105,7 +105,7 @@ def assert_params_match() -> None:
 
 
 def band_of(v: float) -> str | None:
-    for (lo, hi), name in zip(SPEED_BANDS, BAND_NAMES):
+    for (lo, hi), name in zip(SPEED_BANDS, BAND_NAMES, strict=False):
         if lo <= v < hi:
             return name
     return None
@@ -328,7 +328,7 @@ def merge(recs: list) -> tuple:
                 if k == "delta_hist":
                     for kk, vv in v.items():
                         t[k][kk] = t[k].get(kk, 0) + vv
-                elif k.endswith("max_abs") or k.endswith("max_abs_delta"):
+                elif k.endswith(("max_abs", "max_abs_delta")):
                     t[k] = max(t[k], v)
                 else:
                     t[k] += v
@@ -350,19 +350,19 @@ def cmd_report(args) -> int:
     print("\n--- simulation fidelity (BEFORE chain vs what openpilot recorded) ---")
     p = valid["paired"] or 1
     print(f"  paired frames {valid['paired']}")
-    print(f"  exact at lag 0 {valid['exact_lag0']} ({100*valid['exact_lag0']/p:.3f}%)"
+    print(f"  exact at lag 0 {valid['exact_lag0']} ({100*valid['exact_lag0']/p:.3f}%)" +
           f"   exact at lag 1 {valid['exact_lag1']} ({100*valid['exact_lag1']/p:.3f}%)")
     print("     lag 1 is the pipeline's own carControl -> carOutput delay, scored not assumed")
-    print(f"  within 1 count at lag 1 {valid['within1_lag1']} "
+    print(f"  within 1 count at lag 1 {valid['within1_lag1']} " +
           f"({100*valid['within1_lag1']/p:.3f}%)")
-    print(f"  worst mismatch {valid['max_mismatch']} counts   "
+    print(f"  worst mismatch {valid['max_mismatch']} counts   " +
           f"mean |mismatch| {valid['sum_mismatch']/p:.4f}")
     if valid["exact_lag1"] < valid["exact_lag0"]:
         print("  !! lag 0 fits better than lag 1 -- the pipeline alignment assumed here has")
         print("     changed, and every delta below is measured against a shifted signal.")
 
     print("\n--- what flat 409 changes, by speed band ---")
-    print(f"  {'band':>8} {'frames':>9} {'changed':>9} {'%chg':>7} {'mean|d|':>8} {'max|d|':>7} "
+    print(f"  {'band':>8} {'frames':>9} {'changed':>9} {'%chg':>7} {'mean|d|':>8} {'max|d|':>7} " +
           f"{'pin_before':>11} {'pin_after':>10} {'maxcmd_b':>9} {'maxcmd_a':>9}")
     tot_frames = tot_changed = 0
     for b in BAND_NAMES:
@@ -373,15 +373,15 @@ def cmd_report(args) -> int:
         if not n:
             print(f"  {b:>8} {0:>9}")
             continue
-        print(f"  {b:>8} {n:>9} {d['changed']:>9} {100*d['changed']/n:>6.2f}% "
-              f"{d['sum_abs_delta']/max(d['changed'],1):>8.2f} {d['max_abs_delta']:>7} "
-              f"{100*d['before_at_ceiling']/n:>10.3f}% {100*d['after_at_ceiling']/n:>9.3f}% "
+        print(f"  {b:>8} {n:>9} {d['changed']:>9} {100*d['changed']/n:>6.2f}% " +
+              f"{d['sum_abs_delta']/max(d['changed'],1):>8.2f} {d['max_abs_delta']:>7} " +
+              f"{100*d['before_at_ceiling']/n:>10.3f}% {100*d['after_at_ceiling']/n:>9.3f}% " +
               f"{d['before_max_abs']:>9} {d['after_max_abs']:>9}")
-    print(f"  {'ALL':>8} {tot_frames:>9} {tot_changed:>9} "
+    print(f"  {'ALL':>8} {tot_frames:>9} {tot_changed:>9} " +
           f"{100*tot_changed/max(tot_frames,1):>6.2f}%")
 
     print("\n--- the factory envelope (camera-bus LKAS11, what stock LKAS asked for) ---")
-    print(f"  frames {factory['frames']}   nonzero torque frames {factory['nonzero']}   "
+    print(f"  frames {factory['frames']}   nonzero torque frames {factory['nonzero']}   " +
           f"max |CR_Lkas_StrToqReq| {factory['max_abs']}   ActToi frames {factory['act_toi']}")
     if factory["frames"] and not factory["nonzero"]:
         print("  => the factory camera never actuated in any recorded frame. comma's rule")

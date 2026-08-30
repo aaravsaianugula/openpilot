@@ -83,7 +83,7 @@ def replay(frames, label: str, verbose: bool = True):
     cnt = {"speed": 0}
 
     def speed_msg(v):
-        values = {"WHL_SPD_%s" % s: v * 3.6 for s in ["FL", "FR", "RL", "RR"]}
+        values = {f"WHL_SPD_{s}": v * 3.6 for s in ["FL", "FR", "RL", "RR"]}
         values["WHL_SPD_AliveCounter_LSB"] = (cnt["speed"] % 16) & 0x3
         values["WHL_SPD_AliveCounter_MSB"] = (cnt["speed"] % 16) >> 2
         cnt["speed"] += 1
@@ -164,7 +164,7 @@ def main() -> int:
 
     print(f"\n{'-' * 62}")
     print(f"flat {RAISED} replay: {total} engaged frames, {len(all_rejected)} rejected by panda")
-    print(f"control @{TOO_HIGH}:  {control_total} frames, {control_accepted} accepted "
+    print(f"control @{TOO_HIGH}:  {control_total} frames, {control_accepted} accepted " +
           f"({100 * control_accepted / max(control_total, 1):.2f}%)")
 
     if total == 0:

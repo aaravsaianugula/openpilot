@@ -96,7 +96,7 @@ LATERAL_PARAMS = (
 
 
 def band_of(v: float) -> str | None:
-    for (lo, hi), name in zip(SPEED_BANDS, BAND_NAMES):
+    for (lo, hi), name in zip(SPEED_BANDS, BAND_NAMES, strict=False):
         if lo <= v < hi:
             return name
     return None
@@ -280,7 +280,7 @@ def scan_route(route: str, segs: list) -> dict:
                             band = band_of(v)
                             if band is not None:
                                 A[band]["toi_flt"] += 1
-        except Exception as exc:            # noqa: BLE001 -- every failure gets named
+        except Exception as exc:
             skipped.append({
                 "segment": os.path.basename(os.path.dirname(seg)),
                 "reason": type(exc).__name__ + ": " + str(exc)[:120],
@@ -346,7 +346,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         segs = routes[route]
         try:
             prov = provenance(segs[0])
-        except Exception as exc:            # noqa: BLE001
+        except Exception as exc:
             # Counted, not skipped. A route that vanished here used to leave every denominator
             # silently -- the exact failure this file's docstring claims to prevent. It cannot be
             # attributed to a tag either (the tag comes from the provenance we just failed to
@@ -395,18 +395,18 @@ def merge(reports: list, estimator: str) -> dict:
 
 def print_table(title: str, merged: dict) -> None:
     print("\n" + title)
-    print("  %-8s %8s %8s %7s %8s %6s %8s %8s %7s %7s"
-          % ("speed", "frames", ">=384", "%", ">=409", "max", "demand", "deliv", "ratio", "ToiFlt"))
+    print(f"  {'speed':<8s} {'frames':>8s} {'>=384':>8s} {'%':>7s} {'>=409':>8s} " +
+          f"{'max':>6s} {'demand':>8s} {'deliv':>8s} {'ratio':>7s} {'ToiFlt':>7s}")
     for b in BAND_NAMES:
         d = merged[b]
         if not d["frames"]:
             continue
         p384 = d["pinned"]["384"]
         dem, dlv = d["demand_median"], d["delivered_median"]
-        print("  %-8s %8d %8d %6.1f%% %8d %6d %8s %8s %7s %7d" % (
+        print("  {:<8s} {:8d} {:8d} {:6.1f}% {:8d} {:6d} {!s:>8} {!s:>8} {!s:>7} {:7d}".format(
             b, d["frames"], p384, 100.0 * p384 / d["frames"], d["pinned"]["409"], d["max_abs"],
-            ("%8.3f" % dem) if dem else "-",
-            ("%8.3f" % dlv) if dlv else "-",
+            (f"{dem:8.3f}") if dem else "-",
+            (f"{dlv:8.3f}") if dlv else "-",
             ("%7.3f" % (dem / dlv)) if dem and dlv else "-",
             d["toi_flt"]))
 
@@ -430,8 +430,8 @@ def summarise(label: str, reports: list, failures: list) -> dict:
     pb = sum(d["pinned"]["384"] for d in b.values())
     ra = pa / fa if fa else 0.0
     rb = pb / fb if fb else 0.0
-    print("  estimator A (carOutput): %8d frames, pinned>=384 %d (%.2f%%)" % (fa, pa, 100 * ra))
-    print("  estimator B (LKAS11 TX): %8d frames, pinned>=384 %d (%.2f%%)" % (fb, pb, 100 * rb))
+    print(f"  estimator A (carOutput): {fa:8d} frames, pinned>=384 {pa} ({100 * ra:.2f}%)")
+    print(f"  estimator B (LKAS11 TX): {fb:8d} frames, pinned>=384 {pb} ({100 * rb:.2f}%)")
     if fa == 0 or fb == 0:
         # Zero frames makes both rates 0.0, which compared equal and printed AGREE over an empty
         # table. Nothing was measured; that is a failure, not a clean result.
@@ -442,11 +442,12 @@ def summarise(label: str, reports: list, failures: list) -> dict:
     else:
         rel = abs(ra - rb) / max(ra, rb) if max(ra, rb) > 0 else 0.0
         agree = abs(ra - rb) <= ESTIMATOR_TOLERANCE and rel <= ESTIMATOR_REL_TOLERANCE
-        print("  independent estimators %s (delta %.2f pp / %.0f%% rel; tol %.0f pp and %.0f%%)"
-              % ("AGREE" if agree else "DISAGREE", 100 * abs(ra - rb), 100 * rel,
-                 100 * ESTIMATOR_TOLERANCE, 100 * ESTIMATOR_REL_TOLERANCE))
+        verdict = "AGREE" if agree else "DISAGREE"
+        print(f"  independent estimators {verdict} (delta {100 * abs(ra - rb):.2f} pp / " +
+              f"{100 * rel:.0f}% rel; tol {100 * ESTIMATOR_TOLERANCE:.0f} pp and " +
+              f"{100 * ESTIMATOR_REL_TOLERANCE:.0f}%)")
         if not agree:
-            failures.append(label + ": estimators disagree -- one of them is wrong, "
+            failures.append(label + ": estimators disagree -- one of them is wrong, " +
                                     "do not average them")
     print_table("[" + label + "] estimator A, binned medians", a)
     return a
@@ -468,8 +469,8 @@ def cmd_compare(args: argparse.Namespace) -> int:
         print("available tags:\n")
         for tag, rs in sorted(by_tag.items(), key=lambda kv: -len(kv[1])):
             p = rs[0]["provenance"]
-            print("  %s  routes=%-4d branch=%-10s param=%-5s laf=%-7s fric=%-8s NNLC=%s"
-                  % (tag, len(rs), p["git_branch"], p["safety_param"],
+            print("  {}  routes={:<4d} branch={!s:<10} param={!s:<5} laf={!s:<7} fric={!s:<8} NNLC={}".format(
+                     tag, len(rs), p["git_branch"], p["safety_param"],
                      p["lat_accel_factor"], p["friction"],
                      p["params"].get("NeuralNetworkLateralControl")))
         print("\nPass two tags to compare them.")

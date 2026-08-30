@@ -392,7 +392,7 @@ def guard_panda_enforcement(opendbc: Path) -> None:
 
     # And the global ceiling check has to compare against that unfudged max_torque, symmetric.
     check("the global torque check bounds both signs by max_torque",
-          re.search(r"safety_max_limit_check\(\s*desired_torque\s*,\s*max_torque\s*,"
+          re.search(r"safety_max_limit_check\(\s*desired_torque\s*,\s*max_torque\s*," +
                     r"\s*-\s*max_torque\s*\)", lat) is not None,
           "an asymmetric or wider bound here is the whole ceiling, in one line")
 
@@ -414,13 +414,12 @@ def guard_raised_torque_pair(opendbc: Path) -> None:
     rate_up, rate_down = STEER_RATES
 
     # --- the opendbc half -------------------------------------------------------------
-    check("opendbc raises STEER_MAX to %d under the flag, inside the else branch"
-          % STEER_MAX_RAISED,
+    check(f"opendbc raises STEER_MAX to {STEER_MAX_RAISED} under the flag, inside the else branch",
           _raised_assigned_in_else(values),
-          "assigned outside it, RAISED_LIMITS outranks ALT_LIMITS/ALT_LIMITS_2/CANFD and the "
-          "car commands %d where panda enforces 270 or 170" % STEER_MAX_RAISED)
-    check("the stock ceiling under it is still %d" % STEER_MAX_STOCK,
-          re.search(r"self\.STEER_MAX\s*=\s*%d\b" % STEER_MAX_STOCK, values) is not None)
+          "assigned outside it, RAISED_LIMITS outranks ALT_LIMITS/ALT_LIMITS_2/CANFD and the " +
+          f"car commands {STEER_MAX_RAISED} where panda enforces 270 or 170")
+    check(f"the stock ceiling under it is still {STEER_MAX_STOCK}",
+          re.search(rf"self\.STEER_MAX\s*=\s*{STEER_MAX_STOCK}\b", values) is not None)
 
     # carcontroller must be upstream's shape. The flat ceiling needs no per-frame ceiling at
     # all, so anything left of the schedule here means a half-applied change.
@@ -429,15 +428,15 @@ def guard_raised_torque_pair(opendbc: Path) -> None:
     check("carcontroller normalises the feedback by the same STEER_MAX",
           "new_actuators.torque = apply_torque / self.params.STEER_MAX" in carctl)
     for dead in ("STEER_MAX_LOOKUP", "steer_max"):
-        check("no %s left in carcontroller" % dead, dead not in carctl,
+        check(f"no {dead} left in carcontroller", dead not in carctl,
               "a flat ceiling needs none of the schedule machinery; leftovers mean half-applied")
 
     # --- the bridge -------------------------------------------------------------------
     check("interface.py carries the car flag into safetyParam",
-          re.search(r"HyundaiFlags\.RAISED_LIMITS[\s\S]{0,140}?"
+          re.search(r"HyundaiFlags\.RAISED_LIMITS[\s\S]{0,140}?" +
                     r"HyundaiSafetyFlags\.RAISED_LIMITS\.value", iface) is not None,
-          "without this the car commands %d and panda rejects every frame above %d"
-          % (STEER_MAX_RAISED, STEER_MAX_STOCK))
+          f"without this the car commands {STEER_MAX_RAISED} and panda rejects " +
+          f"every frame above {STEER_MAX_STOCK}")
 
     # --- the panda half ---------------------------------------------------------------
     inst = re.search(r"HYUNDAI_STEERING_LIMITS_RAISED\s*=\s*HYUNDAI_LIMITS\(([^)]*)\)", safety)
@@ -446,16 +445,16 @@ def guard_raised_torque_pair(opendbc: Path) -> None:
           "anything else is a different enforcement path with different fudges")
     if inst is not None:
         args = [a.strip() for a in inst.group(1).split(",")]
-        check("panda's ceiling is %d" % STEER_MAX_RAISED,
+        check(f"panda's ceiling is {STEER_MAX_RAISED}",
               args[:1] == [str(STEER_MAX_RAISED)], "found " + str(args[:1]))
-        check("steer ramp rates are unchanged at %d/%d" % (rate_up, rate_down),
+        check(f"steer ramp rates are unchanged at {rate_up}/{rate_down}",
               args[1:3] == [str(rate_up), str(rate_down)], "found " + str(args[1:3]))
 
     # The flat ceiling exists to be speed-independent. If anything puts the CN7 back on the
     # dynamic path, panda silently regains the -1 m/s shift and the +1 count of slack, and
     # every "speed cannot move the ceiling" claim on this branch becomes false.
     for dead in ("dynamic_max_torque", "HYUNDAI_LIMITS_DYNAMIC", "max_torque_lookup"):
-        check("no %s anywhere on the hyundai path" % dead,
+        check(f"no {dead} anywhere on the hyundai path",
               dead not in safety and dead not in common_h)
 
     check("panda selects the raised limits on the flag",
@@ -473,8 +472,8 @@ def guard_raised_torque_pair(opendbc: Path) -> None:
     tern = re.search(r"const TorqueSteeringLimits limits =(.*?);", safety, re.S)
     check("panda's limit ternary parsed", tern is not None)
     if tern is not None:
-        order = [n for n in re.findall(r"hyundai_(alt_limits_2|alt_limits|raised_limits)",
-                                       tern.group(1))]
+        order = list(re.findall(r"hyundai_(alt_limits_2|alt_limits|raised_limits)",
+                                       tern.group(1)))
         check("the raised ceiling is tested last, after both ALT_LIMITS",
               order and order[-1] == "raised_limits",
               "found order " + str(order) + "; a lower ceiling must always win")

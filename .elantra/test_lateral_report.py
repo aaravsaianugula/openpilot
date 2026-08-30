@@ -183,7 +183,7 @@ def main() -> int:
 
     print("\n" + "-" * 58)
     if failures:
-        print("FAILED: %d case(s)" % len(failures))
+        print(f"FAILED: {len(failures)} case(s)")
         for f in failures:
             print("  - " + f)
         return 1

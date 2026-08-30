@@ -67,7 +67,7 @@ class TestScheduleCeiling(unittest.TestCase):
         self.assertEqual(tp.schedule_ceiling(12.0), 396)   # halfway between 409 and 384
 
     def test_monotonically_descending(self):
-        vals = [tp.schedule_ceiling(v / 2) for v in range(0, 80)]
+        vals = [tp.schedule_ceiling(v / 2) for v in range(80)]
         self.assertEqual(vals, sorted(vals, reverse=True))
 
 

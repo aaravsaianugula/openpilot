@@ -68,7 +68,7 @@ def run_case(g, label: str, repo: Path, opendbc: Path, want_fail: bool,
     g.guard_opendbc_pin(repo, opendbc)
     failed = bool(g._failures)
     if failed != want_fail:
-        failures.append(f"{label}: expected {'FAIL' if want_fail else 'PASS'}, got "
+        failures.append(f"{label}: expected {'FAIL' if want_fail else 'PASS'}, got " +
                         f"{'FAIL' if failed else 'PASS'}")
         print("  FAIL  " + label)
     else:

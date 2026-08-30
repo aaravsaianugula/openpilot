@@ -53,10 +53,10 @@ ENFORCEMENT_CASES = [
      "straight from the limits struct"),
 
     ("the -1 m/s shift escapes the dynamic branch",
-     "(vehicle_speed.min / VEHICLE_SPEED_FACTOR) - 1.;\n"
-     "      max_torque = safety_interpolate",
-     "(vehicle_speed.min / VEHICLE_SPEED_FACTOR);\n"
-     "      max_torque = safety_interpolate",
+     ("(vehicle_speed.min / VEHICLE_SPEED_FACTOR) - 1.;\n" +
+     "      max_torque = safety_interpolate"),
+     ("(vehicle_speed.min / VEHICLE_SPEED_FACTOR);\n" +
+     "      max_torque = safety_interpolate"),
      "-1 m/s speed shift is inside"),
 
     ("the +1 count of slack disappears from the dynamic branch",
@@ -80,10 +80,10 @@ CASES = [
 
     ("the raise is moved outside the if/elif chain (precedence inverted)",
      "opendbc/car/hyundai/values.py",
-     "      if CP.flags & HyundaiFlags.RAISED_LIMITS:\n"
-     "        self.STEER_MAX = 409\n",
-     "    if CP.flags & HyundaiFlags.RAISED_LIMITS:\n"
-     "      self.STEER_MAX = 409\n"),
+     ("      if CP.flags & HyundaiFlags.RAISED_LIMITS:\n" +
+     "        self.STEER_MAX = 409\n"),
+     ("    if CP.flags & HyundaiFlags.RAISED_LIMITS:\n" +
+     "      self.STEER_MAX = 409\n")),
 
     ("the stock ceiling under the raise is removed",
      "opendbc/car/hyundai/values.py",
@@ -103,18 +103,18 @@ CASES = [
     ("panda put back on the speed-scheduled path (regains the fudges)",
      "opendbc/safety/modes/hyundai.h",
      "HYUNDAI_STEERING_LIMITS_RAISED = HYUNDAI_LIMITS(409, 3, 7);",
-     "HYUNDAI_STEERING_LIMITS_RAISED = { .max_torque = 409, .dynamic_max_torque = true, "
-     ".max_torque_lookup = { {8., 16., 16.}, {409., 384., 384.} }, "
-     "HYUNDAI_LIMITS_COMMON(3, 7) };"),
+     ("HYUNDAI_STEERING_LIMITS_RAISED = { .max_torque = 409, .dynamic_max_torque = true, " +
+     ".max_torque_lookup = { {8., 16., 16.}, {409., 384., 384.} }, " +
+     "HYUNDAI_LIMITS_COMMON(3, 7) };")),
 
     ("panda tests the raised ceiling before the lower ALT limits",
      "opendbc/safety/modes/hyundai.h",
-     "    const TorqueSteeringLimits limits = hyundai_alt_limits_2 ? HYUNDAI_STEERING_LIMITS_ALT_2 :\n"
-     "                                        hyundai_alt_limits ? HYUNDAI_STEERING_LIMITS_ALT :\n"
-     "                                        hyundai_raised_limits ? HYUNDAI_STEERING_LIMITS_RAISED : HYUNDAI_STEERING_LIMITS;",
-     "    const TorqueSteeringLimits limits = hyundai_raised_limits ? HYUNDAI_STEERING_LIMITS_RAISED :\n"
-     "                                        hyundai_alt_limits_2 ? HYUNDAI_STEERING_LIMITS_ALT_2 :\n"
-     "                                        hyundai_alt_limits ? HYUNDAI_STEERING_LIMITS_ALT : HYUNDAI_STEERING_LIMITS;"),
+     ("    const TorqueSteeringLimits limits = hyundai_alt_limits_2 ? HYUNDAI_STEERING_LIMITS_ALT_2 :\n" +
+     "                                        hyundai_alt_limits ? HYUNDAI_STEERING_LIMITS_ALT :\n" +
+     "                                        hyundai_raised_limits ? HYUNDAI_STEERING_LIMITS_RAISED : HYUNDAI_STEERING_LIMITS;"),
+     ("    const TorqueSteeringLimits limits = hyundai_raised_limits ? HYUNDAI_STEERING_LIMITS_RAISED :\n" +
+     "                                        hyundai_alt_limits_2 ? HYUNDAI_STEERING_LIMITS_ALT_2 :\n" +
+     "                                        hyundai_alt_limits ? HYUNDAI_STEERING_LIMITS_ALT : HYUNDAI_STEERING_LIMITS;")),
 
     ("panda never assigns the flag it selects on",
      "opendbc/safety/modes/hyundai_common.h",
@@ -128,15 +128,15 @@ CASES = [
 
     ("interface.py stops bridging the flag into safetyParam",
      "opendbc/car/hyundai/interface.py",
-     "      if ret.flags & HyundaiFlags.RAISED_LIMITS:\n"
-     "        ret.safetyConfigs[0].safetyParam |= HyundaiSafetyFlags.RAISED_LIMITS.value\n",
+     ("      if ret.flags & HyundaiFlags.RAISED_LIMITS:\n" +
+     "        ret.safetyConfigs[0].safetyParam |= HyundaiSafetyFlags.RAISED_LIMITS.value\n"),
      ""),
 
     ("carcontroller keeps a per-frame ceiling the flat limit does not need",
      "opendbc/car/hyundai/carcontroller.py",
      "    new_torque = int(round(actuators.torque * self.params.STEER_MAX))",
-     "    steer_max = self.params.STEER_MAX\n"
-     "    new_torque = int(round(actuators.torque * steer_max))"),
+     ("    steer_max = self.params.STEER_MAX\n" +
+     "    new_torque = int(round(actuators.torque * steer_max))")),
 
     ("carcontroller normalises the feedback by something else",
      "opendbc/car/hyundai/carcontroller.py",
@@ -150,10 +150,10 @@ CASES = [
 
     ("the Elantra Hybrid inherits the raised ceiling",
      "opendbc/car/hyundai/values.py",
-     "    CarSpecs(mass=3017 * CV.LB_TO_KG, wheelbase=2.72, steerRatio=12.9, tireStiffnessFactor=0.65),\n"
-     "    flags=HyundaiFlags.CHECKSUM_CRC8 | HyundaiFlags.CAMERA_SCC | HyundaiFlags.HYBRID,",
-     "    CarSpecs(mass=3017 * CV.LB_TO_KG, wheelbase=2.72, steerRatio=12.9, tireStiffnessFactor=0.65),\n"
-     "    flags=HyundaiFlags.CHECKSUM_CRC8 | HyundaiFlags.CAMERA_SCC | HyundaiFlags.HYBRID | HyundaiFlags.RAISED_LIMITS,"),
+     ("    CarSpecs(mass=3017 * CV.LB_TO_KG, wheelbase=2.72, steerRatio=12.9, tireStiffnessFactor=0.65),\n" +
+     "    flags=HyundaiFlags.CHECKSUM_CRC8 | HyundaiFlags.CAMERA_SCC | HyundaiFlags.HYBRID,"),
+     ("    CarSpecs(mass=3017 * CV.LB_TO_KG, wheelbase=2.72, steerRatio=12.9, tireStiffnessFactor=0.65),\n" +
+     "    flags=HyundaiFlags.CHECKSUM_CRC8 | HyundaiFlags.CAMERA_SCC | HyundaiFlags.HYBRID | HyundaiFlags.RAISED_LIMITS,")),
 ]
 
 
@@ -175,7 +175,7 @@ def mutate(root: Path, rel: str, old: str, new: str) -> None:
     p = root / rel
     text = p.read_text(encoding="utf-8")
     if text.count(old) != 1:
-        raise SystemExit(f"setup error: {rel} does not contain exactly one {old!r} "
+        raise SystemExit(f"setup error: {rel} does not contain exactly one {old!r} " +
                          f"(found {text.count(old)}) -- the mutation would not be meaningful")
     p.write_text(text.replace(old, new, 1), encoding="utf-8")
 
@@ -216,7 +216,7 @@ def main() -> int:
         print("  ok    unmutated checkout passes")
 
         for i, (label, rel, old, new) in enumerate(CASES):
-            root = Path(td) / ("case%02d" % i)
+            root = Path(td) / f"case{i:02d}"
             stage(src, root)
             mutate(root, rel, old, new)
             if run(g, root):
@@ -255,12 +255,12 @@ def main() -> int:
 
     print("\n" + "-" * 58)
     if failures:
-        print("FAILED: %d mutation(s) slipped past the guards" % len(failures))
+        print(f"FAILED: {len(failures)} mutation(s) slipped past the guards")
         for f in failures:
             print("  - " + f)
         return 1
-    print("PASSED: every single-link break is caught (%d chain + %d enforcement cases)"
-          % (len(CASES), len(ENFORCEMENT_CASES)))
+    print(f"PASSED: every single-link break is caught ({len(CASES)} chain + " +
+          f"{len(ENFORCEMENT_CASES)} enforcement cases)")
     return 0
 
 
