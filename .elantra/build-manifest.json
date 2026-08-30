@@ -11,7 +11,7 @@
     "HYUNDAI_ELANTRA_2024",
     "HYUNDAI_ELANTRA_HEV_2024"
   ],
-  "previous_master_sha": "b5590367c41f2fd02d20296acc51e3970aaabc17",
+  "previous_master_sha": "cbc9409fa3c5819410f3d38c2bd0949515c851c5",
   "rollback_branch": "master-previous",
   "synced_at_utc": "2026-08-25T21:33:12Z"
 }
