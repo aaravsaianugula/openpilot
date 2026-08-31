@@ -40,13 +40,18 @@ from opendbc.car.hyundai.interface import CarInterface
 from opendbc.car.hyundai.values import CAR, CarControllerParams
 CP = CarInterface.get_params(CAR.HYUNDAI_ELANTRA_2024, {0:{0x391:8},1:{},2:{}}, [], True, False, False)
 sp = CP.safetyConfigs[-1].safetyParam
-print(\"safetyParam\", sp, \"| RAISED_LIMITS:\", bool(sp & 1024))
+print(\"safetyParam\", sp, \"| RAISED_LIMITS:\", bool(sp & 1024), \"| LFAHDA_MFC_8:\", bool(sp & 2048))
 print(\"STEER_MAX   \", CarControllerParams(CP).STEER_MAX)"'
 ```
 
-Expect `safetyParam 1036 | RAISED_LIMITS: True` and `STEER_MAX 409`. The safetyParam is
-unchanged from the schedule build — the bit values were kept deliberately — so **the safetyParam
-alone does not tell you which build is on the car.** `STEER_MAX 409` with no lookup does.
+Expect `safetyParam 3084 | RAISED_LIMITS: True | LFAHDA_MFC_8: True` and `STEER_MAX 409`.
+
+3084 = LONG(4) | CAMERA_SCC(8) | RAISED_LIMITS(1024) | LFAHDA_MFC_8(2048). It was 1036 on both
+the schedule build and the first flat build, because those shared the same bit values — which is
+why an earlier revision of this document said the safetyParam could not tell the builds apart.
+The 2048 bit is new as of 2026-08-31, so it does distinguish them again. Do not rely on that
+staying true: **the check that cannot go stale is the panda signature**, and `STEER_MAX 409`
+with no lookup for the opendbc half.
 
 ---
 

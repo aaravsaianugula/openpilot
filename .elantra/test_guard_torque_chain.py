@@ -150,10 +150,10 @@ CASES = [
 
     ("the Elantra Hybrid inherits the raised ceiling",
      "opendbc/car/hyundai/values.py",
-     ("    CarSpecs(mass=3017 * CV.LB_TO_KG, wheelbase=2.72, steerRatio=12.9, tireStiffnessFactor=0.65),\n" +
-     "    flags=HyundaiFlags.CHECKSUM_CRC8 | HyundaiFlags.CAMERA_SCC | HyundaiFlags.HYBRID,"),
-     ("    CarSpecs(mass=3017 * CV.LB_TO_KG, wheelbase=2.72, steerRatio=12.9, tireStiffnessFactor=0.65),\n" +
-     "    flags=HyundaiFlags.CHECKSUM_CRC8 | HyundaiFlags.CAMERA_SCC | HyundaiFlags.HYBRID | HyundaiFlags.RAISED_LIMITS,")),
+     ("    flags=HyundaiFlags.CHECKSUM_CRC8 | HyundaiFlags.CAMERA_SCC | HyundaiFlags.HYBRID |\n" +
+     "          HyundaiFlags.LFAHDA_MFC_8,"),
+     ("    flags=HyundaiFlags.CHECKSUM_CRC8 | HyundaiFlags.CAMERA_SCC | HyundaiFlags.HYBRID |\n" +
+     "          HyundaiFlags.LFAHDA_MFC_8 | HyundaiFlags.RAISED_LIMITS,")),
 ]
 
 
