@@ -125,13 +125,28 @@ def main() -> int:
     for platform in PLATFORMS:
         check(f"{platform} present in the pinned opendbc", platform in values)
 
+    # 0x485 is 8 bytes on the CN7 bus and 4 on every other Hyundai CAN platform. panda's
+    # allow-list matches on EXACT length, so it must carry both entries and hyundai_tx_hook
+    # picks by flag. Checking only the CN7 half would stay green while the SHARED dbc was
+    # widened for all ~79 of them, which is the divergence this file exists to catch.
     safety = contents(odbc, "opendbc/safety/modes/hyundai.h", pinned)
-    dbc = contents(odbc, "opendbc/dbc/generator/hyundai/hyundai_can.dbc", pinned)
-    safety_ok = "{0x485, 0,       8," in safety.replace("\t", " ")
-    dbc_ok = "BO_ 1157 LFAHDA_MFC: 8" in dbc
-    check("panda safety allows 8 bytes on 0x485", safety_ok)
-    check("dbc declares LFAHDA_MFC as 8 bytes", dbc_ok)
-    check("safety and dbc agree on 0x485", safety_ok == dbc_ok and safety_ok,
+    cn7_dbc = contents(odbc, "opendbc/dbc/generator/hyundai/hyundai_can_cn7.dbc", pinned)
+    shared_dbc = contents(odbc, "opendbc/dbc/generator/hyundai/hyundai_can.dbc", pinned)
+    flat = safety.replace(chr(9), " ")
+    safety_8 = "{0x485, 0,       8," in flat
+    safety_4 = "{0x485, 0,       4," in flat
+    cn7_ok = "BO_ 1157 LFAHDA_MFC: 8" in cn7_dbc
+    shared_ok = "BO_ 1157 LFAHDA_MFC: 4" in shared_dbc
+    check("panda allow-list carries the 8-byte 0x485 (for the CN7)", safety_8)
+    check("panda allow-list still carries the 4-byte 0x485 (everyone else)", safety_4,
+          "a single entry silently blocks whichever platform uses the other length")
+    check("hyundai_can_cn7.dbc declares LFAHDA_MFC as 8 bytes", cn7_ok)
+    check("the SHARED hyundai_can.dbc is still 4 bytes", shared_ok,
+          "widening the shared dbc changes every Hyundai CAN platform, not just the CN7")
+    check("hyundai_tx_hook ties 0x485 length to the flag",
+          "hyundai_lfahda_mfc_8 ? 8U : 4U" in flat,
+          "without this both lengths are accepted for every platform")
+    check("safety and dbc agree on 0x485", safety_8 and safety_4 and cn7_ok and shared_ok,
           "one half of the CN7 frame widening is missing")
 
     car_list = json.loads(contents(odbc, "opendbc/sunnypilot/car/car_list.json", pinned))
