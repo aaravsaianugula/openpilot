@@ -545,7 +545,15 @@ def main() -> int:
             print("  - " + f)
         print("\nNothing will be published. Elantra support is not intact in this tree.")
         return 1
-    print("PASSED: all " + str(len(_passes)) + " guards green -- Elantra support is intact.")
+    if args.repo:
+        print("PASSED: all " + str(len(_passes)) + " guards green -- Elantra support is intact.")
+    else:
+        # Without --repo, guard_superproject and guard_opendbc_pin never ran. Those are the
+        # two that answer "is the tree I just checked the tree that actually ships?", so a
+        # bare pass here is not the same claim and must not be printed as if it were.
+        print("PASSED: " + str(len(_passes)) + " opendbc guards green.")
+        print("SKIPPED: the superproject and opendbc-pin guards -- pass --repo to run them.")
+        print("         Without them this says nothing about which opendbc the car ships.")
     return 0
 
 
