@@ -6,10 +6,18 @@ See the LICENSE.md file in the root directory for more details.
 
 Where the delivered steering command sits relative to the two ceilings that matter.
 
-This build raises the CN7's steering ceiling from comma's HKG default of 384 counts to a flat
-409 (HyundaiFlags.RAISED_LIMITS). The onroad torque arc normalises by STEER_MAX, so 409 draws
-exactly where 384 used to and the extra authority is invisible from the driver's seat. This
-module decides what the arc should say about it; steer_headroom_bar.py draws the decision.
+This build raises the CN7's steering ceiling above comma's HKG default of 384 counts
+(HyundaiFlags.RAISED_LIMITS). The onroad torque arc normalises by STEER_MAX, so the raised
+value draws exactly where 384 used to and the extra authority is invisible from the driver's
+seat. This module decides what the arc should say about it; steer_headroom_bar.py draws the
+decision.
+
+THE CEILING IS SPEED-SCHEDULED and this file has to follow it: 500 counts below 8.94 m/s
+(20 mph), ramping to 409 by 13.41 m/s (30 mph), flat 409 above. Reading a fixed 409 would
+paint the red at-the-limit tier at 409 counts while the car still had 91 counts in hand --
+an indicator reporting saturation that is not happening, in exactly the speed range the
+raise was made for. ceiling_at() mirrors opendbc's schedule and update() re-reads it every
+frame from vEgoRaw.
 
 The events are rare and short -- 0.49% of a measured drive was above 384, in bursts of a few
 frames, almost all of it below 10 m/s -- and the band itself is 6.1% of the arc. So most of
@@ -23,7 +31,7 @@ running UI and CI cannot stand one up, but these decisions can be tested on thei
 ships rather than a copy of it.
 
 Two invariants are relied on here and deliberately not re-derived:
-  * RAISED_LIMITS implies STEER_MAX == 409, assigned inside the `else` branch of opendbc's
+  * RAISED_LIMITS implies the schedule below, assigned inside the `else` branch of opendbc's
     STEER_MAX chain so it can never outrank CANFD / ALT_LIMITS / ALT_LIMITS_2.
   * The stock ceiling under it is still 384.
 Both are already enforced by guards.guard_raised_torque_pair. The numbers are duplicated here
@@ -38,7 +46,12 @@ from collections.abc import Callable
 
 # Ceilings, in CAN counts. Pinned against opendbc by guards.guard_ui_headroom.
 STOCK_COUNTS = 384
-RAISED_COUNTS = 409
+RAISED_COUNTS = 409          # the high-speed end of the schedule, and the fallback
+RAISED_COUNTS_LOW_SPEED = 500
+# CarControllerParams.STEER_MAX_LOOKUP, mirrored. Duplicated rather than imported so the UI
+# needs no import-time dependency on a brand module; guard_ui_headroom fails the build if the
+# copy disagrees with opendbc.
+RAISED_SCHEDULE_BP = (8.94, 13.41)
 HYUNDAI_BRAND = "hyundai"
 
 # HyundaiFlags.RAISED_LIMITS, which is what CarParams.flags carries and what opendbc's own
@@ -53,11 +66,15 @@ TIER_NEAR = 2
 TIER_LIMIT = 3
 
 # Four states, four colours, all pastel so they sit on a camera feed without shouting.
-NEAR_COUNTS = 400
+#
+# The purple "about to" band is the last NEAR_MARGIN counts below whatever ceiling is in force,
+# not a fixed number: at 409 that is 400-408, exactly as before, and at 500 it is 491-499. A
+# fixed 400 would leave purple 100 counts wide at low speed and reachable at 80% of authority.
+NEAR_MARGIN = 9
 COLOR_BASE = (255, 255, 255)      # white           -- the bounds the car always had, to 384
 COLOR_HEADROOM = (140, 230, 245)  # #8ce6f5  cyan   -- the extended bounds, 385 to 399
 COLOR_NEAR = (186, 148, 240)      # #ba94f0  purple -- 400 to 408: approaching the edge
-COLOR_LIMIT = (236, 124, 138)     # #ec7c8a  red    -- 409: at the edge
+COLOR_LIMIT = (236, 124, 138)     # #ec7c8a  red    -- at the edge, whatever it is
 
 # White for the base is not a placeholder: it is what upstream's arc already draws, so below
 # 384 this looks like the stock bar and says nothing. The indicator only speaks once there is
@@ -125,12 +142,32 @@ def is_raised(brand: str, flags: int) -> bool:
   return brand == HYUNDAI_BRAND and bool(int(flags) & RAISED_LIMITS_FLAG)
 
 
+def ceiling_at(v_ego_raw: float) -> int:
+  """The ceiling in force at this speed, mirroring CarControllerParams.steer_max_at().
+
+  Same interpolation and the same round() -- banker's, so the midpoint of the ramp is 454 and
+  not 455. The arc has to agree with the car to the count or it draws the wrong edge.
+  """
+  lo_v, hi_v = RAISED_SCHEDULE_BP
+  if v_ego_raw <= lo_v:
+    return RAISED_COUNTS_LOW_SPEED
+  if v_ego_raw >= hi_v:
+    return RAISED_COUNTS
+  f = (v_ego_raw - lo_v) / (hi_v - lo_v)
+  return int(round(RAISED_COUNTS_LOW_SPEED + f * (RAISED_COUNTS - RAISED_COUNTS_LOW_SPEED)))
+
+
+def near_threshold(ceiling: int) -> int:
+  """Where purple starts, for a given ceiling."""
+  return int(ceiling) - NEAR_MARGIN
+
+
 def tier_for(counts: float, stock: int = STOCK_COUNTS, ceiling: int = RAISED_COUNTS) -> int:
   """Which band a command falls in. 384 itself is the old ceiling, not past it."""
   mag = abs(counts)
   if mag >= ceiling:
     return TIER_LIMIT
-  if mag >= NEAR_COUNTS:
+  if mag >= near_threshold(ceiling):
     return TIER_NEAR
   if mag > stock:
     return TIER_HEADROOM
@@ -210,7 +247,12 @@ class HeadroomState:
   def peak_visible(self) -> bool:
     return self.peak_alpha > VISIBLE_EPS
 
-  def update(self, counts: float, lat_active: bool) -> None:
+  def update(self, counts: float, lat_active: bool, v_ego_raw: float | None = None) -> None:
+    # Re-read the ceiling every frame. Passing None keeps whatever this state was built with,
+    # which is what a car without a schedule wants; the CN7 widget always passes vEgoRaw.
+    if v_ego_raw is not None:
+      self.ceiling = ceiling_at(v_ego_raw)
+
     now = self._clock()
     dt = 0.0 if self._last_t is None else min(max(now - self._last_t, 0.0), MAX_DT)
     self._last_t = now
@@ -240,7 +282,7 @@ class HeadroomState:
 
     # ...then purple once it is close to the limit, then red once it is on it. Same shape each
     # time, so a fast run up through all three reads as a sequence rather than a jump.
-    if mag >= NEAR_COUNTS:
+    if mag >= near_threshold(self.ceiling):
       self._near_hold = now + HEADROOM_HOLD
       self.near = _toward(self.near, 1.0, HEADROOM_RISE, dt)
     elif now >= self._near_hold:

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Tests for torque_projection.py -- the tool that says what flat 409 costs.
+"""Tests for torque_projection.py -- the tool that says what the low-speed raise costs.
 
 The tool's output is a number that gets reported as evidence, so the parts that can quietly
 produce a WRONG number are what is tested here: the CAN decode, the schedule interpolation the
-BEFORE chain is built on, the two limiter shapes, the drift guard on the copied constants, and
+AFTER chain is built on, the two limiter shapes, the drift guard on the copied constants, and
 the aggregation (which mixes counters that must be summed with maxima that must not be).
+
+The direction reversed with the 500-under-20mph change. BEFORE is now the flat 409 the recorded
+drives actually ran -- which is what makes the BEFORE chain a genuine one-frame prediction test
+-- and AFTER is the candidate ramp. Previously it was the other way round.
 
 Not tested: reading rlogs. That needs the device and a real log, and a fake one would only
 prove the fake matches the parser.
@@ -55,20 +59,30 @@ class TestDecode(unittest.TestCase):
 
 
 class TestScheduleCeiling(unittest.TestCase):
-    """The BEFORE chain is only meaningful if it reproduces the schedule that is on the car."""
+    """The AFTER chain is only meaningful if it reproduces the schedule being proposed."""
 
     def test_breakpoints_and_plateaus(self):
-        self.assertEqual(tp.schedule_ceiling(0.0), 409)
-        self.assertEqual(tp.schedule_ceiling(8.0), 409)
-        self.assertEqual(tp.schedule_ceiling(16.0), 384)
-        self.assertEqual(tp.schedule_ceiling(40.0), 384)
+        # 500 counts below 20 mph (8.94 m/s), ramping to 409 by 30 mph (13.41 m/s).
+        self.assertEqual(tp.schedule_ceiling(0.0), 500)
+        self.assertEqual(tp.schedule_ceiling(8.94), 500)
+        self.assertEqual(tp.schedule_ceiling(13.41), 409)
+        self.assertEqual(tp.schedule_ceiling(40.0), 409)
 
     def test_midpoint_interpolates(self):
-        self.assertEqual(tp.schedule_ceiling(12.0), 396)   # halfway between 409 and 384
+        # Halfway along the ramp is 454.5, and round() is banker's -- 454, not 455. The
+        # carcontroller rounds the same way, so the tool has to reproduce the quirk rather
+        # than the arithmetic.
+        self.assertEqual(tp.schedule_ceiling((8.94 + 13.41) / 2), 454)
 
     def test_monotonically_descending(self):
         vals = [tp.schedule_ceiling(v / 2) for v in range(80)]
         self.assertEqual(vals, sorted(vals, reverse=True))
+
+    def test_it_never_exceeds_what_panda_will_accept(self):
+        # The whole risk of "opendbc schedules, panda is flat" is a schedule point above the
+        # panda ceiling: the car would command a frame panda silently drops. 512 is panda's.
+        for i in range(1000):
+            self.assertLessEqual(tp.schedule_ceiling(i / 10.0), 512, f"at {i / 10.0} m/s")
 
 
 class TestBands(unittest.TestCase):
@@ -79,6 +93,23 @@ class TestBands(unittest.TestCase):
         self.assertEqual(tp.band_of(18.0), "18+")
         self.assertEqual(tp.band_of(300.0), "18+")
 
+    def test_the_schedule_breakpoints_are_band_boundaries(self):
+        # "under 20 mph" has to be readable straight off the table. If 8.94 falls inside a
+        # band, every number for the regime this change is about is contaminated by frames
+        # from the regime it is not.
+        self.assertEqual(tp.band_of(8.93), "7-8.94")
+        self.assertEqual(tp.band_of(8.94), "8.94-13.41")
+        self.assertEqual(tp.band_of(13.40), "8.94-13.41")
+        self.assertEqual(tp.band_of(13.41), "13.41-18")
+
+    def test_the_full_ceiling_bands_are_exactly_the_sub_20mph_ones(self):
+        below = [n for n in tp.BAND_NAMES if n in ("0-3", "3-7", "7-8.94")]
+        self.assertEqual(len(below), 3)
+        for name in below:
+            lo, hi = (float(x) for x in name.split("-"))
+            self.assertEqual(tp.schedule_ceiling(lo), 500)
+            self.assertEqual(tp.schedule_ceiling(hi - 1e-6), 500)
+
     def test_negative_speed_has_no_band(self):
         # Not a crash and not band 0-3: an implausible reading must be visibly excluded.
         self.assertIsNone(tp.band_of(-1.0))
@@ -88,40 +119,42 @@ class TestStep(unittest.TestCase):
     """One frame of the car's own limiter, under each shape."""
 
     def setUp(self):
-        self.before = tp.Limits(409)
-        self.after = tp.Limits(tp.AFTER_FLAT)
+        self.before = tp.Limits(tp.BEFORE_FLAT)
+        self.after = tp.Limits(max(tp.AFTER_SCHEDULE[1]))
 
     def test_rate_limit_binds_from_zero(self):
         # STEER_DELTA_UP is 3, so a full-demand frame from rest cannot exceed 3 counts.
-        self.assertEqual(tp.step(1.0, 0, 0.0, self.after, 409, False), 3)
+        self.assertEqual(tp.step(1.0, 0, 0.0, self.before, 409, False), 3)
 
     def test_ceiling_binds_when_the_rate_limit_does_not(self):
-        self.assertEqual(tp.step(1.0, 409, 0.0, self.after, 409, False), 409)
-        self.assertEqual(tp.step(1.0, 384, 0.0, self.before, 384, True), 384)
+        self.assertEqual(tp.step(1.0, 409, 0.0, self.before, 409, False), 409)
+        self.assertEqual(tp.step(1.0, 500, 0.0, self.after, 500, True), 500)
 
     def test_the_two_shapes_differ_only_where_the_ceiling_does(self):
-        # At 25 m/s the schedule is 384 and flat is 409. Seeded at the old ceiling with full
-        # demand, BEFORE stays pinned and AFTER climbs by one rate step.
-        b = tp.step(1.0, 384, 0.0, self.before, tp.schedule_ceiling(25.0), True)
-        a = tp.step(1.0, 384, 0.0, self.after, tp.AFTER_FLAT, False)
-        self.assertEqual(b, 384)
-        self.assertEqual(a, 387)
+        # At 5 m/s the schedule is 500 and the flat build is 409. Seeded at the flat ceiling
+        # with full demand, BEFORE stays pinned and AFTER climbs by one rate step.
+        b = tp.step(1.0, 409, 0.0, self.before, tp.BEFORE_FLAT, False)
+        a = tp.step(1.0, 409, 0.0, self.after, tp.schedule_ceiling(5.0), True)
+        self.assertEqual(b, 409)
+        self.assertEqual(a, 412)
 
-    def test_below_the_lower_breakpoint_the_shapes_agree(self):
-        # Both ceilings are 409 under 8 m/s, so the change must be a no-op there.
-        for prev in (0, 100, 300, 409):
-            b = tp.step(0.9, prev, 0.0, self.before, tp.schedule_ceiling(5.0), True)
-            a = tp.step(0.9, prev, 0.0, self.after, tp.AFTER_FLAT, False)
-            self.assertEqual(b, a, f"seeded at {prev}")
+    def test_above_the_upper_breakpoint_the_shapes_agree(self):
+        # Both ceilings are 409 above 13.41 m/s, so the change must be a no-op on the
+        # freeway. This is the property the whole "under 20 mph only" framing rests on.
+        for v in (13.41, 16.0, 20.0, 25.0, 40.0):
+            for prev in (0, 100, 300, 409):
+                b = tp.step(0.9, prev, 0.0, self.before, tp.BEFORE_FLAT, False)
+                a = tp.step(0.9, prev, 0.0, self.after, tp.schedule_ceiling(v), True)
+                self.assertEqual(b, a, f"at {v} m/s seeded at {prev}")
 
     def test_driver_override_ramps_the_command_down_not_off(self):
         # driver_max_torque = STEER_MAX + (50 + driver)*2, clamped at 0, so heavy opposition
         # sets the target to 0. It does NOT get there in one frame: STEER_DELTA_DOWN is 7, and
         # the rate limiter floors each step at prev - 7. Asserting an instant zero here would
         # be asserting a car that does not exist, and would hide a broken rate limiter.
-        self.assertEqual(tp.step(1.0, 409, -300.0, self.after, 409, False), 402)
-        self.assertEqual(tp.step(1.0, 10, -300.0, self.after, 409, False), 3)
-        self.assertEqual(tp.step(1.0, 3, -300.0, self.after, 409, False), 0)
+        self.assertEqual(tp.step(1.0, 409, -300.0, self.before, 409, False), 402)
+        self.assertEqual(tp.step(1.0, 10, -300.0, self.before, 409, False), 3)
+        self.assertEqual(tp.step(1.0, 3, -300.0, self.before, 409, False), 0)
 
     def test_full_yield_point_moves_with_the_ceiling(self):
         # The quantified cost of the raise, and the one number that actually moves.
@@ -129,11 +162,13 @@ class TestStep(unittest.TestCase):
         # Override starts REDUCING authority at driver torque < -STEER_DRIVER_ALLOWANCE (-50)
         # for both ceilings -- that threshold does not scale. What scales is the point of FULL
         # yield, where driver_max_torque = M + (50 + d)*2 reaches zero: d <= -M/2 - 50, i.e.
-        # -242 at 384 and -254.5 at 409.
+        # -242 at 384, -254.5 at 409, and -300 at 500. That last one is the cost of this
+        # change stated in the units the driver actually feels: below 20 mph they must apply
+        # 18% more opposing torque before the system fully lets go.
         #
         # Seeded from 0 so the rate limiter is not what is being measured; from a saturated
         # previous frame the ramp-down floor hides the effect entirely.
-        for steer_max, yield_at in ((384, -242.0), (409, -254.5)):
+        for steer_max, yield_at in ((384, -242.0), (409, -254.5), (500, -300.0)):
             lim = tp.Limits(steer_max)
             self.assertGreater(tp.step(1.0, 0, yield_at + 1.0, lim, steer_max, False), 0,
                                f"{steer_max}: should not have fully yielded at {yield_at + 1}")
@@ -146,6 +181,12 @@ class TestStep(unittest.TestCase):
         between = -243.0
         self.assertEqual(tp.step(1.0, 0, between, tp.Limits(384), 384, False), 0)
         self.assertGreater(tp.step(1.0, 0, between, tp.Limits(409), 409, False), 0)
+
+    def test_500_keeps_steering_where_409_has_given_up(self):
+        # And the increment this change actually buys, at low speed.
+        between = -270.0
+        self.assertEqual(tp.step(1.0, 0, between, tp.Limits(409), 409, False), 0)
+        self.assertGreater(tp.step(1.0, 0, between, tp.Limits(500), 500, True), 0)
 
 
 class TestParamDriftGuard(unittest.TestCase):

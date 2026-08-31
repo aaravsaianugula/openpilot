@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""What flat 409 costs, measured against the recorded drives.
+"""What raising the sub-20mph ceiling to 500 costs, measured against the recorded drives.
 
 Two questions, answered in one pass, because a pass over the whole route store costs an hour.
 
@@ -8,6 +8,11 @@ Two questions, answered in one pass, because a pass over the whole route store c
    apply_driver_steer_torque_limits under each ceiling. Deliberately NOT `fraction * ceiling`:
    the rate limiter and the driver-torque envelope are history dependent, so the delta they
    produce is not the delta the multiplication predicts.
+
+   BEFORE is the flat 409 the recorded drives ACTUALLY ran, so the BEFORE chain is a real
+   one-frame prediction test -- it must reproduce the next recorded command exactly. AFTER is
+   the candidate ramp. When this tool measured the previous change the roles were reversed,
+   and the side being validated against reality was the schedule rather than the flat build.
 
    One step, not a free-running trajectory, and that is a deliberate limit rather than a
    shortcut. Lateral control is a feedback loop: a counterfactual that ran for 60 s would have
@@ -51,7 +56,12 @@ TORQUE_OFFSET = 1024
 OP_TX_SRC = 128          # src >= 128 is a frame openpilot transmitted
 CAMERA_BUS = 2           # the factory camera's own LKAS11 lives here
 
-SPEED_BANDS = ((0.0, 3.0), (3.0, 7.0), (7.0, 10.0), (10.0, 14.0), (14.0, 18.0), (18.0, 1e9))
+# The two schedule breakpoints are band edges on purpose. 20 mph fell INSIDE the old 7-10
+# band, so "what happens under 20 mph" could not be read off the table without mixing in
+# frames from above it. 0-3 / 3-7 / 7-8.94 are the full-500 regime, 8.94-13.41 is the ramp,
+# and everything above is bit-for-bit unchanged. This costs comparability with the 10-14 /
+# 14-18 split used elsewhere; lateral_report.py keeps those bands and is unchanged.
+SPEED_BANDS = ((0.0, 3.0), (3.0, 7.0), (7.0, 8.94), (8.94, 13.41), (13.41, 18.0), (18.0, 1e9))
 BAND_NAMES = [f"{lo:g}-{hi:g}" if hi < 1e9 else f"{lo:g}+" for lo, hi in SPEED_BANDS]
 
 # CarControllerParams for this platform, restated so the tool does not move when the checkout
@@ -62,8 +72,13 @@ DRIVER_ALLOWANCE = 50
 DRIVER_MULTIPLIER = 2
 DRIVER_FACTOR = 1
 
-BEFORE_SCHEDULE = ([8.0, 16.0], [409, 384])   # the superseded schedule, kept as the baseline
-AFTER_FLAT = 409                              # what replaces it
+BEFORE_FLAT = 409                             # what the recorded drives actually ran
+AFTER_SCHEDULE = ([8.94, 13.41], [500, 409])  # the candidate: 500 under 20 mph, 409 by 30 mph
+
+# panda enforces a flat ceiling and opendbc schedules underneath it, so the one way this
+# design fails is a schedule point above what panda will pass. Stated here so the tool can
+# refuse to report a projection of commands the car could never actually send.
+PANDA_CEILING = 512
 
 
 class Limits:
@@ -103,6 +118,11 @@ def assert_params_match() -> None:
     if mismatched:
         raise SystemExit("CarControllerParams no longer match this tool's copy: " + repr(mismatched))
 
+    over = [(v, schedule_ceiling(v)) for v in (i / 10.0 for i in range(1000))
+            if schedule_ceiling(v) > PANDA_CEILING]
+    if over:
+        raise SystemExit(f"the candidate schedule exceeds panda's {PANDA_CEILING} at {over[:5]}")
+
 
 def band_of(v: float) -> str | None:
     for (lo, hi), name in zip(SPEED_BANDS, BAND_NAMES, strict=False):
@@ -120,9 +140,13 @@ def decode_lkas11(dat: bytes):
 
 
 def schedule_ceiling(v: float) -> int:
-    """The carcontroller's own interpolation, restated: int(round(interp(vEgoRaw, bp, vals)))."""
+    """The carcontroller's own interpolation, restated: int(round(interp(vEgoRaw, bp, vals))).
+
+    round() is banker's in Python and the carcontroller uses the same call, so the halfway
+    point of the ramp is 454 and not 455. Reproducing the quirk is the point.
+    """
     import numpy as np
-    return int(round(float(np.interp(v, *BEFORE_SCHEDULE))))
+    return int(round(float(np.interp(v, *AFTER_SCHEDULE))))
 
 
 def new_band() -> dict:
@@ -197,8 +221,9 @@ def collect_segment(seg: str, factory: dict, tx: dict):
 def step(frac: float, prev: int, driver: float, limits, ceiling: int, scheduled: bool) -> int:
     """One frame of the car's own limiter, seeded from `prev`.
 
-    `scheduled` picks the shape: the fork hands the interpolated ceiling to the rate limiter as
-    well as using it as the multiplier, while flat 409 is upstream's shape and passes nothing.
+    `scheduled` picks the shape: a scheduled build hands the interpolated ceiling to the rate
+    limiter as well as using it as the multiplier, while a flat build is upstream's shape and
+    passes nothing. AFTER is the scheduled side here; BEFORE (flat 409) is not.
     """
     from opendbc.car.lateral import apply_driver_steer_torque_limits
     new_torque = int(round(frac * ceiling))
@@ -210,8 +235,8 @@ def step(frac: float, prev: int, driver: float, limits, ceiling: int, scheduled:
 def simulate_segment(seg: str, bands: dict, factory: dict, valid: dict, tx: dict) -> None:
     ccs, reals = collect_segment(seg, factory, tx)
 
-    lim_before = Limits(max(BEFORE_SCHEDULE[1]))
-    lim_after = Limits(AFTER_FLAT)
+    lim_before = Limits(BEFORE_FLAT)
+    lim_after = Limits(max(AFTER_SCHEDULE[1]))
 
     # carOutput at cycle k reports the CarController result computed from carControl at k-1, so
     # the car's own apply_torque_last while processing ccs[i] was reals[i], and the command it
@@ -225,9 +250,8 @@ def simulate_segment(seg: str, bands: dict, factory: dict, valid: dict, tx: dict
         if not lat:
             before = after = 0
         else:
-            ceil_before = schedule_ceiling(v_raw)
-            before = step(frac, prev, driver_tq, lim_before, ceil_before, True)
-            after = step(frac, prev, driver_tq, lim_after, AFTER_FLAT, False)
+            before = step(frac, prev, driver_tq, lim_before, BEFORE_FLAT, False)
+            after = step(frac, prev, driver_tq, lim_after, schedule_ceiling(v_raw), True)
 
         valid["paired"] += 1
         if before == reals[i + 1]:
@@ -252,9 +276,9 @@ def simulate_segment(seg: str, bands: dict, factory: dict, valid: dict, tx: dict
         b["after_sum_abs"] += aa
         b["before_max_abs"] = max(b["before_max_abs"], ab)
         b["after_max_abs"] = max(b["after_max_abs"], aa)
-        if ab >= schedule_ceiling(v_raw):
+        if ab >= BEFORE_FLAT:
             b["before_at_ceiling"] += 1
-        if aa >= AFTER_FLAT:
+        if aa >= schedule_ceiling(v_raw):
             b["after_at_ceiling"] += 1
         delta = after - before
         if delta:
@@ -361,7 +385,8 @@ def cmd_report(args) -> int:
         print("  !! lag 0 fits better than lag 1 -- the pipeline alignment assumed here has")
         print("     changed, and every delta below is measured against a shifted signal.")
 
-    print("\n--- what flat 409 changes, by speed band ---")
+    print(f"\n--- what {AFTER_SCHEDULE[1][0]} under {AFTER_SCHEDULE[0][0]} m/s changes, " +
+          f"by speed band (BEFORE = flat {BEFORE_FLAT}) ---")
     print(f"  {'band':>8} {'frames':>9} {'changed':>9} {'%chg':>7} {'mean|d|':>8} {'max|d|':>7} " +
           f"{'pin_before':>11} {'pin_after':>10} {'maxcmd_b':>9} {'maxcmd_a':>9}")
     tot_frames = tot_changed = 0

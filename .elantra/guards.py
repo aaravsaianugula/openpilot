@@ -33,11 +33,19 @@ PLATFORMS = ("HYUNDAI_ELANTRA_2024", "HYUNDAI_ELANTRA_HEV_2024")
 LFAHDA_MFC_LEN_CN7 = 8
 LFAHDA_MFC_LEN_STOCK = 4
 
-# The CN7 flat raised steering torque ceiling, stated here as the third opinion.
-# opendbc decides what the car commands, panda decides what it will let out, and these
-# literals are what both are checked against -- a guard that only compared the two against
-# each other would stay green while they moved together.
+# The CN7 raised steering torque ceiling, stated here as the third opinion. opendbc decides
+# what the car commands, panda decides what it will let out, and these literals are what both
+# are checked against -- a guard that only compared the two against each other would stay
+# green while they moved together.
+#
+# The ceiling is SPEED-SCHEDULED in opendbc and FLAT in panda. STEER_MAX_RAISED is the
+# high-speed end of the schedule and also opendbc's static fallback, so bypassing the schedule
+# lands on the flat 409 this car has already driven. panda sits above every point of it and
+# reads no speed at all.
 STEER_MAX_RAISED = 409
+STEER_MAX_RAISED_LOW = 500
+STEER_SCHEDULE_BP = (8.94, 13.41)     # 20 mph -> 30 mph
+PANDA_RAISED_CEILING = 512
 STEER_MAX_STOCK = 384
 STEER_RATES = (3, 7)
 
@@ -227,6 +235,18 @@ def _module_ints(source: str, names: tuple[str, ...]) -> dict:
     return out
 
 
+def _module_tuple(source: str, name: str):
+    """A top-level `NAME = (a, b)` literal, or None. Used to read the UI's copy of the
+    schedule breakpoints without importing the UI module (which pulls in pyray)."""
+    for stmt in ast.parse(source).body:
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1                 and isinstance(stmt.targets[0], ast.Name) and stmt.targets[0].id == name:
+            try:
+                return tuple(ast.literal_eval(stmt.value))
+            except (ValueError, SyntaxError, TypeError):
+                return None
+    return None
+
+
 def _platforms_with_flag(source: str, flag: str) -> set[str]:
     """Every platform whose flags= argument mentions HyundaiFlags.<flag>."""
     found: set[str] = set()
@@ -262,15 +282,22 @@ def guard_ui_headroom(repo: Path, opendbc: Path) -> None:
     if not (logic.is_file() and widget.is_file() and hud.is_file()):
         return
 
-    consts = _module_ints(read(logic), ("STOCK_COUNTS", "RAISED_COUNTS", "RAISED_LIMITS_FLAG"))
+    logic_src = read(logic)
+    consts = _module_ints(logic_src, ("STOCK_COUNTS", "RAISED_COUNTS", "RAISED_LIMITS_FLAG",
+                                      "RAISED_COUNTS_LOW_SPEED", "NEAR_MARGIN"))
     check("the UI's stock ceiling is " + str(STEER_MAX_STOCK),
           consts.get("STOCK_COUNTS") == STEER_MAX_STOCK,
           "found " + str(consts.get("STOCK_COUNTS"))
           + " -- the arc would mark the old line in the wrong place")
-    check("the UI's raised ceiling is " + str(STEER_MAX_RAISED),
+    check("the UI's high-speed ceiling is " + str(STEER_MAX_RAISED),
           consts.get("RAISED_COUNTS") == STEER_MAX_RAISED,
           "found " + str(consts.get("RAISED_COUNTS"))
           + " -- the arc would be scaled against a ceiling nothing commands")
+    check("the UI's low-speed ceiling is " + str(STEER_MAX_RAISED_LOW),
+          consts.get("RAISED_COUNTS_LOW_SPEED") == STEER_MAX_RAISED_LOW,
+          "found " + str(consts.get("RAISED_COUNTS_LOW_SPEED"))
+          + " -- the arc would paint the red at-the-limit tier while the car still had "
+          + "authority left, in the exact band the raise was made for")
 
     values = read(opendbc / "opendbc/car/hyundai/values.py")
     car_flags = _enum_members(values, "HyundaiFlags")
@@ -292,6 +319,29 @@ def guard_ui_headroom(repo: Path, opendbc: Path) -> None:
     check("exactly the CN7 carries the raised ceiling",
           raised_on == {"HYUNDAI_ELANTRA_2024"}, "found " + str(sorted(raised_on)))
 
+    # The UI's copy of the schedule has to agree with opendbc's at EVERY speed, not just at
+    # the endpoints -- a different breakpoint, or interpolating the other way round, puts the
+    # arc's edge a few counts off the car's for the whole ramp. Both are evaluated here and
+    # compared count for count.
+    ui_sched = _module_tuple(logic_src, "RAISED_SCHEDULE_BP")
+    car_sched = _schedule_in_else(values)
+    check("the UI carries a copy of the schedule breakpoints",
+          ui_sched is not None and len(ui_sched) == 2, "found " + str(ui_sched))
+    if ui_sched is not None and car_sched is not None:
+        car_bp, car_vals = car_sched
+        ui_lo, ui_hi = float(ui_sched[0]), float(ui_sched[1])
+        ui_vals = [consts.get("RAISED_COUNTS_LOW_SPEED"), consts.get("RAISED_COUNTS")]
+        mismatched = [
+            (v / 10.0, _interp_counts(v / 10.0, [ui_lo, ui_hi], ui_vals),
+             _interp_counts(v / 10.0, car_bp, car_vals))
+            for v in range(500)
+            if _interp_counts(v / 10.0, [ui_lo, ui_hi], ui_vals)
+            != _interp_counts(v / 10.0, car_bp, car_vals)
+        ]
+        check("the UI's ceiling equals opendbc's at every speed",
+              not mismatched,
+              f"{len(mismatched)} speeds disagree, first " + str(mismatched[:3]))
+
     # The arc reads the signed integer actually put on CAN, not the value normalised by
     # STEER_MAX. If opendbc stops populating it the bar reads a constant zero and simply never
     # lights: no error, no alert, just an indicator that has quietly stopped being one.
@@ -299,10 +349,21 @@ def guard_ui_headroom(repo: Path, opendbc: Path) -> None:
     check("carcontroller still reports the raw CAN counts the arc reads",
           "new_actuators.torqueOutputCan = apply_torque" in carctl,
           "the arc would read zero for ever and never light")
+    widget_src = read(widget)
     check("the arc still reads torqueOutputCan rather than the normalised value",
-          "torqueOutputCan" in read(widget),
-          "normalising by STEER_MAX draws 409 exactly where 384 used to be, "
+          "torqueOutputCan" in widget_src,
+          "normalising by STEER_MAX draws the raised ceiling exactly where 384 used to be, "
           + "which is the whole bug this exists to fix")
+    # Raw counts only mean something against the ceiling in force, so the widget has to feed
+    # the state a speed. Without this the arc silently reverts to a fixed 409 and paints the
+    # limit tier 91 counts early at low speed -- the failure this whole section guards.
+    # Matched on the CALL, not on the word appearing anywhere in the file. A substring check
+    # here passes on the explanatory comment above the call, so replacing the live speed with
+    # a constant went undetected -- found by mutating this guard rather than by trusting it.
+    check("the arc feeds the live speed to the headroom state",
+          re.search(r"self\._state\.update\([^)]*carState'\]\.vEgoRaw\s*\)", widget_src)
+          is not None,
+          "the ceiling would be frozen at the high-speed value at every speed")
 
     hud_src = read(hud)
     check("SteerHeadroomBar is installed in the SP mici HUD",
@@ -496,6 +557,52 @@ def _raised_assigned_in_else(source: str) -> bool:
     return False
 
 
+def _schedule_in_else(source: str):
+    """The STEER_MAX_LOOKUP assigned inside the RAISED_LIMITS branch, or None.
+
+    Same walk and the same reason as _raised_assigned_in_else: the schedule has to live inside
+    the tail `else` of the STEER_MAX chain. Assigned outside it, a car carrying RAISED_LIMITS
+    together with ALT_LIMITS_2 would command 500 while panda enforced 170, and no amount of
+    text matching can tell the two placements apart.
+    """
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.FunctionDef) and node.name == "__init__"):
+            continue
+        for stmt in ast.walk(node):
+            if not isinstance(stmt, ast.If):
+                continue
+            if not stmt.orelse or isinstance(stmt.orelse[0], ast.If):
+                continue
+            for inner in ast.walk(ast.Module(body=stmt.orelse, type_ignores=[])):
+                if not isinstance(inner, ast.If) or "RAISED_LIMITS" not in ast.dump(inner.test):
+                    continue
+                for asn in ast.walk(ast.Module(body=inner.body, type_ignores=[])):
+                    if not isinstance(asn, ast.Assign):
+                        continue
+                    if not any(getattr(t, "attr", None) == "STEER_MAX_LOOKUP" for t in asn.targets):
+                        continue
+                    try:
+                        bp, vals = ast.literal_eval(asn.value)
+                        return [float(x) for x in bp], [int(v) for v in vals]
+                    except (ValueError, SyntaxError, TypeError):
+                        return None
+    return None
+
+
+def _interp_counts(v: float, bp, vals) -> int:
+    """int(round(interp(...))) without numpy, so guards.py stays import-free."""
+    if v <= bp[0]:
+        return int(vals[0])
+    if v >= bp[-1]:
+        return int(vals[-1])
+    for i in range(len(bp) - 1):
+        if bp[i] <= v <= bp[i + 1]:
+            f = (v - bp[i]) / (bp[i + 1] - bp[i])
+            return int(round(vals[i] + f * (vals[i + 1] - vals[i])))
+    return int(vals[-1])
+
+
 def guard_panda_enforcement(opendbc: Path) -> None:
     """What lateral.h actually DOES with the limits hyundai.h declares.
 
@@ -541,13 +648,13 @@ def guard_panda_enforcement(opendbc: Path) -> None:
 
 
 def guard_raised_torque_pair(opendbc: Path) -> None:
-    """The CN7 flat raised torque ceiling, end to end.
+    """The CN7 raised torque ceiling, end to end: scheduled in opendbc, flat in panda.
 
     The ceiling lives in four files that cannot see each other, and every link has a failure
     mode that looks exactly like success. Each check below exists because breaking that link
     alone leaves every other check green.
     """
-    print("\n[values.py <-> safety] flat raised steering torque")
+    print("\n[values.py <-> safety] raised steering torque, scheduled in opendbc and flat in panda")
     values = read(opendbc / "opendbc/car/hyundai/values.py")
     carctl = read(opendbc / "opendbc/car/hyundai/carcontroller.py")
     iface = read(opendbc / "opendbc/car/hyundai/interface.py")
@@ -564,15 +671,39 @@ def guard_raised_torque_pair(opendbc: Path) -> None:
     check(f"the stock ceiling under it is still {STEER_MAX_STOCK}",
           re.search(rf"self\.STEER_MAX\s*=\s*{STEER_MAX_STOCK}\b", values) is not None)
 
-    # carcontroller must be upstream's shape. The flat ceiling needs no per-frame ceiling at
-    # all, so anything left of the schedule here means a half-applied change.
-    check("carcontroller multiplies by the static STEER_MAX",
-          "int(round(actuators.torque * self.params.STEER_MAX))" in carctl)
-    check("carcontroller normalises the feedback by the same STEER_MAX",
-          "new_actuators.torque = apply_torque / self.params.STEER_MAX" in carctl)
-    for dead in ("STEER_MAX_LOOKUP", "steer_max"):
-        check(f"no {dead} left in carcontroller", dead not in carctl,
-              "a flat ceiling needs none of the schedule machinery; leftovers mean half-applied")
+    # --- the schedule, and the branch it has to live in --------------------------------
+    sched = _schedule_in_else(values)
+    check("the low-speed schedule is assigned inside the same else branch",
+          sched is not None,
+          "assigned outside it, a car carrying RAISED_LIMITS and ALT_LIMITS_2 would command " +
+          f"{STEER_MAX_RAISED_LOW} where panda enforces 170")
+    if sched is not None:
+        bp, vals = sched
+        check(f"the schedule runs {STEER_MAX_RAISED_LOW} -> {STEER_MAX_RAISED}",
+              vals == [STEER_MAX_RAISED_LOW, STEER_MAX_RAISED], "found " + str(vals))
+        check(f"over {STEER_SCHEDULE_BP[0]} -> {STEER_SCHEDULE_BP[1]} m/s",
+              tuple(bp) == STEER_SCHEDULE_BP, "found " + str(tuple(bp)))
+        # The fail-safe. Anything that bypasses the schedule falls back on the static
+        # STEER_MAX, and that must be the value the car has already been driving.
+        check("the high-speed end of the schedule IS the static STEER_MAX",
+              vals[-1] == STEER_MAX_RAISED,
+              "a bypass would then change freeway behaviour instead of being a no-op")
+        check("the schedule never gains authority with speed",
+              vals == sorted(vals, reverse=True), "found " + str(vals))
+
+    # carcontroller now evaluates a per-frame ceiling. Both the multiplier and the rate
+    # limiter must receive it: handing it to only one commands a torque the limiter clips,
+    # or clips to a ceiling the command never reaches. The wire test in opendbc's own
+    # test_hyundai.py executes this; these checks are the cheap text-level twin.
+    check("carcontroller multiplies by the per-frame ceiling",
+          "steer_max = self.params.steer_max_at(CS.out.vEgoRaw)" in carctl
+          and "int(round(actuators.torque * steer_max))" in carctl)
+    check("carcontroller hands the same ceiling to the rate limiter",
+          "self.params, steer_max)" in carctl,
+          "without it the limiter clips back to the static STEER_MAX and the raise is dead")
+    check("carcontroller normalises the feedback by that same ceiling",
+          "new_actuators.torque = apply_torque / steer_max" in carctl,
+          "dividing by a different ceiling feeds the torque learner a demand that never existed")
 
     # --- the bridge -------------------------------------------------------------------
     check("interface.py carries the car flag into safetyParam",
@@ -588,14 +719,25 @@ def guard_raised_torque_pair(opendbc: Path) -> None:
           "anything else is a different enforcement path with different fudges")
     if inst is not None:
         args = [a.strip() for a in inst.group(1).split(",")]
-        check(f"panda's ceiling is {STEER_MAX_RAISED}",
-              args[:1] == [str(STEER_MAX_RAISED)], "found " + str(args[:1]))
+        check(f"panda's flat ceiling is {PANDA_RAISED_CEILING}",
+              args[:1] == [str(PANDA_RAISED_CEILING)], "found " + str(args[:1]))
+        # THE cross-check for this design. opendbc schedules underneath a flat panda, so the
+        # one way it fails is a schedule point above what panda will pass -- the car would
+        # command a frame panda silently drops, and nothing else here would notice.
+        if sched is not None:
+            bp, vals = sched
+            worst = max(_interp_counts(v / 10.0, bp, vals) for v in range(1000))
+            check(f"every point of the schedule is within panda's {PANDA_RAISED_CEILING}",
+                  worst <= int(args[0]) if args[:1] and args[0].isdigit() else False,
+                  f"schedule peaks at {worst}")
         check(f"steer ramp rates are unchanged at {rate_up}/{rate_down}",
               args[1:3] == [str(rate_up), str(rate_down)], "found " + str(args[1:3]))
 
-    # The flat ceiling exists to be speed-independent. If anything puts the CN7 back on the
+    # PANDA stays speed-independent even though opendbc no longer is. That asymmetry is the
+    # design: the schedule has to be right about the speed to steer well, but panda does not
+    # have to be right about the speed to be safe. If anything puts the CN7 back on panda's
     # dynamic path, panda silently regains the -1 m/s shift and the +1 count of slack, and
-    # every "speed cannot move the ceiling" claim on this branch becomes false.
+    # every "no speed reading can move what panda accepts" claim on this branch becomes false.
     for dead in ("dynamic_max_torque", "HYUNDAI_LIMITS_DYNAMIC", "max_torque_lookup"):
         check(f"no {dead} anywhere on the hyundai path",
               dead not in safety and dead not in common_h)
