@@ -3,9 +3,15 @@
 
 The safety unit tests sweep synthetic torques against synthetic speeds. This does the opposite:
 it takes the speeds, driver torques and lateral-active state the car actually saw, runs the real
-opendbc limiter over them to get the command the flat ceiling would produce, and pushes each
-frame through the real compiled libsafety in RAISED_LIMITS mode. A single rejection means
+opendbc limiter over them to get the command the SCHEDULED ceiling would produce, and pushes
+each frame through the real compiled libsafety in RAISED_LIMITS mode. A single rejection means
 openpilot and panda disagree somewhere the car has actually been.
+
+This matters more since the ceiling stopped being flat. opendbc now interpolates 500 counts
+below 20 mph down to 409 by 30 mph while panda enforces one flat number and reads no speed at
+all, so the two sides no longer agree by construction -- they agree only if every point of the
+schedule sits under panda's ceiling. This replays the schedule against the speeds the car
+really drove, which is the one check that exercises that at the operating points that exist.
 
 Three things make this a test rather than a demonstration:
 
@@ -32,20 +38,24 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-RAISED = 409
-TOO_HIGH = 420          # the control: above what panda is configured to accept
+PANDA_CEILING = 512     # HYUNDAI_STEERING_LIMITS_RAISED in opendbc/safety/modes/hyundai.h
+TOO_HIGH = PANDA_CEILING + 1   # the control: above what panda is configured to accept
 SAMPLE_FILL = 12        # rx enough speed frames to fill panda's sample window at the start
 FRAME_US = 10_000       # LKAS11 is 100 Hz; panda's RT checks are wall-clock, so the replay
                         # has to advance the clock or it measures its own iteration speed
 
 
 def build_frames(seg: str, ceiling: int):
-    """(speed, driver_torque, command) per engaged frame, command from the real limiter."""
+    """(speed, driver_torque, command) per engaged frame, command from the real limiter.
+
+    `ceiling` is a callable v_ego_raw -> counts, so the same code path replays the real speed
+    schedule and the flat over-ceiling control without either being a special case.
+    """
     from opendbc.car.lateral import apply_driver_steer_torque_limits
     from openpilot.tools.lib.logreader import LogReader
     import torque_projection as tp
 
-    lim = tp.Limits(ceiling)
+    lim = tp.Limits(max(ceiling(v / 10.0) for v in range(500)))
     out = []
     last = 0
     v = 0.0
@@ -60,8 +70,9 @@ def build_frames(seg: str, ceiling: int):
             if not bool(cc.latActive):
                 last = 0
                 continue
+            steer_max = ceiling(v)
             cmd = apply_driver_steer_torque_limits(
-                int(round(float(cc.actuators.torque) * ceiling)), last, drv, lim)
+                int(round(float(cc.actuators.torque) * steer_max)), last, drv, lim, steer_max)
             last = cmd
             out.append((v, drv, cmd))
     return out
@@ -131,6 +142,12 @@ def main() -> int:
     ap.add_argument("--segments", type=int, default=12)
     args = ap.parse_args()
 
+    def scheduled_ceiling(v: float) -> int:
+        # Imported here rather than from opendbc so the replay measures the schedule this
+        # harness was pointed at, and cannot silently agree with whatever is checked out.
+        import torque_projection as tp
+        return tp.schedule_ceiling(v)
+
     segs = sorted(glob.glob(str(Path(args.routes) / "*" / "rlog.zst")))
     # Spread across the whole store rather than taking the tail, so one drive's conditions
     # cannot stand in for all of them.
@@ -146,7 +163,7 @@ def main() -> int:
     for seg in chosen:
         name = os.path.basename(os.path.dirname(seg))
         try:
-            frames = build_frames(seg, RAISED)
+            frames = build_frames(seg, scheduled_ceiling)
         except Exception as e:
             print(f"  {name}: UNREADABLE {type(e).__name__}: {e}")
             return 1
@@ -156,14 +173,16 @@ def main() -> int:
         total += len(frames)
         all_rejected += replay(frames, name)
 
-        # The control, on the same segment: a sequence built against 420 must NOT all pass.
-        ctl = build_frames(seg, TOO_HIGH)
-        rej = replay(ctl, name + " [control @420]", verbose=False)
+        # The control, on the same segment: a sequence built above panda's ceiling must NOT
+        # all pass. It has to be above 512 now, not above the commanded 409 -- panda's ceiling
+        # is what rejects, and a control at 420 would sail straight through and prove nothing.
+        ctl = build_frames(seg, lambda _v: TOO_HIGH)
+        rej = replay(ctl, name + f" [control @{TOO_HIGH}]", verbose=False)
         control_total += len(ctl)
         control_accepted += len(ctl) - len(rej)
 
     print(f"\n{'-' * 62}")
-    print(f"flat {RAISED} replay: {total} engaged frames, {len(all_rejected)} rejected by panda")
+    print(f"scheduled replay: {total} engaged frames, {len(all_rejected)} rejected by panda")
     print(f"control @{TOO_HIGH}:  {control_total} frames, {control_accepted} accepted " +
           f"({100 * control_accepted / max(control_total, 1):.2f}%)")
 
@@ -177,7 +196,7 @@ def main() -> int:
     if all_rejected:
         print("FAILED: panda rejected frames openpilot would have commanded")
         return 1
-    print("PASSED: panda accepted every frame the flat ceiling would produce, at every")
+    print("PASSED: panda accepted every frame the SCHEDULED ceiling would produce, at every")
     print("        speed the car actually drove -- and rejected the over-ceiling control.")
     return 0
 
