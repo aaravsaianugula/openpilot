@@ -26,11 +26,12 @@ from pathlib import Path
 
 PLATFORMS = ("HYUNDAI_ELANTRA_2024", "HYUNDAI_ELANTRA_HEV_2024")
 
-# The two halves of the CN7 2024 LFAHDA_MFC widening. These must always agree: the dbc says
-# how many bytes openpilot packs into 0x485, the safety code says how many bytes panda will
-# allow out. A mismatch is not cosmetic drift -- it is either a car that refuses to steer or
-# a safety allow-list wider than the message it guards.
-LFAHDA_MFC_LEN = 8
+# LFAHDA_MFC 0x485 is 8 bytes on the CN7 bus and 4 on every other Hyundai CAN platform.
+# panda allow-list matching is on EXACT length, so it must carry both entries and
+# hyundai_tx_hook picks by flag. A guard that only checked the CN7 half would stay green
+# while the other 79 platforms were widened along with it.
+LFAHDA_MFC_LEN_CN7 = 8
+LFAHDA_MFC_LEN_STOCK = 4
 
 # The CN7 flat raised steering torque ceiling, stated here as the third opinion.
 # opendbc decides what the car commands, panda decides what it will let out, and these
@@ -41,8 +42,8 @@ STEER_MAX_STOCK = 384
 STEER_RATES = (3, 7)
 
 EXPECTED_FLAGS = {
-    "HYUNDAI_ELANTRA_2024": {"CHECKSUM_CRC8", "CAMERA_SCC", "RAISED_LIMITS"},
-    "HYUNDAI_ELANTRA_HEV_2024": {"CHECKSUM_CRC8", "CAMERA_SCC", "HYBRID"},
+    "HYUNDAI_ELANTRA_2024": {"CHECKSUM_CRC8", "CAMERA_SCC", "RAISED_LIMITS", "LFAHDA_MFC_8"},
+    "HYUNDAI_ELANTRA_HEV_2024": {"CHECKSUM_CRC8", "CAMERA_SCC", "HYBRID", "LFAHDA_MFC_8"},
 }
 
 EXPECTED_CAR_LIST = {
@@ -139,26 +140,57 @@ def guard_hyundaican(opendbc: Path) -> None:
 
 
 def guard_lfahda_pair(opendbc: Path) -> None:
-    """The safety-critical one. dbc byte count and panda TX length must agree."""
+    """The safety-critical one. Per platform, dbc byte count and panda TX length must agree."""
     print("\n[dbc <-> safety] LFAHDA_MFC 0x485 length agreement")
 
-    dbc_src = read(opendbc / "opendbc/dbc/generator/hyundai/hyundai_can.dbc")
-    dbc_match = re.search(r"^BO_\s+1157\s+LFAHDA_MFC:\s*(\d+)\s", dbc_src, re.MULTILINE)
-    check("LFAHDA_MFC message found in hyundai_can.dbc", dbc_match is not None)
-    dbc_len = int(dbc_match.group(1)) if dbc_match else -1
-    check("hyundai_can.dbc declares LFAHDA_MFC as " + str(LFAHDA_MFC_LEN) + " bytes",
-          dbc_len == LFAHDA_MFC_LEN, "found " + str(dbc_len))
+    def dbc_len(name: str) -> int:
+        src = read(opendbc / ("opendbc/dbc/generator/hyundai/" + name))
+        m = re.search(r"^BO_\s+1157\s+LFAHDA_MFC:\s*(\d+)\s", src, re.MULTILINE)
+        check("LFAHDA_MFC message found in " + name, m is not None)
+        return int(m.group(1)) if m else -1
+
+    cn7 = dbc_len("hyundai_can_cn7.dbc")
+    check("hyundai_can_cn7.dbc declares LFAHDA_MFC as " + str(LFAHDA_MFC_LEN_CN7) + " bytes",
+          cn7 == LFAHDA_MFC_LEN_CN7, "found " + str(cn7))
+
+    stock = dbc_len("hyundai_can.dbc")
+    check("the SHARED hyundai_can.dbc is still " + str(LFAHDA_MFC_LEN_STOCK) + " bytes",
+          stock == LFAHDA_MFC_LEN_STOCK,
+          "found " + str(stock) + " -- widening the shared dbc changes every Hyundai CAN " +
+          "platform, not just the CN7")
+
+    values = read(opendbc / "opendbc/car/hyundai/values.py")
+    for platform in PLATFORMS:
+        block = re.search(re.escape(platform) + r"\s*=\s*HyundaiPlatformConfig\((.*?)\n  \)",
+                          values, re.S)
+        check(platform + " platform block parsed", block is not None)
+        if block is not None:
+            check(platform + " uses hyundai_can_cn7_generated",
+                  "hyundai_can_cn7_generated" in block.group(1),
+                  "it would pack 4 bytes into a message this bus carries as 8")
 
     safety_src = read(opendbc / "opendbc/safety/modes/hyundai.h")
-    safety_match = re.search(r"\{\s*0x485\s*,\s*0\s*,\s*(\d+)\s*,", safety_src)
-    check("0x485 TX entry found in safety/modes/hyundai.h", safety_match is not None)
-    safety_len = int(safety_match.group(1)) if safety_match else -1
-    check("panda safety allows " + str(LFAHDA_MFC_LEN) + " bytes on 0x485",
-          safety_len == LFAHDA_MFC_LEN, "found " + str(safety_len))
+    lens = sorted(int(m) for m in re.findall(r"\{\s*0x485\s*,\s*0\s*,\s*(\d+)\s*,", safety_src))
+    check("panda allow-list carries BOTH 0x485 lengths",
+          lens == [LFAHDA_MFC_LEN_STOCK, LFAHDA_MFC_LEN_CN7],
+          "found " + str(lens) + " -- tx_msg_safety_check matches exact length, so a single " +
+          "entry silently blocks every platform that uses the other one")
 
-    check("dbc and safety lengths agree",
-          dbc_len == safety_len and dbc_len == LFAHDA_MFC_LEN,
-          "dbc=" + str(dbc_len) + " safety=" + str(safety_len) + " -- these must never diverge")
+    check("hyundai_tx_hook gates 0x485 length on the flag",
+          re.search(r"hyundai_lfahda_mfc_8\s*\?\s*8U\s*:\s*4U", safety_src) is not None,
+          "without this both lengths are accepted for every platform")
+
+    common_h = read(opendbc / "opendbc/safety/modes/hyundai_common.h")
+    check("the flag is assigned from the safety param",
+          re.search(r"hyundai_lfahda_mfc_8\s*=\s*GET_FLAG\(param,\s*HYUNDAI_PARAM_LFAHDA_MFC_8\)",
+                    common_h) is not None,
+          "the flag would be false forever and the CN7 could not send 0x485 at all")
+
+    iface = read(opendbc / "opendbc/car/hyundai/interface.py")
+    check("interface.py carries the LFAHDA_MFC_8 car flag into safetyParam",
+          re.search(r"HyundaiFlags\.LFAHDA_MFC_8[\s\S]{0,160}?" +
+                    r"HyundaiSafetyFlags\.LFAHDA_MFC_8\.value", iface) is not None,
+          "panda would enforce 4 bytes on a car whose dbc packs 8")
 
 
 def guard_car_list(opendbc: Path) -> None:

@@ -82,9 +82,11 @@ limiter frame-by-frame under both ceilings seeded from the torque the car was ac
 **Read that table before you drive.** The car already had 409 below 8 m/s under the schedule, so
 this change does **nothing at all** in the low-speed band the original shortfall measurement was
 about. Its entire practical effect is at road and highway speed, where it moves about half of all
-frames by roughly two counts, and where the car has no prior road data at 409.
+frames by roughly two counts. That WAS the regime with no road data; it no longer is (see
+"What flat 409 has actually driven" below).
 
-That inverts the old test plan. The freeway used to be the control. It is now the experiment.
+That inverted the old test plan: the freeway used to be the control and became the experiment.
+It has since been driven -- see below -- so it is now an experiment with results.
 
 For reference, how often the command is actually pinned at its ceiling on the current build:
 0.279% of frames at 0–3 m/s, 0.346% at 3–7, 0.023% at 7–10, ~0 above. The schedule already
@@ -150,12 +152,34 @@ Empty lot first. Hands on the wheel throughout.
    that feels sharper or twitchier than you are used to, and for any oscillation on a long
    constant-radius curve.
 
+### What flat 409 has actually driven
+
+Measured 2026-08-31 from the recorded drives, re-scanned with the corrected EPS fault counter
+(the old one counted MDPS fault frames whether or not openpilot was steering, which made any
+"rate" built on it meaningless -- three routes in the store carry 1,271 / 938 / 556 fault frames
+against ZERO engaged frames).
+
+| route | build | engaged frames | EPS faults **while steering** | max \|counts\| at 18+ m/s | frames at 409, 18+ |
+|---|---|---|---|---|---|
+| 000000bd | speed schedule | 50,822 | 0 | 337 | 0 |
+| 000000c5 | **flat 409** | 401,042 | **1** | **409** | 93 |
+| 000000c6 | **flat 409** | 310,382 | **0** | **409** | 206 |
+
+So flat 409 has ~711,000 engaged frames behind it with **one** EPS fault frame in total
+(0.00014%), and the ceiling is demonstrably reached at highway speed -- which the schedule build
+never did (its max above 18 m/s is 337, below even the old 384). Across every flat-409 route in
+the store the totals are ~959,000 engaged frames, with zero EPS faults in every band above
+3 m/s.
+
+This is observational, not a controlled A/B: the routes are different drives on different roads.
+It is evidence that the ceiling does not provoke the MDPS, not proof that it never will.
+
 ### Stop if
 
 - Any new EPS fault, or "Steering Assist Temporarily Unavailable". `CF_Mdps_ToiFlt` is logged per
   drive for exactly this.
 - Any oscillation or hunting, **especially on the highway** — that is where the gain increase is
-  uncompensated and where there is no prior road data at 409.
+  compensated only above 15 m/s by the learner, and where the ceiling is genuinely reached.
 - Overriding is harder than the +5.2% above would explain.
 - Anything at all different below 8 m/s. Nothing changed there; a difference means the build is
   not what you think it is.
@@ -257,8 +281,9 @@ evidence is real evidence; it just should not be reported as something it is not
 
 What remains genuinely unknown:
 
-- **Sustained saturation at 409 above 8 m/s.** No road data exists there — that is precisely the
-  regime this change opens, and only the highway leg of the drive closes it.
+- **Sustained saturation at 409 above 8 m/s.** Reaching the ceiling there is now measured (see
+  below) but only in short bursts -- a few hundred frames out of ~580k. A long, continuously
+  saturated highway curve has still not been driven, and that is the case that remains open.
 - **Where the tune settles.** The learner is valid and converged, but it re-converges against
   the new gain only from samples above 15 m/s. Below that the +6.51% stays uncompensated
   indefinitely. The car you drive tomorrow is not the car you drive in a week, and neither is
