@@ -217,6 +217,117 @@ def guard_torque(opendbc: Path) -> None:
         check(platform + " has a torque substitute", '"' + platform + '"' in source)
 
 
+def _module_ints(source: str, names: tuple[str, ...]) -> dict:
+    """{name: value} for top-level `NAME = <int expr>` assignments. Missing names are absent."""
+    out: dict = {}
+    for stmt in ast.parse(source).body:
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
+                and isinstance(stmt.targets[0], ast.Name) and stmt.targets[0].id in names:
+            out[stmt.targets[0].id] = _int_expr(stmt.value)
+    return out
+
+
+def _platforms_with_flag(source: str, flag: str) -> set[str]:
+    """Every platform whose flags= argument mentions HyundaiFlags.<flag>."""
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
+            continue
+        names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        for kw in node.value.keywords:
+            if kw.arg != "flags":
+                continue
+            for sub in ast.walk(kw.value):
+                if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name) \
+                        and sub.value.id == "HyundaiFlags" and sub.attr == flag:
+                    found.update(names)
+    return found
+
+
+def guard_ui_headroom(repo: Path, opendbc: Path) -> None:
+    """The onroad arc's two ceilings, and the chain that has to hold for it to mean anything.
+
+    This is display only -- it cannot change what the car commands -- so what is guarded here
+    is not safety but honesty. An arc that says "past the stock ceiling" while reading a stale
+    constant, the wrong flag, or a field nothing populates any more is worse than no arc at
+    all, because it is the instrument this build's raised ceiling gets judged by.
+    """
+    print("\n[ui] steering headroom indicator")
+    onroad = repo / "openpilot/selfdrive/ui/sunnypilot/mici/onroad"
+    logic, widget = onroad / "steer_headroom.py", onroad / "steer_headroom_bar.py"
+    hud = onroad / "hud_renderer.py"
+    for f in (logic, widget):
+        check("overlay file " + f.name + " present", f.is_file(),
+              "a dropped overlay file is an ImportError on the driving screen")
+    if not (logic.is_file() and widget.is_file() and hud.is_file()):
+        return
+
+    consts = _module_ints(read(logic), ("STOCK_COUNTS", "RAISED_COUNTS", "RAISED_LIMITS_FLAG"))
+    check("the UI's stock ceiling is " + str(STEER_MAX_STOCK),
+          consts.get("STOCK_COUNTS") == STEER_MAX_STOCK,
+          "found " + str(consts.get("STOCK_COUNTS"))
+          + " -- the arc would mark the old line in the wrong place")
+    check("the UI's raised ceiling is " + str(STEER_MAX_RAISED),
+          consts.get("RAISED_COUNTS") == STEER_MAX_RAISED,
+          "found " + str(consts.get("RAISED_COUNTS"))
+          + " -- the arc would be scaled against a ceiling nothing commands")
+
+    values = read(opendbc / "opendbc/car/hyundai/values.py")
+    car_flags = _enum_members(values, "HyundaiFlags")
+    check("HyundaiFlags parsed",
+          bool(car_flags) and all(v is not None for v in car_flags.values()),
+          "the enum could not be read, so the flag check below would be vacuous")
+    # opendbc defines RAISED_LIMITS twice: 2**27 on HyundaiFlags, which is what CarParams.flags
+    # carries, and 1024 on HyundaiSafetyFlags, which goes into the safety param. 1024 in
+    # CarParams.flags is a different flag on a different platform, so reading the wrong one
+    # both fails to arm here and arms on a car this arc was never measured against.
+    check("the UI tests HyundaiFlags.RAISED_LIMITS, not the safety-param bit",
+          consts.get("RAISED_LIMITS_FLAG") is not None
+          and consts.get("RAISED_LIMITS_FLAG") == car_flags.get("RAISED_LIMITS"),
+          "UI has " + str(consts.get("RAISED_LIMITS_FLAG"))
+          + ", HyundaiFlags.RAISED_LIMITS is " + str(car_flags.get("RAISED_LIMITS")))
+    # If another platform ever takes the raised ceiling, 384 stops being the line that platform
+    # came from, and this arc has to be re-thought rather than silently inherited.
+    raised_on = _platforms_with_flag(values, "RAISED_LIMITS")
+    check("exactly the CN7 carries the raised ceiling",
+          raised_on == {"HYUNDAI_ELANTRA_2024"}, "found " + str(sorted(raised_on)))
+
+    # The arc reads the signed integer actually put on CAN, not the value normalised by
+    # STEER_MAX. If opendbc stops populating it the bar reads a constant zero and simply never
+    # lights: no error, no alert, just an indicator that has quietly stopped being one.
+    carctl = read(opendbc / "opendbc/car/hyundai/carcontroller.py")
+    check("carcontroller still reports the raw CAN counts the arc reads",
+          "new_actuators.torqueOutputCan = apply_torque" in carctl,
+          "the arc would read zero for ever and never light")
+    check("the arc still reads torqueOutputCan rather than the normalised value",
+          "torqueOutputCan" in read(widget),
+          "normalising by STEER_MAX draws 409 exactly where 384 used to be, "
+          + "which is the whole bug this exists to fix")
+
+    hud_src = read(hud)
+    check("SteerHeadroomBar is installed in the SP mici HUD",
+          "steer_headroom_bar import SteerHeadroomBar" in hud_src
+          and re.search(r"self\._torque_bar\s*=\s*SteerHeadroomBar\(", hud_src) is not None,
+          "the widget exists but the arc on screen is still upstream's")
+
+    # It subclasses upstream rather than copying it, so upstream's shape is a real dependency.
+    # A rename there is an ImportError on the driving screen, which is not a place to find one.
+    upstream = repo / "openpilot/selfdrive/ui/mici/onroad/torque_bar.py"
+    if not upstream.is_file():
+        check("upstream torque_bar.py present", False,
+              "SteerHeadroomBar has nothing to subclass. In a sparse checkout, "
+              + "git sparse-checkout add openpilot/selfdrive/ui/mici/onroad")
+        return
+    up = read(upstream)
+    for name in ("class TorqueBar", "def arc_bar_pts", "TORQUE_ANGLE_SPAN"):
+        check("upstream still provides " + name, name in up,
+              "SteerHeadroomBar imports it by name")
+    check("arc_bar_pts still takes cap_radius",
+          re.search(r"def arc_bar_pts\([^)]*cap_radius", up, re.S) is not None)
+    check("TorqueBar still takes demo, scale and always",
+          re.search(r"class TorqueBar.*?def __init__\(self, demo[^)]*scale[^)]*always", up, re.S) is not None)
+
+
 def guard_superproject(repo: Path) -> None:
     print("\n[superproject] submodule wiring")
     gitmodules = read(repo / ".gitmodules")
@@ -567,6 +678,7 @@ def main() -> int:
     guard_torque(opendbc)
     if args.repo:
         guard_superproject(args.repo.resolve())
+        guard_ui_headroom(args.repo.resolve(), opendbc)
         guard_opendbc_pin(args.repo.resolve(), opendbc)
 
     print("\n" + "-" * 60)
