@@ -62,7 +62,7 @@ DRIVER_ALLOWANCE = 50
 DRIVER_MULTIPLIER = 2
 DRIVER_FACTOR = 1
 
-BEFORE_SCHEDULE = ([8.0, 16.0], [409, 384])   # what is on the car today
+BEFORE_SCHEDULE = ([8.0, 16.0], [409, 384])   # the superseded schedule, kept as the baseline
 AFTER_FLAT = 409                              # what replaces it
 
 

@@ -105,7 +105,7 @@ CASES = [
      "HYUNDAI_STEERING_LIMITS_RAISED = HYUNDAI_LIMITS(409, 3, 7);",
      ("HYUNDAI_STEERING_LIMITS_RAISED = { .max_torque = 409, .dynamic_max_torque = true, " +
      ".max_torque_lookup = { {8., 16., 16.}, {409., 384., 384.} }, " +
-     "HYUNDAI_LIMITS_COMMON(3, 7) };")),
+     ".max_rate_up = 3, .max_rate_down = 7, .type = TorqueDriverLimited };")),
 
     ("panda tests the raised ceiling before the lower ALT limits",
      "opendbc/safety/modes/hyundai.h",

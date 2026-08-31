@@ -136,7 +136,12 @@ def new_band() -> dict:
         "max_abs": 0,
         "demand": [],
         "delivered": [],
+        # toi_flt counts EVERY MDPS fault frame in the band, engaged or not. That makes it
+        # useless for comparing two builds: a route where openpilot never engaged still
+        # accumulates faults, and dividing by engaged frames then invents a rate. Keep it for
+        # continuity, but toi_flt_engaged is the one that can be compared.
         "toi_flt": 0,
+        "toi_flt_engaged": 0,
     }
 
 
@@ -280,6 +285,8 @@ def scan_route(route: str, segs: list) -> dict:
                             band = band_of(v)
                             if band is not None:
                                 A[band]["toi_flt"] += 1
+                                if lat:
+                                    A[band]["toi_flt_engaged"] += 1
         except Exception as exc:
             skipped.append({
                 "segment": os.path.basename(os.path.dirname(seg)),
@@ -386,6 +393,7 @@ def merge(reports: list, estimator: str) -> dict:
                 d["pinned"][str(t)] += src["pinned"][str(t)]
             d["max_abs"] = max(d["max_abs"], src["max_abs"])
             d["toi_flt"] += src["toi_flt"]
+            d["toi_flt_engaged"] += src.get("toi_flt_engaged", 0)
             for key in ("demand", "delivered"):
                 m = src.get(key + "_median")
                 if m is not None:
@@ -396,19 +404,19 @@ def merge(reports: list, estimator: str) -> dict:
 def print_table(title: str, merged: dict) -> None:
     print("\n" + title)
     print(f"  {'speed':<8s} {'frames':>8s} {'>=384':>8s} {'%':>7s} {'>=409':>8s} " +
-          f"{'max':>6s} {'demand':>8s} {'deliv':>8s} {'ratio':>7s} {'ToiFlt':>7s}")
+          f"{'max':>6s} {'demand':>8s} {'deliv':>8s} {'ratio':>7s} {'Flt/eng':>9s} {'Flt/all':>8s}")
     for b in BAND_NAMES:
         d = merged[b]
         if not d["frames"]:
             continue
         p384 = d["pinned"]["384"]
         dem, dlv = d["demand_median"], d["delivered_median"]
-        print("  {:<8s} {:8d} {:8d} {:6.1f}% {:8d} {:6d} {!s:>8} {!s:>8} {!s:>7} {:7d}".format(
+        print("  {:<8s} {:8d} {:8d} {:6.1f}% {:8d} {:6d} {!s:>8} {!s:>8} {!s:>7} {:9d} {:8d}".format(
             b, d["frames"], p384, 100.0 * p384 / d["frames"], d["pinned"]["409"], d["max_abs"],
             (f"{dem:8.3f}") if dem else "-",
             (f"{dlv:8.3f}") if dlv else "-",
             ("%7.3f" % (dem / dlv)) if dem and dlv else "-",
-            d["toi_flt"]))
+            d.get("toi_flt_engaged", 0), d["toi_flt"]))
 
 
 def summarise(label: str, reports: list, failures: list) -> dict:

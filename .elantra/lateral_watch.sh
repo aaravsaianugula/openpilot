@@ -1,7 +1,7 @@
 #!/bin/sh
 # Zero-touch lateral data collection for the CN7 Elantra.
 #
-# Runs from the comma user's crontab. Every drive is analysed on its own, with nothing to
+# Runs from a systemd timer. Every drive is analysed on its own, with nothing to
 # switch on and nothing to remember. It never touches the driving path: it refuses to start
 # unless the car is offroad, and it holds a lock so a long scan can never overlap the next
 # tick.
@@ -18,13 +18,24 @@
 #      safetyParam and lateral params the drive was recorded under, so a before/after can
 #      never accidentally mix two configurations.
 #
-# Install (from a laptop):
+# Install (from a laptop). A crontab is NOT usable here: /var is a tmpfs on this device, so
+# the crontab is wiped on every boot and the watcher silently stops. Use the systemd timer,
+# which is what is actually deployed (elantra-lateral-watch.timer, every 30 min, Persistent).
+#
 #   scp .elantra/lateral_report.py .elantra/lateral_watch.sh comma@<device>:/data/elantra-lateral/
-#   ssh comma@<device> 'chmod +x /data/elantra-lateral/lateral_watch.sh &&
-#     (crontab -l 2>/dev/null | grep -v lateral_watch; echo "*/30 * * * * /data/elantra-lateral/lateral_watch.sh") | crontab -'
+#   ssh comma@<device> 'chmod +x /data/elantra-lateral/lateral_watch.sh'
+#   # then, as root on the device, write the two units and enable the timer:
+#   #   /etc/systemd/system/elantra-lateral-watch.service  (Type=oneshot, User=comma,
+#   #     ExecStart=/data/elantra-lateral/lateral_watch.sh, TimeoutStartSec=2700)
+#   #   /etc/systemd/system/elantra-lateral-watch.timer    (OnBootSec=8min,
+#   #     OnUnitActiveSec=30min, Persistent=true, WantedBy=timers.target)
+#   systemctl daemon-reload && systemctl enable --now elantra-lateral-watch.timer
+#
+# Check:
+#   ssh comma@<device> 'systemctl list-timers elantra-lateral-watch.timer --no-pager'
 #
 # Remove:
-#   ssh comma@<device> 'crontab -l | grep -v lateral_watch | crontab -'
+#   ssh comma@<device> 'sudo systemctl disable --now elantra-lateral-watch.timer'
 
 set -eu
 

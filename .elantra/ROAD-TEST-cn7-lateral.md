@@ -18,12 +18,12 @@ State as of 2026-08-30, read off the device:
 
 | | |
 |---|---|
-| `/data/openpilot` | `elantra-lateral` @ `a9c94550`, working tree clean |
-| `opendbc_repo` | pinned at `150a7e7c`, matching the gitlink and the manifest |
+| `/data/openpilot` | `elantra-lateral` @ `4196916071`, working tree clean |
+| `opendbc_repo` | pinned at `b96b64af`, matching the gitlink and the manifest |
 | panda firmware | rebuilt from the installed source, two clean builds byte-identical, signature verified on the live board |
 | `NeuralNetworkLateralControl` | **0 — deliberately off, so the ceiling is the only live change** |
-| `LateralJerkTorqueController` | 0 |
-| lateral tune | `latAccelFactor = 3.169`, `friction = 0.0819` (offline; the live learner is **invalid**, see below) |
+| `LateralJerkTorqueController` | 1 |
+| lateral tune | live learner **valid**: `latAccelFactor = 2.947`, `friction = 0.100`, `decay = 250` (converged, 10204 bucket points). Offline seed is `3.169` / `0.0819`. |
 | `DisableUpdates` | 1 — nothing will move the branch under you mid-test |
 
 ### Pre-flight — and why the obvious check lies
@@ -122,10 +122,12 @@ boost curve, its fault logic, its override arbitration, and it is free to refuse
 ### Two costs, stated plainly
 
 - **STEER_MAX is a gain, not just a ceiling.** Every command scales by 409/384 = **+6.51%**, at
-  all speeds. Normally the live torque learner absorbs this within a few drives — it has ±100%
-  headroom here and `STEER_MAX` is not in its cache key, so it will not reset. But it is
-  currently **invalid** (`valid=False`, `decay` at the 50 s reset floor, sitting on the offline
-  `latAccelFactor` 3.169), so nothing is compensating it. **Your first drives are the hot ones.**
+  all speeds. The live torque learner absorbs this: it has ±100% headroom here (`factor_sanity`
+  is 1.0 because `EnforceTorqueControl` and `LiveTorqueParamsRelaxedToggle` are both set) and
+  `STEER_MAX` is not in its cache key, so it does not reset. As of 2026-08-31 it is **valid and
+  converged** — `latAccelFactor 2.947`, `friction 0.100`, `decay 250` (the ceiling), 10204 bucket
+  points — so the gain is already being trimmed. **But the learner only samples above
+  `MIN_VEL = 15 m/s`, so nothing compensates it below ~34 mph.**
 - **Driver override yields later.** The ceiling anchors the override envelope:
   `driver_max_torque = STEER_MAX + (50 + driver)*2`. Override still *begins* reducing authority
   at driver torque −50 either way, but the point of **full yield** moves from **−242 to −254.5
@@ -143,9 +145,10 @@ Empty lot first. Hands on the wheel throughout.
 2. **Deliberately override mid-turn at ~5 m/s.** Also unchanged from the schedule build. It must
    wind down the way it does today.
 3. Quiet streets, real intersections at 5–8 m/s. Still unchanged.
-4. **Highway. This is the test.** ~55% of frames here move, by about two counts, and the loop is
-   ~6.5% hot until the learner converges. Watch for tracking that feels sharper or twitchier than
-   you are used to, and for any oscillation on a long constant-radius curve.
+4. **Highway. This is the test.** ~55% of frames here move, by about two counts. This is the one
+   band the learner does sample (>15 m/s), so it trims the +6.51% over time. Watch for tracking
+   that feels sharper or twitchier than you are used to, and for any oscillation on a long
+   constant-radius curve.
 
 ### Stop if
 
@@ -256,8 +259,9 @@ What remains genuinely unknown:
 
 - **Sustained saturation at 409 above 8 m/s.** No road data exists there — that is precisely the
   regime this change opens, and only the highway leg of the drive closes it.
-- **Where the tune settles.** The learner is invalid today, so the +6.51% is uncompensated now
-  and will be partly absorbed later. The car you drive tomorrow is not the car you drive in a
-  week, and neither is wrong.
+- **Where the tune settles.** The learner is valid and converged, but it re-converges against
+  the new gain only from samples above 15 m/s. Below that the +6.51% stays uncompensated
+  indefinitely. The car you drive tomorrow is not the car you drive in a week, and neither is
+  wrong.
 - **What the MDPS does at 409 in a tight turn.** It is the arbiter and it can refuse; nothing
   desk-side tells you where that line is.

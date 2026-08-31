@@ -513,7 +513,10 @@ def main() -> int:
         log("\n=== negative tests: prove the guards can still fail ===")
         for script, extra in (("test_guard_torque_chain.py", ["--opendbc", str(workdir / "opendbc")]),
                               ("test_guard_opendbc_pin.py", []),
-                              ("test_lateral_report.py", [])):
+                              ("test_lateral_report.py", []),
+                              # pins the override-yield arithmetic (-242 -> -254.5 counts) that
+                              # the road-test document cites as confirmed by executable test
+                              ("test_torque_projection.py", [])):
             proc = run([sys.executable, str(repo / ".elantra" / script), *extra], check=False)
             log(proc.stdout)
             if proc.returncode != 0:

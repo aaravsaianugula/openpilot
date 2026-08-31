@@ -22,20 +22,28 @@ history to rot, and no conflict to resolve, because there is no merge.
 
 ## What the port actually is
 
-Almost nothing lives in this repo. The entire Elantra port is 8 files in **opendbc**:
+Almost nothing lives in this repo. The entire Elantra port is 10 files in **opendbc**:
 
 | File | What it does |
 |---|---|
-| `car/hyundai/values.py` | `HYUNDAI_ELANTRA_2024`, `HYUNDAI_ELANTRA_HEV_2024` — `CAMERA_SCC \| CHECKSUM_CRC8`, harness Hyundai K |
+| `car/hyundai/values.py` | `HYUNDAI_ELANTRA_2024` (`CAMERA_SCC \| CHECKSUM_CRC8 \| RAISED_LIMITS`) and `HYUNDAI_ELANTRA_HEV_2024` (no `RAISED_LIMITS`), harness Hyundai K; both flag words; the 409 ceiling |
+| `car/hyundai/interface.py` | Bridges `HyundaiFlags.RAISED_LIMITS` into the `safetyParam` bit — the only path by which panda learns the ceiling is raised |
 | `car/hyundai/fingerprints.py` | ECU firmware fingerprints |
 | `car/hyundai/hyundaican.py` | Both platforms added to the LKAS11 LDWS mode list |
 | `dbc/generator/hyundai/hyundai_can.dbc` | `LFAHDA_MFC` (0x485) 4 → 8 bytes |
-| `safety/modes/hyundai.h` | Panda TX allow-list for 0x485, 4 → 8 bytes |
+| `safety/modes/hyundai.h` | Panda TX allow-list for 0x485 (4 → 8 bytes) and `HYUNDAI_STEERING_LIMITS_RAISED = HYUNDAI_LIMITS(409, 3, 7)` |
+| `safety/modes/hyundai_common.h` | `HYUNDAI_PARAM_RAISED_LIMITS = 1024` and the `hyundai_raised_limits` flag panda selects on |
 | `car/torque_data/substitute.toml` | Borrowed torque parameters |
 | `sunnypilot/car/car_list.json` | The three entries in sunnypilot's car list |
 | `car/tests/routes.py` | CI test routes |
 
-**The last two rows of the dbc/safety pair are the safety-critical part.** The dbc says how
+**The steering torque ceiling is a flat 409 counts at every speed** for `HYUNDAI_ELANTRA_2024`
+only, against the 384-count HKG default. It is not a speed schedule; there is no lookup table
+and no interpolation. `STEER_MAX` is a *gain*, not just a ceiling — every command is multiplied
+by it — so 409 raises every command by 6.51 %, at every speed. See `ROAD-TEST-cn7-lateral.md`
+for the measured cost and the drive protocol.
+
+**The `hyundai_can.dbc` / `hyundai.h` pair is the safety-critical part.** The dbc says how
 many bytes openpilot packs into 0x485; the safety header says how many panda will let out.
 If they ever disagree the car either refuses to steer or panda's allow-list is wider than the
 message it guards. `guards.py` asserts them together, and the sync aborts if they diverge.
