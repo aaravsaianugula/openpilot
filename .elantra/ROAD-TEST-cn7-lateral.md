@@ -14,24 +14,35 @@ speed**, which is what carrotpilot ships for HKG. Everything below was rewritten
 earlier revision told you to feel for a torque step at 8 and 16 m/s, and to expect the freeway to
 be bit-identical. Both are now false.
 
-### 409 is the car's limit, not ours
+### Above 409 the steering has dropped out — twice — and we do not know why
 
-**A raised ceiling was driven and the EPS refused it.** Two builds went above 409 — a schedule
-peaking at 500, then a flat-topped 450 — and **both threw an EPS fault**. The MDPS does not
-deliver the extra authority; it drops out. Coming back down to 409 cleared the fault both times.
+Two builds went above 409 — a schedule peaking at 500, then one topping out at 450 — and **both
+coincided with EPS faults**: the MDPS dropped out rather than delivering. Coming back to 409
+cleared it both times.
 
-This is the single most important fact in this document, and it changes how you read the rest:
+**What that does NOT establish.** Both attempts used the same speed-scheduled ceiling, so the
+experiment never separated *the value was too high* from *a ceiling that moves with speed upset
+it*. **A flat ceiling above 409 has never been driven.** An earlier revision of this document
+called 409 a proven hardware boundary; that was overstated.
 
-- **409 is a measured hardware boundary.** Not a policy number, not a compromise, not something
-  to revisit if the car feels short of authority at low speed. It has been tested.
-- **The remaining low-speed shortfall cannot be fixed by raising this number.** Whatever is
-  left to win down there is in the tune, not the ceiling.
-- **panda will not protect you here.** It enforces 512 — 103 counts above the boundary — so if
-  a build ever commands 450 again, panda passes it and the EPS faults. What holds 409 is
+What is measured, and is not in doubt:
+
+| | |
+|---|---|
+| flat 409, recorded | **~1.59M engaged frames across 24 routes, 3 EPS fault frames total** |
+| does it reach the ceiling? | yes — 2.2% of engaged frames sit in the top 25-count bin |
+| any frame ever commanded above 409? | **none in any route scanned** |
+
+So flat 409 is known-good with a lot of evidence behind it, and everything above it is untested
+and twice associated with the steering letting go. That is the basis for keeping it — an open
+question treated conservatively, not a closed one.
+
+- **panda will not protect you here.** It enforces 512, so a build that commands 450 sails
+  straight through and the EPS is what stops you. What holds 409 is
   `CarControllerParams.STEER_MAX` and the guards around it, nothing downstream.
-
-If you see an EPS fault or a steering dropout on this drive, **that is the signature of a
-ceiling above 409**, and the first thing to check is what the build actually commands.
+- **If you see an EPS fault or a steering dropout on this drive**, the first thing to check is
+  what the build actually commands — and capture the route, because the log of a fault
+  alongside its commanded counts is exactly the evidence that would settle this.
 
 State as of 2026-08-30, read off the device:
 

@@ -83,10 +83,15 @@ BEFORE_FLAT = 409         # what the recorded drives actually ran
 DEFAULT_CANDIDATE = 409   # the flat candidate to price against it; override with --candidate
 CANDIDATE_CEILING = DEFAULT_CANDIDATE   # rebound by main() when --candidate is given
 
-# THE MEASURED HARDWARE LIMIT. Not a policy number and not panda's: the CN7's EPS faults above
-# this and stops steering. Driven twice, at 500 and at 450, and cleared both times by coming
-# back to 409. A projection above it would be arithmetic about counts the car will not deliver,
-# so the tool refuses rather than printing a number someone could act on.
+# THE HIGHEST CEILING THIS CAR HAS STEERED ON SUCCESSFULLY. Not panda's number, and not a
+# proven hardware limit either: 500 and 450 were both driven and both coincided with EPS
+# faults, but both used the same speed-scheduled machinery, so the value and the mechanism
+# were never separated. No FLAT ceiling above 409 has ever been driven.
+#
+# The tool refuses above this anyway. A projection is a number someone acts on, and the honest
+# statement about 410+ is "untested, and twice associated with the steering dropping out" --
+# which is not something to hand over as a tidy per-band delta table. Settle it on the car with
+# an instrumented test, then raise this constant.
 EPS_CEILING = 409
 
 # What panda would let out. Deliberately NOT the limit this tool enforces -- panda sits 103
@@ -133,10 +138,12 @@ def assert_params_match() -> None:
 
     if CANDIDATE_CEILING > EPS_CEILING:
         raise SystemExit(
-            f"refusing to project a {CANDIDATE_CEILING}-count ceiling: the CN7's EPS faults " +
-            f"above {EPS_CEILING} and drops steering. Measured on this car at 500 and at 450. " +
-            f"panda would pass it ({PANDA_CEILING}), which is exactly why that is not the " +
-            "check made here.")
+            f"refusing to project a {CANDIDATE_CEILING}-count ceiling: nothing above " +
+            f"{EPS_CEILING} has ever steered this car successfully. 500 and 450 were both " +
+            "driven and both coincided with EPS faults -- though both used the same scheduled " +
+            "machinery, so value vs mechanism is UNSETTLED and a flat build above 409 has " +
+            f"never been tried. panda would pass it ({PANDA_CEILING}); that is not the check " +
+            "made here. Settle it on the car, then raise EPS_CEILING.")
 
 
 def band_of(v: float) -> str | None:
