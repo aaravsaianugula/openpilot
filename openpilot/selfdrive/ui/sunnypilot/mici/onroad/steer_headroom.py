@@ -12,12 +12,10 @@ value draws exactly where 384 used to and the extra authority is invisible from 
 seat. This module decides what the arc should say about it; steer_headroom_bar.py draws the
 decision.
 
-THE CEILING IS SPEED-SCHEDULED and this file has to follow it: 450 counts below 8.94 m/s
-(20 mph), ramping to 409 by 13.41 m/s (30 mph), flat 409 above. Reading a fixed 409 would
-paint the red at-the-limit tier at 409 counts while the car still had 41 counts in hand --
-an indicator reporting saturation that is not happening, in exactly the speed range the
-raise was made for. ceiling_at() mirrors opendbc's schedule and update() re-reads it every
-frame from vEgoRaw.
+THE CEILING IS FLAT AGAIN: 409 counts at every speed, matching carrotpilot. A speed
+schedule lived here briefly and was reverted; the arc follows the car, so it is flat too.
+guards.guard_ui_headroom fails the build if this file ever carries a schedule opendbc does
+not, or the reverse.
 
 The events are rare and short -- 0.49% of a measured drive was above 384, in bursts of a few
 frames, almost all of it below 10 m/s -- and the band itself is 6.1% of the arc. So most of
@@ -46,12 +44,7 @@ from collections.abc import Callable
 
 # Ceilings, in CAN counts. Pinned against opendbc by guards.guard_ui_headroom.
 STOCK_COUNTS = 384
-RAISED_COUNTS = 409          # the high-speed end of the schedule, and the fallback
-RAISED_COUNTS_LOW_SPEED = 450
-# CarControllerParams.STEER_MAX_LOOKUP, mirrored. Duplicated rather than imported so the UI
-# needs no import-time dependency on a brand module; guard_ui_headroom fails the build if the
-# copy disagrees with opendbc.
-RAISED_SCHEDULE_BP = (8.94, 13.41)
+RAISED_COUNTS = 409
 HYUNDAI_BRAND = "hyundai"
 
 # HyundaiFlags.RAISED_LIMITS, which is what CarParams.flags carries and what opendbc's own
@@ -67,9 +60,9 @@ TIER_LIMIT = 3
 
 # Four states, four colours, all pastel so they sit on a camera feed without shouting.
 #
-# The purple "about to" band is the last NEAR_MARGIN counts below whatever ceiling is in force,
-# not a fixed number: at 409 that is 400-408, exactly as before, and at 450 it is 441-449. A
-# fixed 400 would leave purple 50 counts wide at low speed and reachable at 89% of authority.
+# The purple "about to" band is the last NEAR_MARGIN counts below the ceiling in force. At
+# 409 that is 400-408. Kept relative rather than a hardcoded 400 so it stays correct if the
+# ceiling ever moves again.
 NEAR_MARGIN = 9
 COLOR_BASE = (255, 255, 255)      # white           -- the bounds the car always had, to 384
 COLOR_HEADROOM = (140, 230, 245)  # #8ce6f5  cyan   -- the extended bounds, 385 to 399
@@ -140,21 +133,6 @@ def is_raised(brand: str, flags: int) -> bool:
   indicator stays off and the arc renders exactly as upstream draws it.
   """
   return brand == HYUNDAI_BRAND and bool(int(flags) & RAISED_LIMITS_FLAG)
-
-
-def ceiling_at(v_ego_raw: float) -> int:
-  """The ceiling in force at this speed, mirroring CarControllerParams.steer_max_at().
-
-  Same interpolation and the same round() -- banker's, so the midpoint of the ramp is 454 and
-  not 455. The arc has to agree with the car to the count or it draws the wrong edge.
-  """
-  lo_v, hi_v = RAISED_SCHEDULE_BP
-  if v_ego_raw <= lo_v:
-    return RAISED_COUNTS_LOW_SPEED
-  if v_ego_raw >= hi_v:
-    return RAISED_COUNTS
-  f = (v_ego_raw - lo_v) / (hi_v - lo_v)
-  return int(round(RAISED_COUNTS_LOW_SPEED + f * (RAISED_COUNTS - RAISED_COUNTS_LOW_SPEED)))
 
 
 def near_threshold(ceiling: int) -> int:
@@ -247,12 +225,7 @@ class HeadroomState:
   def peak_visible(self) -> bool:
     return self.peak_alpha > VISIBLE_EPS
 
-  def update(self, counts: float, lat_active: bool, v_ego_raw: float | None = None) -> None:
-    # Re-read the ceiling every frame. Passing None keeps whatever this state was built with,
-    # which is what a car without a schedule wants; the CN7 widget always passes vEgoRaw.
-    if v_ego_raw is not None:
-      self.ceiling = ceiling_at(v_ego_raw)
-
+  def update(self, counts: float, lat_active: bool) -> None:
     now = self._clock()
     dt = 0.0 if self._last_t is None else min(max(now - self._last_t, 0.0), MAX_DT)
     self._last_t = now

@@ -111,10 +111,9 @@ class SteerHeadroomBar(TorqueBar):
       self._raised = is_raised(CP.brand, CP.flags)
     return self._raised
 
-  def update_counts(self, counts: float, lat_active: bool = True,
-                    v_ego_raw: float | None = None) -> None:
+  def update_counts(self, counts: float, lat_active: bool = True) -> None:
     """Drive the indicator directly. Used by .elantra/render_headroom_bar.py."""
-    self._state.update(counts, lat_active, v_ego_raw)
+    self._state.update(counts, lat_active)
 
   def _update_state(self) -> None:
     # Keep upstream's filter fed so the unarmed path stays exactly upstream's.
@@ -123,11 +122,8 @@ class SteerHeadroomBar(TorqueBar):
       return
     # The signed integer actually put on CAN, not the value normalised by STEER_MAX, so 384
     # and 409 stay true no matter what the normalisation divides by. Sign follows upstream.
-    # vEgoRaw and not vEgo: opendbc evaluates its schedule on the raw signal, and the arc
-    # has to land its edge on the same count the car is actually limiting to.
     self._state.update(-ui_state.sm['carOutput'].actuatorsOutput.torqueOutputCan,
-                       ui_state.sm['carControl'].latActive,
-                       ui_state.sm['carState'].vEgoRaw)
+                       ui_state.sm['carControl'].latActive)
 
   def _render(self, rect: rl.Rectangle) -> None:
     if not self._demo and not self._armed:

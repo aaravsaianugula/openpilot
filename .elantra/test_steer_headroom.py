@@ -96,11 +96,10 @@ def make():
     return state, clock
 
 
-def hold(state, clock, counts: float, seconds: float, lat_active: bool = True,
-         v_ego_raw: float | None = None) -> None:
+def hold(state, clock, counts: float, seconds: float, lat_active: bool = True) -> None:
     for _ in range(max(1, round(seconds * FPS))):
         clock.advance(DT)
-        state.update(counts, lat_active, v_ego_raw)
+        state.update(counts, lat_active)
 
 
 def sweep(state, clock, values, lat_active: bool = True) -> None:
@@ -112,65 +111,10 @@ def sweep(state, clock, values, lat_active: bool = True) -> None:
 def main() -> int:
     print(f"Steering headroom decision logic\n  module: {MODULE}\n")
 
-    print("[schedule] the ceiling follows speed, and the arc has to follow it exactly")
-    # The bug this section exists to prevent: with a fixed 409 the arc paints the red
-    # at-the-limit tier at 409 counts while the car still has 91 counts of authority left,
-    # in precisely the speed range the raise was made for. Every number here is what
-    # CarControllerParams.steer_max_at() returns for the same speed.
-    case("standstill is the full raised ceiling", sh.ceiling_at(0.0), 450)
-    case("still full at 20 mph exactly", sh.ceiling_at(8.94), 450)
-    case("halfway down the ramp is 430, banker's rounding", sh.ceiling_at((8.94 + 13.41) / 2), 430)
-    case("back to 409 by 30 mph", sh.ceiling_at(13.41), 409)
-    case("and stays there on the freeway", sh.ceiling_at(31.0), 409)
-    case("monotonic across the whole range",
-         [sh.ceiling_at(v / 10.0) for v in range(500)]
-         == sorted([sh.ceiling_at(v / 10.0) for v in range(500)], reverse=True), True)
-    case("never above what panda will pass",
-         max(sh.ceiling_at(v / 10.0) for v in range(500)) <= 512, True)
-
-    print("\n[schedule] which is the whole point: 409 is not the edge at low speed")
-    state, clock = make()
-    hold(state, clock, 409, 1.0, v_ego_raw=5.0)
-    case("409 at 5 m/s is headroom, NOT the limit", state.tier, sh.TIER_HEADROOM)
-    case("and it is not painted red", state.color() != sh.COLOR_LIMIT, True)
-    state, clock = make()
-    hold(state, clock, 445, 1.0, v_ego_raw=5.0)
-    case("445 at 5 m/s is approaching the edge", state.tier, sh.TIER_NEAR)
-    state, clock = make()
-    hold(state, clock, 450, 2.0, v_ego_raw=5.0)
-    case("450 at 5 m/s IS the edge", state.tier, sh.TIER_LIMIT)
-    case("and it is painted red", state.color(), sh.COLOR_LIMIT)
-
-    print("\n[schedule] and the freeway is untouched, bit for bit")
-    state, clock = make()
-    hold(state, clock, 409, 2.0, v_ego_raw=25.0)
-    case("409 at 25 m/s is still the edge", state.tier, sh.TIER_LIMIT)
-    case("still red", state.color(), sh.COLOR_LIMIT)
-    state, clock = make()
-    hold(state, clock, 404, 1.0, v_ego_raw=25.0)
-    case("404 at 25 m/s is still purple", state.tier, sh.TIER_NEAR)
-
-    print("\n[schedule] the purple band is the last 9 counts, wherever the edge is")
+    print("[bands] the purple band is the last NEAR_MARGIN counts below the ceiling")
     case("purple starts at 400 when the edge is 409", sh.near_threshold(409), 400)
-    case("and at 441 when the edge is 450", sh.near_threshold(450), 441)
-    case("440 below the low-speed edge is only headroom",
-         sh.tier_for(440, ceiling=450), sh.TIER_HEADROOM)
-    case("441 is not", sh.tier_for(441, ceiling=450), sh.TIER_NEAR)
-
-    print("\n[schedule] the ceiling tracks speed within one live state")
-    state, clock = make()
-    hold(state, clock, 409, 0.3, v_ego_raw=5.0)
-    case("edge is 450 while slow", state.ceiling, 450)
-    hold(state, clock, 409, 0.3, v_ego_raw=25.0)
-    case("edge became 409 once up to speed", state.ceiling, 409)
-    case("and the same 409 command is now AT the limit", state.tier, sh.TIER_LIMIT)
-
-    print("\n[schedule] omitting the speed leaves the ceiling alone")
-    # A car with no schedule -- any non-CN7 -- never passes a speed, and must keep the
-    # ceiling it was constructed with rather than silently jumping to the raised value.
-    state, clock = make()
-    hold(state, clock, 300, 0.2)
-    case("no speed given, ceiling unchanged", state.ceiling, sh.RAISED_COUNTS)
+    case("399 is only headroom", sh.tier_for(399, ceiling=409), sh.TIER_HEADROOM)
+    case("400 is not", sh.tier_for(400, ceiling=409), sh.TIER_NEAR)
 
     print("\n[bands] 384 is the old ceiling, so being AT it is not past it")
     case("383 is normal", sh.tier_for(383), sh.TIER_NORMAL)
