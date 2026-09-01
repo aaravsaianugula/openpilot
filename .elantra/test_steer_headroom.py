@@ -117,9 +117,9 @@ def main() -> int:
     # at-the-limit tier at 409 counts while the car still has 91 counts of authority left,
     # in precisely the speed range the raise was made for. Every number here is what
     # CarControllerParams.steer_max_at() returns for the same speed.
-    case("standstill is the full raised ceiling", sh.ceiling_at(0.0), 500)
-    case("still full at 20 mph exactly", sh.ceiling_at(8.94), 500)
-    case("halfway down the ramp is 454, banker's rounding", sh.ceiling_at((8.94 + 13.41) / 2), 454)
+    case("standstill is the full raised ceiling", sh.ceiling_at(0.0), 450)
+    case("still full at 20 mph exactly", sh.ceiling_at(8.94), 450)
+    case("halfway down the ramp is 430, banker's rounding", sh.ceiling_at((8.94 + 13.41) / 2), 430)
     case("back to 409 by 30 mph", sh.ceiling_at(13.41), 409)
     case("and stays there on the freeway", sh.ceiling_at(31.0), 409)
     case("monotonic across the whole range",
@@ -134,11 +134,11 @@ def main() -> int:
     case("409 at 5 m/s is headroom, NOT the limit", state.tier, sh.TIER_HEADROOM)
     case("and it is not painted red", state.color() != sh.COLOR_LIMIT, True)
     state, clock = make()
-    hold(state, clock, 495, 1.0, v_ego_raw=5.0)
-    case("495 at 5 m/s is approaching the edge", state.tier, sh.TIER_NEAR)
+    hold(state, clock, 445, 1.0, v_ego_raw=5.0)
+    case("445 at 5 m/s is approaching the edge", state.tier, sh.TIER_NEAR)
     state, clock = make()
-    hold(state, clock, 500, 2.0, v_ego_raw=5.0)
-    case("500 at 5 m/s IS the edge", state.tier, sh.TIER_LIMIT)
+    hold(state, clock, 450, 2.0, v_ego_raw=5.0)
+    case("450 at 5 m/s IS the edge", state.tier, sh.TIER_LIMIT)
     case("and it is painted red", state.color(), sh.COLOR_LIMIT)
 
     print("\n[schedule] and the freeway is untouched, bit for bit")
@@ -152,15 +152,15 @@ def main() -> int:
 
     print("\n[schedule] the purple band is the last 9 counts, wherever the edge is")
     case("purple starts at 400 when the edge is 409", sh.near_threshold(409), 400)
-    case("and at 491 when the edge is 500", sh.near_threshold(500), 491)
-    case("490 below the low-speed edge is only headroom",
-         sh.tier_for(490, ceiling=500), sh.TIER_HEADROOM)
-    case("491 is not", sh.tier_for(491, ceiling=500), sh.TIER_NEAR)
+    case("and at 441 when the edge is 450", sh.near_threshold(450), 441)
+    case("440 below the low-speed edge is only headroom",
+         sh.tier_for(440, ceiling=450), sh.TIER_HEADROOM)
+    case("441 is not", sh.tier_for(441, ceiling=450), sh.TIER_NEAR)
 
     print("\n[schedule] the ceiling tracks speed within one live state")
     state, clock = make()
     hold(state, clock, 409, 0.3, v_ego_raw=5.0)
-    case("edge is 500 while slow", state.ceiling, 500)
+    case("edge is 450 while slow", state.ceiling, 450)
     hold(state, clock, 409, 0.3, v_ego_raw=25.0)
     case("edge became 409 once up to speed", state.ceiling, 409)
     case("and the same 409 command is now AT the limit", state.tier, sh.TIER_LIMIT)

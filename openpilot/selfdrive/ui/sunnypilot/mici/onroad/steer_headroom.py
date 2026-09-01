@@ -12,9 +12,9 @@ value draws exactly where 384 used to and the extra authority is invisible from 
 seat. This module decides what the arc should say about it; steer_headroom_bar.py draws the
 decision.
 
-THE CEILING IS SPEED-SCHEDULED and this file has to follow it: 500 counts below 8.94 m/s
+THE CEILING IS SPEED-SCHEDULED and this file has to follow it: 450 counts below 8.94 m/s
 (20 mph), ramping to 409 by 13.41 m/s (30 mph), flat 409 above. Reading a fixed 409 would
-paint the red at-the-limit tier at 409 counts while the car still had 91 counts in hand --
+paint the red at-the-limit tier at 409 counts while the car still had 41 counts in hand --
 an indicator reporting saturation that is not happening, in exactly the speed range the
 raise was made for. ceiling_at() mirrors opendbc's schedule and update() re-reads it every
 frame from vEgoRaw.
@@ -47,7 +47,7 @@ from collections.abc import Callable
 # Ceilings, in CAN counts. Pinned against opendbc by guards.guard_ui_headroom.
 STOCK_COUNTS = 384
 RAISED_COUNTS = 409          # the high-speed end of the schedule, and the fallback
-RAISED_COUNTS_LOW_SPEED = 500
+RAISED_COUNTS_LOW_SPEED = 450
 # CarControllerParams.STEER_MAX_LOOKUP, mirrored. Duplicated rather than imported so the UI
 # needs no import-time dependency on a brand module; guard_ui_headroom fails the build if the
 # copy disagrees with opendbc.
@@ -68,8 +68,8 @@ TIER_LIMIT = 3
 # Four states, four colours, all pastel so they sit on a camera feed without shouting.
 #
 # The purple "about to" band is the last NEAR_MARGIN counts below whatever ceiling is in force,
-# not a fixed number: at 409 that is 400-408, exactly as before, and at 500 it is 491-499. A
-# fixed 400 would leave purple 100 counts wide at low speed and reachable at 80% of authority.
+# not a fixed number: at 409 that is 400-408, exactly as before, and at 450 it is 441-449. A
+# fixed 400 would leave purple 50 counts wide at low speed and reachable at 89% of authority.
 NEAR_MARGIN = 9
 COLOR_BASE = (255, 255, 255)      # white           -- the bounds the car always had, to 384
 COLOR_HEADROOM = (140, 230, 245)  # #8ce6f5  cyan   -- the extended bounds, 385 to 399

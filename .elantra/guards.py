@@ -43,7 +43,7 @@ LFAHDA_MFC_LEN_STOCK = 4
 # lands on the flat 409 this car has already driven. panda sits above every point of it and
 # reads no speed at all.
 STEER_MAX_RAISED = 409
-STEER_MAX_RAISED_LOW = 500
+STEER_MAX_RAISED_LOW = 450
 STEER_SCHEDULE_BP = (8.94, 13.41)     # 20 mph -> 30 mph
 PANDA_RAISED_CEILING = 512
 STEER_MAX_STOCK = 384
@@ -562,7 +562,7 @@ def _schedule_in_else(source: str):
 
     Same walk and the same reason as _raised_assigned_in_else: the schedule has to live inside
     the tail `else` of the STEER_MAX chain. Assigned outside it, a car carrying RAISED_LIMITS
-    together with ALT_LIMITS_2 would command 500 while panda enforced 170, and no amount of
+    together with ALT_LIMITS_2 would command 450 while panda enforced 170, and no amount of
     text matching can tell the two placements apart.
     """
     tree = ast.parse(source)

@@ -80,32 +80,32 @@ CASES = [
 
     ("the low-speed schedule is raised above what panda will pass",
      "opendbc/car/hyundai/values.py",
-     "self.STEER_MAX_LOOKUP = [8.94, 13.41], [500, 409]",
+     "self.STEER_MAX_LOOKUP = [8.94, 13.41], [450, 409]",
      "self.STEER_MAX_LOOKUP = [8.94, 13.41], [520, 409]"),
 
     ("the schedule's high-speed end drifts off the static STEER_MAX (fail-safe broken)",
      "opendbc/car/hyundai/values.py",
-     "self.STEER_MAX_LOOKUP = [8.94, 13.41], [500, 409]",
-     "self.STEER_MAX_LOOKUP = [8.94, 13.41], [500, 395]"),
+     "self.STEER_MAX_LOOKUP = [8.94, 13.41], [450, 409]",
+     "self.STEER_MAX_LOOKUP = [8.94, 13.41], [450, 395]"),
 
     ("the schedule gains authority with speed",
      "opendbc/car/hyundai/values.py",
-     "self.STEER_MAX_LOOKUP = [8.94, 13.41], [500, 409]",
-     "self.STEER_MAX_LOOKUP = [8.94, 13.41], [409, 500]"),
+     "self.STEER_MAX_LOOKUP = [8.94, 13.41], [450, 409]",
+     "self.STEER_MAX_LOOKUP = [8.94, 13.41], [409, 450]"),
 
     ("the schedule is dropped, leaving the flat fallback",
      "opendbc/car/hyundai/values.py",
-     "        self.STEER_MAX_LOOKUP = [8.94, 13.41], [500, 409]     # 20 mph -> 30 mph\n",
+     "        self.STEER_MAX_LOOKUP = [8.94, 13.41], [450, 409]     # 20 mph -> 30 mph\n",
      ""),
 
     ("the raise is moved outside the if/elif chain (precedence inverted)",
      "opendbc/car/hyundai/values.py",
      ("      if CP.flags & HyundaiFlags.RAISED_LIMITS:\n" +
      "        self.STEER_MAX = 409                                  # the high-speed end, and the fallback\n" +
-     "        self.STEER_MAX_LOOKUP = [8.94, 13.41], [500, 409]     # 20 mph -> 30 mph\n"),
+     "        self.STEER_MAX_LOOKUP = [8.94, 13.41], [450, 409]     # 20 mph -> 30 mph\n"),
      ("    if CP.flags & HyundaiFlags.RAISED_LIMITS:\n" +
      "      self.STEER_MAX = 409\n" +
-     "      self.STEER_MAX_LOOKUP = [8.94, 13.41], [500, 409]\n")),
+     "      self.STEER_MAX_LOOKUP = [8.94, 13.41], [450, 409]\n")),
 
     ("the stock ceiling under the raise is removed",
      "opendbc/car/hyundai/values.py",

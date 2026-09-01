@@ -6,7 +6,7 @@ produce a WRONG number are what is tested here: the CAN decode, the schedule int
 AFTER chain is built on, the two limiter shapes, the drift guard on the copied constants, and
 the aggregation (which mixes counters that must be summed with maxima that must not be).
 
-The direction reversed with the 500-under-20mph change. BEFORE is now the flat 409 the recorded
+The direction reversed with the 450-under-20mph change. BEFORE is now the flat 409 the recorded
 drives actually ran -- which is what makes the BEFORE chain a genuine one-frame prediction test
 -- and AFTER is the candidate ramp. Previously it was the other way round.
 
@@ -62,17 +62,17 @@ class TestScheduleCeiling(unittest.TestCase):
     """The AFTER chain is only meaningful if it reproduces the schedule being proposed."""
 
     def test_breakpoints_and_plateaus(self):
-        # 500 counts below 20 mph (8.94 m/s), ramping to 409 by 30 mph (13.41 m/s).
-        self.assertEqual(tp.schedule_ceiling(0.0), 500)
-        self.assertEqual(tp.schedule_ceiling(8.94), 500)
+        # 450 counts below 20 mph (8.94 m/s), ramping to 409 by 30 mph (13.41 m/s).
+        self.assertEqual(tp.schedule_ceiling(0.0), 450)
+        self.assertEqual(tp.schedule_ceiling(8.94), 450)
         self.assertEqual(tp.schedule_ceiling(13.41), 409)
         self.assertEqual(tp.schedule_ceiling(40.0), 409)
 
     def test_midpoint_interpolates(self):
-        # Halfway along the ramp is 454.5, and round() is banker's -- 454, not 455. The
+        # Halfway along the ramp is 429.5, and round() is banker's -- 430, not 429. The
         # carcontroller rounds the same way, so the tool has to reproduce the quirk rather
         # than the arithmetic.
-        self.assertEqual(tp.schedule_ceiling((8.94 + 13.41) / 2), 454)
+        self.assertEqual(tp.schedule_ceiling((8.94 + 13.41) / 2), 430)
 
     def test_monotonically_descending(self):
         vals = [tp.schedule_ceiling(v / 2) for v in range(80)]
@@ -107,8 +107,8 @@ class TestBands(unittest.TestCase):
         self.assertEqual(len(below), 3)
         for name in below:
             lo, hi = (float(x) for x in name.split("-"))
-            self.assertEqual(tp.schedule_ceiling(lo), 500)
-            self.assertEqual(tp.schedule_ceiling(hi - 1e-6), 500)
+            self.assertEqual(tp.schedule_ceiling(lo), 450)
+            self.assertEqual(tp.schedule_ceiling(hi - 1e-6), 450)
 
     def test_negative_speed_has_no_band(self):
         # Not a crash and not band 0-3: an implausible reading must be visibly excluded.
@@ -128,10 +128,10 @@ class TestStep(unittest.TestCase):
 
     def test_ceiling_binds_when_the_rate_limit_does_not(self):
         self.assertEqual(tp.step(1.0, 409, 0.0, self.before, 409, False), 409)
-        self.assertEqual(tp.step(1.0, 500, 0.0, self.after, 500, True), 500)
+        self.assertEqual(tp.step(1.0, 450, 0.0, self.after, 450, True), 450)
 
     def test_the_two_shapes_differ_only_where_the_ceiling_does(self):
-        # At 5 m/s the schedule is 500 and the flat build is 409. Seeded at the flat ceiling
+        # At 5 m/s the schedule is 450 and the flat build is 409. Seeded at the flat ceiling
         # with full demand, BEFORE stays pinned and AFTER climbs by one rate step.
         b = tp.step(1.0, 409, 0.0, self.before, tp.BEFORE_FLAT, False)
         a = tp.step(1.0, 409, 0.0, self.after, tp.schedule_ceiling(5.0), True)
@@ -162,13 +162,13 @@ class TestStep(unittest.TestCase):
         # Override starts REDUCING authority at driver torque < -STEER_DRIVER_ALLOWANCE (-50)
         # for both ceilings -- that threshold does not scale. What scales is the point of FULL
         # yield, where driver_max_torque = M + (50 + d)*2 reaches zero: d <= -M/2 - 50, i.e.
-        # -242 at 384, -254.5 at 409, and -300 at 500. That last one is the cost of this
+        # -242 at 384, -254.5 at 409, and -275 at 450. That last one is the cost of this
         # change stated in the units the driver actually feels: below 20 mph they must apply
-        # 18% more opposing torque before the system fully lets go.
+        # 8% more opposing torque before the system fully lets go.
         #
         # Seeded from 0 so the rate limiter is not what is being measured; from a saturated
         # previous frame the ramp-down floor hides the effect entirely.
-        for steer_max, yield_at in ((384, -242.0), (409, -254.5), (500, -300.0)):
+        for steer_max, yield_at in ((384, -242.0), (409, -254.5), (450, -275.0)):
             lim = tp.Limits(steer_max)
             self.assertGreater(tp.step(1.0, 0, yield_at + 1.0, lim, steer_max, False), 0,
                                f"{steer_max}: should not have fully yielded at {yield_at + 1}")
@@ -182,11 +182,11 @@ class TestStep(unittest.TestCase):
         self.assertEqual(tp.step(1.0, 0, between, tp.Limits(384), 384, False), 0)
         self.assertGreater(tp.step(1.0, 0, between, tp.Limits(409), 409, False), 0)
 
-    def test_500_keeps_steering_where_409_has_given_up(self):
+    def test_450_keeps_steering_where_409_has_given_up(self):
         # And the increment this change actually buys, at low speed.
-        between = -270.0
+        between = -260.0
         self.assertEqual(tp.step(1.0, 0, between, tp.Limits(409), 409, False), 0)
-        self.assertGreater(tp.step(1.0, 0, between, tp.Limits(500), 500, True), 0)
+        self.assertGreater(tp.step(1.0, 0, between, tp.Limits(450), 450, True), 0)
 
 
 class TestParamDriftGuard(unittest.TestCase):

@@ -5,7 +5,7 @@
   "upstream_ci_conclusion": "success",
   "upstream_ci_checked": 21,
   "upstream_ci_url": "https://github.com/sunnypilot/sunnypilot/commit/b742b96c4482aced861525c33c55e1374aa8bb0c/checks",
-  "opendbc_sha": "eb08f1481a85b97ab2d5d50dda492b60141bd0a8",
+  "opendbc_sha": "5a8ae2e839c3b7884c924cfbef76fd5a178d811c",
   "opendbc_repo": "aaravsaianugula/opendbc",
   "elantra_platforms": [
     "HYUNDAI_ELANTRA_2024",

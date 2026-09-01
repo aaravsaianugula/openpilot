@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""What raising the sub-20mph ceiling to 500 costs, measured against the recorded drives.
+"""What raising the sub-20mph ceiling to 450 costs, measured against the recorded drives.
 
 Two questions, answered in one pass, because a pass over the whole route store costs an hour.
 
@@ -58,7 +58,7 @@ CAMERA_BUS = 2           # the factory camera's own LKAS11 lives here
 
 # The two schedule breakpoints are band edges on purpose. 20 mph fell INSIDE the old 7-10
 # band, so "what happens under 20 mph" could not be read off the table without mixing in
-# frames from above it. 0-3 / 3-7 / 7-8.94 are the full-500 regime, 8.94-13.41 is the ramp,
+# frames from above it. 0-3 / 3-7 / 7-8.94 are the full-450 regime, 8.94-13.41 is the ramp,
 # and everything above is bit-for-bit unchanged. This costs comparability with the 10-14 /
 # 14-18 split used elsewhere; lateral_report.py keeps those bands and is unchanged.
 SPEED_BANDS = ((0.0, 3.0), (3.0, 7.0), (7.0, 8.94), (8.94, 13.41), (13.41, 18.0), (18.0, 1e9))
@@ -73,7 +73,7 @@ DRIVER_MULTIPLIER = 2
 DRIVER_FACTOR = 1
 
 BEFORE_FLAT = 409                             # what the recorded drives actually ran
-AFTER_SCHEDULE = ([8.94, 13.41], [500, 409])  # the candidate: 500 under 20 mph, 409 by 30 mph
+AFTER_SCHEDULE = ([8.94, 13.41], [450, 409])  # the candidate: 450 under 20 mph, 409 by 30 mph
 
 # panda enforces a flat ceiling and opendbc schedules underneath it, so the one way this
 # design fails is a schedule point above what panda will pass. Stated here so the tool can
@@ -143,7 +143,7 @@ def schedule_ceiling(v: float) -> int:
     """The carcontroller's own interpolation, restated: int(round(interp(vEgoRaw, bp, vals))).
 
     round() is banker's in Python and the carcontroller uses the same call, so the halfway
-    point of the ramp is 454 and not 455. Reproducing the quirk is the point.
+    point of the ramp is 430 and not 429. Reproducing the quirk is the point.
     """
     import numpy as np
     return int(round(float(np.interp(v, *AFTER_SCHEDULE))))
