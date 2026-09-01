@@ -117,6 +117,19 @@ CASES = [
      "HYUNDAI_LIMITS(512, 3, 7)",
      "HYUNDAI_LIMITS(409, 3, 7)"),
 
+    # The FAIL-OPEN decoy. Both parsers of this line used an unanchored re.search, which takes
+    # the first match anywhere in the file -- so a stale value left in a comment above the live
+    # declaration, which is exactly what a person writes when lowering it, was read instead of
+    # the value in force. Measured before the fix: the real ceiling at 450 with a 512 comment
+    # above it left all 103 guards and 398 subtests GREEN, while panda would have dropped every
+    # frame the schedule commands above 450. It failed open in one direction only, which is why
+    # the plain "lowered" case above never exposed it.
+    ("panda ceiling lowered behind a stale comment (fail-open decoy)",
+     "opendbc/safety/modes/hyundai.h",
+     "  const TorqueSteeringLimits HYUNDAI_STEERING_LIMITS_RAISED = HYUNDAI_LIMITS(512, 3, 7);",
+     ("  // was: HYUNDAI_STEERING_LIMITS_RAISED = HYUNDAI_LIMITS(512, 3, 7);\n" +
+      "  const TorqueSteeringLimits HYUNDAI_STEERING_LIMITS_RAISED = HYUNDAI_LIMITS(450, 3, 7);")),
+
     ("panda ramp rates changed",
      "opendbc/safety/modes/hyundai.h",
      "HYUNDAI_LIMITS(512, 3, 7)",

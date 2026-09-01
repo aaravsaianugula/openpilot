@@ -713,7 +713,14 @@ def guard_raised_torque_pair(opendbc: Path) -> None:
           f"every frame above {STEER_MAX_STOCK}")
 
     # --- the panda half ---------------------------------------------------------------
-    inst = re.search(r"HYUNDAI_STEERING_LIMITS_RAISED\s*=\s*HYUNDAI_LIMITS\(([^)]*)\)", safety)
+    # Anchored to a real DECLARATION at the start of a line. Unanchored, re.search takes the
+    # FIRST match in the file, so a stale value left in a comment above the live line reads
+    # instead of the value in force -- and PANDA_RAISED_CEILING below, the "third opinion", is
+    # fed from this same match, so it is neutralised too. Verified by decoy: with the real line
+    # lowered to 450 and a 512 comment above it, all 103 guards passed green.
+    raised_decl = (r"^\s*const\s+TorqueSteeringLimits\s+HYUNDAI_STEERING_LIMITS_RAISED\s*=" +
+                   r"\s*HYUNDAI_LIMITS\(([^)]*)\)")
+    inst = re.search(raised_decl, safety, re.MULTILINE)
     check("panda instantiates the raised limits from the plain HYUNDAI_LIMITS macro",
           inst is not None,
           "anything else is a different enforcement path with different fudges")
