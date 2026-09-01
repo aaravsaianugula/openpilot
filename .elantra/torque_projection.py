@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""What raising the sub-20mph ceiling to 450 costs, measured against the recorded drives.
+"""What moving the steering ceiling would cost, measured against the recorded drives.
+
+THE ANSWER FOR THIS CAR IS ALREADY IN: DO NOT RAISE IT. 500 and 450 were both driven and both
+threw an EPS fault -- the MDPS refuses above 409 and drops steering, recovering only when the
+ceiling comes back down. So this tool now refuses any candidate above 409 (see EPS_CEILING).
+It is kept because the counterfactual machinery below is the only honest way to price a
+ceiling change against real drives, and because a LOWER candidate is still a live question.
 
 Two questions, answered in one pass, because a pass over the whole route store costs an hour.
 
@@ -11,8 +17,8 @@ Two questions, answered in one pass, because a pass over the whole route store c
 
    BEFORE is the flat 409 the recorded drives ACTUALLY ran, so the BEFORE chain is a real
    one-frame prediction test -- it must reproduce the next recorded command exactly. AFTER is
-   the candidate ramp. When this tool measured the previous change the roles were reversed,
-   and the side being validated against reality was the schedule rather than the flat build.
+   the flat candidate, which defaults to 409 (a no-op, so the tool reports honestly that
+   nothing changed) and is set with --candidate.
 
    One step, not a free-running trajectory, and that is a deliberate limit rather than a
    shortcut. Lateral control is a feedback loop: a counterfactual that ran for 60 s would have
@@ -58,9 +64,10 @@ CAMERA_BUS = 2           # the factory camera's own LKAS11 lives here
 
 # The two schedule breakpoints are band edges on purpose. 20 mph fell INSIDE the old 7-10
 # band, so "what happens under 20 mph" could not be read off the table without mixing in
-# frames from above it. 0-3 / 3-7 / 7-8.94 are the full-450 regime, 8.94-13.41 is the ramp,
-# and everything above is bit-for-bit unchanged. This costs comparability with the 10-14 /
-# 14-18 split used elsewhere; lateral_report.py keeps those bands and is unchanged.
+# frames from above it. The 8.94 and 13.41 splits are inherited from the retired schedule's
+# breakpoints and are kept: they are where the low-speed regime actually lives on this car, and
+# holding the bands still keeps old reports comparable with new ones. This costs comparability
+# with the 10-14 / 14-18 split used elsewhere; lateral_report.py keeps those and is unchanged.
 SPEED_BANDS = ((0.0, 3.0), (3.0, 7.0), (7.0, 8.94), (8.94, 13.41), (13.41, 18.0), (18.0, 1e9))
 BAND_NAMES = [f"{lo:g}-{hi:g}" if hi < 1e9 else f"{lo:g}+" for lo, hi in SPEED_BANDS]
 
@@ -72,12 +79,18 @@ DRIVER_ALLOWANCE = 50
 DRIVER_MULTIPLIER = 2
 DRIVER_FACTOR = 1
 
-BEFORE_FLAT = 409                             # what the recorded drives actually ran
-AFTER_SCHEDULE = ([8.94, 13.41], [450, 409])  # the candidate: 450 under 20 mph, 409 by 30 mph
+BEFORE_FLAT = 409         # what the recorded drives actually ran
+DEFAULT_CANDIDATE = 409   # the flat candidate to price against it; override with --candidate
+CANDIDATE_CEILING = DEFAULT_CANDIDATE   # rebound by main() when --candidate is given
 
-# panda enforces a flat ceiling and opendbc schedules underneath it, so the one way this
-# design fails is a schedule point above what panda will pass. Stated here so the tool can
-# refuse to report a projection of commands the car could never actually send.
+# THE MEASURED HARDWARE LIMIT. Not a policy number and not panda's: the CN7's EPS faults above
+# this and stops steering. Driven twice, at 500 and at 450, and cleared both times by coming
+# back to 409. A projection above it would be arithmetic about counts the car will not deliver,
+# so the tool refuses rather than printing a number someone could act on.
+EPS_CEILING = 409
+
+# What panda would let out. Deliberately NOT the limit this tool enforces -- panda sits 103
+# counts above the EPS ceiling, so "under panda" is not the same as "the car can steer".
 PANDA_CEILING = 512
 
 
@@ -118,10 +131,12 @@ def assert_params_match() -> None:
     if mismatched:
         raise SystemExit("CarControllerParams no longer match this tool's copy: " + repr(mismatched))
 
-    over = [(v, schedule_ceiling(v)) for v in (i / 10.0 for i in range(1000))
-            if schedule_ceiling(v) > PANDA_CEILING]
-    if over:
-        raise SystemExit(f"the candidate schedule exceeds panda's {PANDA_CEILING} at {over[:5]}")
+    if CANDIDATE_CEILING > EPS_CEILING:
+        raise SystemExit(
+            f"refusing to project a {CANDIDATE_CEILING}-count ceiling: the CN7's EPS faults " +
+            f"above {EPS_CEILING} and drops steering. Measured on this car at 500 and at 450. " +
+            f"panda would pass it ({PANDA_CEILING}), which is exactly why that is not the " +
+            "check made here.")
 
 
 def band_of(v: float) -> str | None:
@@ -137,16 +152,6 @@ def decode_lkas11(dat: bytes):
         return None
     word = int.from_bytes(dat[0:4], "little")
     return ((word >> 16) & 0x7FF) - TORQUE_OFFSET, (word >> 27) & 1
-
-
-def schedule_ceiling(v: float) -> int:
-    """The carcontroller's own interpolation, restated: int(round(interp(vEgoRaw, bp, vals))).
-
-    round() is banker's in Python and the carcontroller uses the same call, so the halfway
-    point of the ramp is 430 and not 429. Reproducing the quirk is the point.
-    """
-    import numpy as np
-    return int(round(float(np.interp(v, *AFTER_SCHEDULE))))
 
 
 def new_band() -> dict:
@@ -218,16 +223,18 @@ def collect_segment(seg: str, factory: dict, tx: dict):
     return ccs, reals
 
 
-def step(frac: float, prev: int, driver: float, limits, ceiling: int, scheduled: bool) -> int:
+def step(frac: float, prev: int, driver: float, limits, ceiling: int, explicit_ceiling: bool) -> int:
     """One frame of the car's own limiter, seeded from `prev`.
 
-    `scheduled` picks the shape: a scheduled build hands the interpolated ceiling to the rate
-    limiter as well as using it as the multiplier, while a flat build is upstream's shape and
-    passes nothing. AFTER is the scheduled side here; BEFORE (flat 409) is not.
+    `explicit_ceiling` picks the CALL SHAPE, which is a real behavioural choice and not a
+    formality: upstream's apply_driver_steer_torque_limits takes an optional 5th argument, and
+    a caller that passes it drives the driver-override envelope from that value instead of
+    from limits.STEER_MAX. With a flat candidate the two agree, so both shapes are exercised
+    here deliberately -- if they ever stop agreeing, the tests below are what says so.
     """
     from opendbc.car.lateral import apply_driver_steer_torque_limits
     new_torque = int(round(frac * ceiling))
-    if scheduled:
+    if explicit_ceiling:
         return apply_driver_steer_torque_limits(new_torque, prev, driver, limits, ceiling)
     return apply_driver_steer_torque_limits(new_torque, prev, driver, limits)
 
@@ -236,7 +243,7 @@ def simulate_segment(seg: str, bands: dict, factory: dict, valid: dict, tx: dict
     ccs, reals = collect_segment(seg, factory, tx)
 
     lim_before = Limits(BEFORE_FLAT)
-    lim_after = Limits(max(AFTER_SCHEDULE[1]))
+    lim_after = Limits(CANDIDATE_CEILING)
 
     # carOutput at cycle k reports the CarController result computed from carControl at k-1, so
     # the car's own apply_torque_last while processing ccs[i] was reals[i], and the command it
@@ -251,7 +258,7 @@ def simulate_segment(seg: str, bands: dict, factory: dict, valid: dict, tx: dict
             before = after = 0
         else:
             before = step(frac, prev, driver_tq, lim_before, BEFORE_FLAT, False)
-            after = step(frac, prev, driver_tq, lim_after, schedule_ceiling(v_raw), True)
+            after = step(frac, prev, driver_tq, lim_after, CANDIDATE_CEILING, True)
 
         valid["paired"] += 1
         if before == reals[i + 1]:
@@ -278,7 +285,7 @@ def simulate_segment(seg: str, bands: dict, factory: dict, valid: dict, tx: dict
         b["after_max_abs"] = max(b["after_max_abs"], aa)
         if ab >= BEFORE_FLAT:
             b["before_at_ceiling"] += 1
-        if aa >= schedule_ceiling(v_raw):
+        if aa >= CANDIDATE_CEILING:
             b["after_at_ceiling"] += 1
         delta = after - before
         if delta:
@@ -385,8 +392,8 @@ def cmd_report(args) -> int:
         print("  !! lag 0 fits better than lag 1 -- the pipeline alignment assumed here has")
         print("     changed, and every delta below is measured against a shifted signal.")
 
-    print(f"\n--- what {AFTER_SCHEDULE[1][0]} under {AFTER_SCHEDULE[0][0]} m/s changes, " +
-          f"by speed band (BEFORE = flat {BEFORE_FLAT}) ---")
+    print(f"\n--- what a flat {CANDIDATE_CEILING} changes, by speed band " +
+          f"(BEFORE = flat {BEFORE_FLAT}) ---")
     print(f"  {'band':>8} {'frames':>9} {'changed':>9} {'%chg':>7} {'mean|d|':>8} {'max|d|':>7} " +
           f"{'pin_before':>11} {'pin_after':>10} {'maxcmd_b':>9} {'maxcmd_a':>9}")
     tot_frames = tot_changed = 0
@@ -427,11 +434,21 @@ def main() -> int:
     s.add_argument("--out", default="/data/elantra-projection.jsonl")
     s.add_argument("--limit", type=int, default=0)
     s.add_argument("--force", action="store_true")
+    s.add_argument("--candidate", type=int, default=DEFAULT_CANDIDATE,
+                   help=f"flat ceiling to price against the recorded {BEFORE_FLAT} " +
+                        f"(default {DEFAULT_CANDIDATE}; refused above {EPS_CEILING}, " +
+                        "where this car's EPS faults)")
     s.set_defaults(func=cmd_scan)
     r = sub.add_parser("report", help="aggregate a completed scan")
     r.add_argument("--out", default="/data/elantra-projection.jsonl")
     r.set_defaults(func=cmd_report)
+    global CANDIDATE_CEILING
     args = ap.parse_args()
+    if getattr(args, "candidate", None) is not None:
+        # Bound to the module global rather than threaded through, because simulate_segment
+        # and the report both read it and the alternative is six extra parameters. Set before
+        # assert_params_match() runs, so an out-of-range candidate is refused up front.
+        CANDIDATE_CEILING = args.candidate
     return args.func(args)
 
 

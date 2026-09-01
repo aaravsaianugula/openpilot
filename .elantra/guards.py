@@ -38,10 +38,14 @@ LFAHDA_MFC_LEN_STOCK = 4
 # are checked against -- a guard that only compared the two against each other would stay
 # green while they moved together.
 #
-# The ceiling is SPEED-SCHEDULED in opendbc and FLAT in panda. STEER_MAX_RAISED is the
-# high-speed end of the schedule and also opendbc's static fallback, so bypassing the schedule
-# lands on the flat 409 this car has already driven. panda sits above every point of it and
-# reads no speed at all.
+# BOTH SIDES ARE FLAT, AT DIFFERENT NUMBERS. opendbc commands 409 at every speed; panda
+# enforces 512 at every speed (carrotpilot parity, and what lets opendbc's number move without
+# a reflash). The 103 counts between them are unenforced.
+#
+# That gap is why STEER_MAX_RAISED is checked as a LITERAL and not merely as "at or under
+# panda". 500 and 450 were both driven on this car and both threw an EPS fault -- the MDPS
+# refuses above 409 and drops steering -- so the unpoliced band is exactly the band the car
+# fails in. A relational check would happily pass a 450. These guards are what hold 409.
 STEER_MAX_RAISED = 409
 PANDA_RAISED_CEILING = 512
 STEER_MAX_STOCK = 384
@@ -231,35 +235,6 @@ def _module_ints(source: str, names: tuple[str, ...]) -> dict:
                 and isinstance(stmt.targets[0], ast.Name) and stmt.targets[0].id in names:
             out[stmt.targets[0].id] = _int_expr(stmt.value)
     return out
-
-
-def _module_tuple(source: str, name: str):
-    """A top-level `NAME = (a, b)` literal, or None. Used to read the UI's copy of the
-    schedule breakpoints without importing the UI module (which pulls in pyray)."""
-    for stmt in ast.parse(source).body:
-        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1                 and isinstance(stmt.targets[0], ast.Name) and stmt.targets[0].id == name:
-            try:
-                return tuple(ast.literal_eval(stmt.value))
-            except (ValueError, SyntaxError, TypeError):
-                return None
-    return None
-
-
-def _platforms_with_flag(source: str, flag: str) -> set[str]:
-    """Every platform whose flags= argument mentions HyundaiFlags.<flag>."""
-    found: set[str] = set()
-    for node in ast.walk(ast.parse(source)):
-        if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
-            continue
-        names = [t.id for t in node.targets if isinstance(t, ast.Name)]
-        for kw in node.value.keywords:
-            if kw.arg != "flags":
-                continue
-            for sub in ast.walk(kw.value):
-                if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name) \
-                        and sub.value.id == "HyundaiFlags" and sub.attr == flag:
-                    found.update(names)
-    return found
 
 
 def guard_ui_headroom(repo: Path, opendbc: Path) -> None:
@@ -509,52 +484,6 @@ def _raised_assigned_in_else(source: str) -> bool:
     return False
 
 
-def _schedule_in_else(source: str):
-    """The STEER_MAX_LOOKUP assigned inside the RAISED_LIMITS branch, or None.
-
-    Same walk and the same reason as _raised_assigned_in_else: the schedule has to live inside
-    the tail `else` of the STEER_MAX chain. Assigned outside it, a car carrying RAISED_LIMITS
-    together with ALT_LIMITS_2 would command 450 while panda enforced 170, and no amount of
-    text matching can tell the two placements apart.
-    """
-    tree = ast.parse(source)
-    for node in ast.walk(tree):
-        if not (isinstance(node, ast.FunctionDef) and node.name == "__init__"):
-            continue
-        for stmt in ast.walk(node):
-            if not isinstance(stmt, ast.If):
-                continue
-            if not stmt.orelse or isinstance(stmt.orelse[0], ast.If):
-                continue
-            for inner in ast.walk(ast.Module(body=stmt.orelse, type_ignores=[])):
-                if not isinstance(inner, ast.If) or "RAISED_LIMITS" not in ast.dump(inner.test):
-                    continue
-                for asn in ast.walk(ast.Module(body=inner.body, type_ignores=[])):
-                    if not isinstance(asn, ast.Assign):
-                        continue
-                    if not any(getattr(t, "attr", None) == "STEER_MAX_LOOKUP" for t in asn.targets):
-                        continue
-                    try:
-                        bp, vals = ast.literal_eval(asn.value)
-                        return [float(x) for x in bp], [int(v) for v in vals]
-                    except (ValueError, SyntaxError, TypeError):
-                        return None
-    return None
-
-
-def _interp_counts(v: float, bp, vals) -> int:
-    """int(round(interp(...))) without numpy, so guards.py stays import-free."""
-    if v <= bp[0]:
-        return int(vals[0])
-    if v >= bp[-1]:
-        return int(vals[-1])
-    for i in range(len(bp) - 1):
-        if bp[i] <= v <= bp[i + 1]:
-            f = (v - bp[i]) / (bp[i + 1] - bp[i])
-            return int(round(vals[i] + f * (vals[i + 1] - vals[i])))
-    return int(vals[-1])
-
-
 def guard_panda_enforcement(opendbc: Path) -> None:
     """What lateral.h actually DOES with the limits hyundai.h declares.
 
@@ -600,13 +529,13 @@ def guard_panda_enforcement(opendbc: Path) -> None:
 
 
 def guard_raised_torque_pair(opendbc: Path) -> None:
-    """The CN7 raised torque ceiling, end to end: scheduled in opendbc, flat in panda.
+    """The CN7 raised torque ceiling, end to end: flat 409 in opendbc, flat 512 in panda.
 
     The ceiling lives in four files that cannot see each other, and every link has a failure
     mode that looks exactly like success. Each check below exists because breaking that link
     alone leaves every other check green.
     """
-    print("\n[values.py <-> safety] raised steering torque, scheduled in opendbc and flat in panda")
+    print("\n[values.py <-> safety] raised steering torque, flat 409 in opendbc under a flat 512 panda")
     values = read(opendbc / "opendbc/car/hyundai/values.py")
     carctl = read(opendbc / "opendbc/car/hyundai/carcontroller.py")
     iface = read(opendbc / "opendbc/car/hyundai/interface.py")
@@ -623,30 +552,18 @@ def guard_raised_torque_pair(opendbc: Path) -> None:
     check(f"the stock ceiling under it is still {STEER_MAX_STOCK}",
           re.search(rf"self\.STEER_MAX\s*=\s*{STEER_MAX_STOCK}\b", values) is not None)
 
-    # --- the ceiling is FLAT: no schedule may exist -------------------------------------
-    # The inverse of what this checked while the speed schedule was on the car. steer_max_at()
-    # and the carcontroller's per-frame ceiling stay -- they are generic and inert with no
-    # lookup -- but a LOOKUP coming back means the flat claim everywhere else is false.
-    check("no low-speed schedule is assigned",
-          _schedule_in_else(values) is None,
-          "the ceiling is meant to be flat 409 at every speed")
-    check("no STEER_MAX_LOOKUP assignment anywhere in values.py",
-          "STEER_MAX_LOOKUP = [" not in values,
-          "a schedule reintroduced without updating the guards")
-
-    # carcontroller now evaluates a per-frame ceiling. Both the multiplier and the rate
-    # limiter must receive it: handing it to only one commands a torque the limiter clips,
-    # or clips to a ceiling the command never reaches. The wire test in opendbc's own
-    # test_hyundai.py executes this; these checks are the cheap text-level twin.
-    check("carcontroller multiplies by the per-frame ceiling",
-          "steer_max = self.params.steer_max_at(CS.out.vEgoRaw)" in carctl
-          and "int(round(actuators.torque * steer_max))" in carctl)
-    check("carcontroller hands the same ceiling to the rate limiter",
-          "self.params, steer_max)" in carctl,
-          "without it the limiter clips to a different ceiling than the command was built from")
-    check("carcontroller normalises the feedback by that same ceiling",
-          "new_actuators.torque = apply_torque / steer_max" in carctl,
-          "dividing by a different ceiling feeds the torque learner a demand that never existed")
+    # --- the ceiling is FLAT, and the MECHANISM for anything else is absent -------------
+    # A speed schedule was built and driven here; the EPS faulted at both 500 and 450, so it
+    # is not coming back. These guards assert the machinery is GONE rather than merely unused,
+    # because inert machinery is one edit away from live machinery.
+    check("carcontroller multiplies by the static STEER_MAX",
+          "int(round(actuators.torque * self.params.STEER_MAX))" in carctl)
+    check("carcontroller normalises the feedback by the same STEER_MAX",
+          "new_actuators.torque = apply_torque / self.params.STEER_MAX" in carctl)
+    for dead in ("STEER_MAX_LOOKUP", "steer_max_at", "steer_max"):
+        check(f"no {dead} left in values.py or carcontroller",
+              dead not in values and dead not in carctl,
+              "a flat ceiling needs none of the schedule machinery; leftovers mean half-applied")
 
     # --- the bridge -------------------------------------------------------------------
     check("interface.py carries the car flag into safetyParam",
@@ -671,20 +588,24 @@ def guard_raised_torque_pair(opendbc: Path) -> None:
         args = [a.strip() for a in inst.group(1).split(",")]
         check(f"panda's flat ceiling is {PANDA_RAISED_CEILING}",
               args[:1] == [str(PANDA_RAISED_CEILING)], "found " + str(args[:1]))
-        # THE cross-check for this design. opendbc schedules underneath a flat panda, so the
-        # one way it fails is a schedule point above what panda will pass -- the car would
-        # command a frame panda silently drops, and nothing else here would notice.
+        # The relationship, kept -- but note it is the WEAK half of this pair. panda sits 103
+        # counts above what opendbc commands, and the EPS faults inside that gap, so passing
+        # this check says nothing about whether the car can steer. The literal 409 asserted
+        # against values.py above is what actually holds the line; this only catches the case
+        # where someone raises opendbc past panda as well.
         check(f"what opendbc commands is within panda's {PANDA_RAISED_CEILING}",
               STEER_MAX_RAISED <= int(args[0]) if args[:1] and args[0].isdigit() else False,
               f"opendbc commands {STEER_MAX_RAISED}")
+        check(f"the unenforced headroom is still {PANDA_RAISED_CEILING - STEER_MAX_RAISED} counts",
+              int(args[0]) - STEER_MAX_RAISED == PANDA_RAISED_CEILING - STEER_MAX_RAISED
+              if args[:1] and args[0].isdigit() else False,
+              "someone widened the band panda does not police; the EPS faults inside it")
         check(f"steer ramp rates are unchanged at {rate_up}/{rate_down}",
               args[1:3] == [str(rate_up), str(rate_down)], "found " + str(args[1:3]))
 
-    # PANDA stays speed-independent even though opendbc no longer is. That asymmetry is the
-    # design: the schedule has to be right about the speed to steer well, but panda does not
-    # have to be right about the speed to be safe. If anything puts the CN7 back on panda's
-    # dynamic path, panda silently regains the -1 m/s shift and the +1 count of slack, and
-    # every "no speed reading can move what panda accepts" claim on this branch becomes false.
+    # NEITHER SIDE READS SPEED, and this is panda's half of that. If anything puts the CN7
+    # back on panda's dynamic path, panda silently regains the -1 m/s shift and the +1 count of
+    # slack, and every "no speed reading can move what panda accepts" claim here becomes false.
     for dead in ("dynamic_max_torque", "HYUNDAI_LIMITS_DYNAMIC", "max_torque_lookup"):
         check(f"no {dead} anywhere on the hyundai path",
               dead not in safety and dead not in common_h)

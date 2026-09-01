@@ -12,10 +12,15 @@ value draws exactly where 384 used to and the extra authority is invisible from 
 seat. This module decides what the arc should say about it; steer_headroom_bar.py draws the
 decision.
 
-THE CEILING IS FLAT AGAIN: 409 counts at every speed, matching carrotpilot. A speed
-schedule lived here briefly and was reverted; the arc follows the car, so it is flat too.
+THE CEILING IS FLAT: 409 counts at every speed, matching carrotpilot. A speed schedule lived
+here briefly and is not coming back -- the car was driven at 500 and at 450 and the EPS faulted
+at both, so 409 is a hardware boundary and the arc has one ceiling to draw for good.
 guards.guard_ui_headroom fails the build if this file ever carries a schedule opendbc does
 not, or the reverse.
+
+Note the arc is scaled to 409 and NOT to panda's 512: the red at-the-limit tier marks where the
+car stops delivering, not where panda stops passing. Those are 103 counts apart and it is the
+first one the driver can feel.
 
 The events are rare and short -- 0.49% of a measured drive was above 384, in bursts of a few
 frames, almost all of it below 10 m/s -- and the band itself is 6.1% of the arc. So most of

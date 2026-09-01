@@ -80,6 +80,9 @@ CASES = [
 
     # The ceiling is FLAT again, so what has to be caught is a schedule COMING BACK without
     # the guards moving with it. While the schedule was live this case was its mirror image.
+    # 450 is the number deliberately: it is one of the two ceilings that actually threw an EPS
+    # fault on this car, and it sits UNDER panda's 512 -- so nothing downstream would reject
+    # it. This case is the only thing standing between that edit and a steering dropout.
     ("a speed schedule is reintroduced",
      "opendbc/car/hyundai/values.py",
      "        self.STEER_MAX = 409\n",
@@ -152,20 +155,25 @@ CASES = [
      "        ret.safetyConfigs[0].safetyParam |= HyundaiSafetyFlags.RAISED_LIMITS.value\n"),
      ""),
 
-    ("carcontroller drops the per-frame ceiling and goes back to the static one",
+    # The carcontroller is byte-for-byte upstream's again, so these are the mirror image of
+    # what they were while the schedule was live: what must be caught is the per-frame ceiling
+    # COMING BACK, not going away. The machinery being absent rather than merely unused is the
+    # property under test -- inert machinery is one edit from live machinery.
+    ("carcontroller grows a per-frame ceiling again",
      "opendbc/car/hyundai/carcontroller.py",
-     "    steer_max = self.params.steer_max_at(CS.out.vEgoRaw)",
-     "    steer_max = self.params.STEER_MAX"),
+     "    new_torque = int(round(actuators.torque * self.params.STEER_MAX))",
+     ("    steer_max = self.params.steer_max_at(CS.out.vEgoRaw)\n" +
+      "    new_torque = int(round(actuators.torque * steer_max))")),
 
-    ("carcontroller stops handing the ceiling to the rate limiter",
+    ("carcontroller multiplies by something other than the static ceiling",
      "opendbc/car/hyundai/carcontroller.py",
-     "                                                    self.params, steer_max)",
-     "                                                    self.params)"),
+     "    new_torque = int(round(actuators.torque * self.params.STEER_MAX))",
+     "    new_torque = int(round(actuators.torque * 450))"),
 
-    ("carcontroller normalises the feedback by something else",
+    ("carcontroller normalises the feedback by a different ceiling",
      "opendbc/car/hyundai/carcontroller.py",
-     "new_actuators.torque = apply_torque / steer_max",
-     "new_actuators.torque = apply_torque / self.params.STEER_MAX"),
+     "new_actuators.torque = apply_torque / self.params.STEER_MAX",
+     "new_actuators.torque = apply_torque / 384"),
 
     ("a flag is aliased onto an existing value",
      "opendbc/car/hyundai/values.py",

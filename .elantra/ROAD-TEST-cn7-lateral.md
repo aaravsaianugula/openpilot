@@ -14,6 +14,25 @@ speed**, which is what carrotpilot ships for HKG. Everything below was rewritten
 earlier revision told you to feel for a torque step at 8 and 16 m/s, and to expect the freeway to
 be bit-identical. Both are now false.
 
+### 409 is the car's limit, not ours
+
+**A raised ceiling was driven and the EPS refused it.** Two builds went above 409 — a schedule
+peaking at 500, then a flat-topped 450 — and **both threw an EPS fault**. The MDPS does not
+deliver the extra authority; it drops out. Coming back down to 409 cleared the fault both times.
+
+This is the single most important fact in this document, and it changes how you read the rest:
+
+- **409 is a measured hardware boundary.** Not a policy number, not a compromise, not something
+  to revisit if the car feels short of authority at low speed. It has been tested.
+- **The remaining low-speed shortfall cannot be fixed by raising this number.** Whatever is
+  left to win down there is in the tune, not the ceiling.
+- **panda will not protect you here.** It enforces 512 — 103 counts above the boundary — so if
+  a build ever commands 450 again, panda passes it and the EPS faults. What holds 409 is
+  `CarControllerParams.STEER_MAX` and the guards around it, nothing downstream.
+
+If you see an EPS fault or a steering dropout on this drive, **that is the signature of a
+ceiling above 409**, and the first thing to check is what the build actually commands.
+
 State as of 2026-08-30, read off the device:
 
 | | |
@@ -60,8 +79,13 @@ with no lookup for the opendbc half.
 ### What it does
 
 The LKAS11 torque ceiling is **409 counts at every speed**, replacing 384 (and replacing the
-schedule that already gave 409 below 8 m/s). Panda accepts exactly 409 and rejects 410, at every
-speed, including before it has received a single speed frame.
+schedule that already gave 409 below 8 m/s).
+
+**Panda is set to 512, not 409** — carrotpilot parity, and what let the ceiling move during the
+500/450 experiments without a reflash. It accepts exactly 512 and rejects 513, at every speed,
+including before it has received a single speed frame. So panda is *not* the thing holding the
+command at 409, and the 103 counts between them are unenforced. That band is exactly where the
+EPS faults, which is why the checks that pin opendbc's 409 are the ones that matter.
 
 409 against 384 is **+6.5%**. This platform's DBC carries `CR_Lkas_StrToqReq` as raw counts —
 `16|11@1+ (1.0,-1024.0)` — so the familiar "3.20 Nm vs 3.00 Nm" is an inference from the Nm
@@ -119,6 +143,8 @@ asks for, not what the MDPS can deliver, and not a safety limit.
 | Hyundai's LKAS, measured | 157 | 1.1–2.0° |
 | comma's HKG default (what you ran before) | 384 | — |
 | flat, what you are testing | 409 | — |
+| **what the EPS refuses** | **450, 500** | faulted on this car |
+| what panda would let out | 512 | unenforced above 409 |
 
 `values.py` quotes comma's rule — *"find the maximum value that the stock LKAS will request"* —
 and that rule is simply the wrong instrument here: it was written for cars whose stock LKAS
