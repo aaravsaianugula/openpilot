@@ -73,38 +73,60 @@ ENFORCEMENT_CASES = [
 
 # Each case: (label, relative file, find, replace). One link, one break.
 CASES = [
-    ("opendbc ceiling edited alone",
+    ("opendbc's static ceiling edited alone",
      "opendbc/car/hyundai/values.py",
-     "        self.STEER_MAX = 409",
-     "        self.STEER_MAX = 450"),
+     "        self.STEER_MAX = 409                                  # the high-speed end",
+     "        self.STEER_MAX = 450                                  # the high-speed end"),
+
+    ("the low-speed schedule is raised above what panda will pass",
+     "opendbc/car/hyundai/values.py",
+     "self.STEER_MAX_LOOKUP = [8.94, 13.41], [500, 409]",
+     "self.STEER_MAX_LOOKUP = [8.94, 13.41], [520, 409]"),
+
+    ("the schedule's high-speed end drifts off the static STEER_MAX (fail-safe broken)",
+     "opendbc/car/hyundai/values.py",
+     "self.STEER_MAX_LOOKUP = [8.94, 13.41], [500, 409]",
+     "self.STEER_MAX_LOOKUP = [8.94, 13.41], [500, 395]"),
+
+    ("the schedule gains authority with speed",
+     "opendbc/car/hyundai/values.py",
+     "self.STEER_MAX_LOOKUP = [8.94, 13.41], [500, 409]",
+     "self.STEER_MAX_LOOKUP = [8.94, 13.41], [409, 500]"),
+
+    ("the schedule is dropped, leaving the flat fallback",
+     "opendbc/car/hyundai/values.py",
+     "        self.STEER_MAX_LOOKUP = [8.94, 13.41], [500, 409]     # 20 mph -> 30 mph\n",
+     ""),
 
     ("the raise is moved outside the if/elif chain (precedence inverted)",
      "opendbc/car/hyundai/values.py",
      ("      if CP.flags & HyundaiFlags.RAISED_LIMITS:\n" +
-     "        self.STEER_MAX = 409\n"),
+     "        self.STEER_MAX = 409                                  # the high-speed end, and the fallback\n" +
+     "        self.STEER_MAX_LOOKUP = [8.94, 13.41], [500, 409]     # 20 mph -> 30 mph\n"),
      ("    if CP.flags & HyundaiFlags.RAISED_LIMITS:\n" +
-     "      self.STEER_MAX = 409\n")),
+     "      self.STEER_MAX = 409\n" +
+     "      self.STEER_MAX_LOOKUP = [8.94, 13.41], [500, 409]\n")),
 
     ("the stock ceiling under the raise is removed",
      "opendbc/car/hyundai/values.py",
      "      self.STEER_MAX = 384\n",
      "      self.STEER_MAX = 409\n"),
 
-    ("panda ceiling lowered to the stock value",
+    ("panda ceiling lowered below the schedule's peak",
      "opendbc/safety/modes/hyundai.h",
-     "HYUNDAI_LIMITS(409, 3, 7)",
-     "HYUNDAI_LIMITS(384, 3, 7)"),
+     "HYUNDAI_LIMITS(512, 3, 7)",
+     "HYUNDAI_LIMITS(409, 3, 7)"),
 
     ("panda ramp rates changed",
      "opendbc/safety/modes/hyundai.h",
-     "HYUNDAI_LIMITS(409, 3, 7)",
-     "HYUNDAI_LIMITS(409, 5, 9)"),
+     "HYUNDAI_LIMITS(512, 3, 7)",
+     "HYUNDAI_LIMITS(512, 5, 9)"),
 
     ("panda put back on the speed-scheduled path (regains the fudges)",
      "opendbc/safety/modes/hyundai.h",
-     "HYUNDAI_STEERING_LIMITS_RAISED = HYUNDAI_LIMITS(409, 3, 7);",
-     ("HYUNDAI_STEERING_LIMITS_RAISED = { .max_torque = 409, .dynamic_max_torque = true, " +
-     ".max_torque_lookup = { {8., 16., 16.}, {409., 384., 384.} }, " +
+     "HYUNDAI_STEERING_LIMITS_RAISED = HYUNDAI_LIMITS(512, 3, 7);",
+     ("HYUNDAI_STEERING_LIMITS_RAISED = { .max_torque = 512, .dynamic_max_torque = true, " +
+     ".max_torque_lookup = { {8.94, 13.41, 13.41}, {500., 409., 409.} }, " +
      ".max_rate_up = 3, .max_rate_down = 7, .type = TorqueDriverLimited };")),
 
     ("panda tests the raised ceiling before the lower ALT limits",
@@ -132,16 +154,20 @@ CASES = [
      "        ret.safetyConfigs[0].safetyParam |= HyundaiSafetyFlags.RAISED_LIMITS.value\n"),
      ""),
 
-    ("carcontroller keeps a per-frame ceiling the flat limit does not need",
+    ("carcontroller drops the per-frame ceiling and goes back to the static one",
      "opendbc/car/hyundai/carcontroller.py",
-     "    new_torque = int(round(actuators.torque * self.params.STEER_MAX))",
-     ("    steer_max = self.params.STEER_MAX\n" +
-     "    new_torque = int(round(actuators.torque * steer_max))")),
+     "    steer_max = self.params.steer_max_at(CS.out.vEgoRaw)",
+     "    steer_max = self.params.STEER_MAX"),
+
+    ("carcontroller stops handing the ceiling to the rate limiter",
+     "opendbc/car/hyundai/carcontroller.py",
+     "                                                    self.params, steer_max)",
+     "                                                    self.params)"),
 
     ("carcontroller normalises the feedback by something else",
      "opendbc/car/hyundai/carcontroller.py",
-     "new_actuators.torque = apply_torque / self.params.STEER_MAX",
-     "new_actuators.torque = apply_torque / 384"),
+     "new_actuators.torque = apply_torque / steer_max",
+     "new_actuators.torque = apply_torque / self.params.STEER_MAX"),
 
     ("a flag is aliased onto an existing value",
      "opendbc/car/hyundai/values.py",
