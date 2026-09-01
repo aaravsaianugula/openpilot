@@ -319,6 +319,12 @@ def cmd_scan(args) -> int:
             name = os.path.basename(os.path.dirname(seg))
             rec = {
                 "seg": name,
+                # Stamped per record, not per file. `report` reads it back instead of trusting
+                # the module default -- otherwise `scan --candidate 384` followed by a bare
+                # `report` prints a header naming a ceiling the data was never scanned at. The
+                # resume path makes it worse: two runs at different candidates append to the
+                # SAME jsonl, and without this nothing anywhere records that they differ.
+                "candidate": CANDIDATE_CEILING,
                 "bands": {b: new_band() for b in BAND_NAMES},
                 "factory": {"frames": 0, "nonzero": 0, "max_abs": 0, "act_toi": 0},
                 "tx": {"frames": 0, "max_abs": 0},
@@ -372,6 +378,22 @@ def cmd_report(args) -> int:
         raise SystemExit("no scan output at " + str(path))
     recs = [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
     errored = [r["seg"] for r in recs if r["error"]]
+
+    # Which ceiling was this scanned AT? Read from the records, never from the module default.
+    # Records predating this stamp have no candidate; they are reported as unknown rather than
+    # assumed, because assuming is how a report ends up naming a ceiling it never measured.
+    seen = {r.get("candidate") for r in recs}
+    if len(seen) > 1:
+        raise SystemExit(
+            "this scan file mixes candidate ceilings " + repr(sorted(seen, key=str)) + ". " +
+            "Two runs at different --candidate values appended to the same file, so no single " +
+            "number describes it. Re-scan with --force, or report each separately.")
+    candidate = next(iter(seen)) if seen else None
+    if candidate is None:
+        raise SystemExit(
+            "this scan file predates candidate stamping, so what ceiling it measured is " +
+            "unrecorded. Re-scan with --force rather than guessing.")
+
     bands, factory, tx, valid = merge(recs)
 
     print(f"segments scanned: {len(recs)}   unreadable: {len(errored)}")
@@ -392,7 +414,7 @@ def cmd_report(args) -> int:
         print("  !! lag 0 fits better than lag 1 -- the pipeline alignment assumed here has")
         print("     changed, and every delta below is measured against a shifted signal.")
 
-    print(f"\n--- what a flat {CANDIDATE_CEILING} changes, by speed band " +
+    print(f"\n--- what a flat {candidate} changes, by speed band " +
           f"(BEFORE = flat {BEFORE_FLAT}) ---")
     print(f"  {'band':>8} {'frames':>9} {'changed':>9} {'%chg':>7} {'mean|d|':>8} {'max|d|':>7} " +
           f"{'pin_before':>11} {'pin_after':>10} {'maxcmd_b':>9} {'maxcmd_a':>9}")

@@ -269,5 +269,70 @@ class TestMerge(unittest.TestCase):
         self.assertEqual(factory["frames"], 10)
 
 
+class TestCandidateProvenance(unittest.TestCase):
+    """A report must name the ceiling the scan actually used, or refuse to name one.
+
+    `--candidate` lives on the `scan` subcommand only, so a bare `report` never sees it. Before
+    the candidate was stamped into each record, `scan --candidate 384` followed by `report`
+    printed a header reading "what a flat 409 changes" -- the module default -- over data
+    measured at 384. The resume path made it worse: two runs at different candidates append to
+    the SAME jsonl and nothing recorded that they disagreed.
+
+    This is the same failure this whole tool exists to avoid: a confident number describing a
+    build that was never measured.
+    """
+
+    def _rec(self, seg, candidate):
+        rec = {"seg": seg, "error": None,
+               "bands": {name: tp.new_band() for name in tp.BAND_NAMES},
+               "factory": {"frames": 0, "nonzero": 0, "max_abs": 0, "act_toi": 0},
+               "tx": {"frames": 0, "max_abs": 0},
+               "valid": {"paired": 0, "exact_lag0": 0, "exact_lag1": 0, "within1_lag1": 0,
+                         "max_mismatch": 0, "sum_mismatch": 0}}
+        if candidate is not None:
+            rec["candidate"] = candidate
+        return rec
+
+    def _report(self, recs):
+        import io
+        import json
+        import tempfile
+        from contextlib import redirect_stdout
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "scan.jsonl"
+            out.write_text("".join(json.dumps(r) + "\n" for r in recs), encoding="utf-8")
+
+            class _Args:
+                pass
+            a = _Args()
+            a.out = str(out)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                tp.cmd_report(a)
+            return buf.getvalue()
+
+    def test_the_header_names_the_scanned_ceiling_not_the_default(self):
+        # The actual regression: scanned at 384, module default is 409.
+        text = self._report([self._rec("a", 384), self._rec("b", 384)])
+        self.assertIn("what a flat 384 changes", text)
+        self.assertNotIn("what a flat 409 changes", text)
+
+    def test_a_file_mixing_two_candidates_is_refused(self):
+        with self.assertRaises(SystemExit) as caught:
+            self._report([self._rec("a", 384), self._rec("b", 409)])
+        self.assertIn("mixes candidate ceilings", str(caught.exception))
+
+    def test_an_unstamped_file_is_refused_rather_than_assumed(self):
+        with self.assertRaises(SystemExit) as caught:
+            self._report([self._rec("a", None)])
+        self.assertIn("unrecorded", str(caught.exception))
+
+    def test_scan_stamps_the_candidate_it_ran_with(self):
+        # Proves the write side, not just the read side: the field has to actually be emitted.
+        import inspect
+        src = inspect.getsource(tp.cmd_scan)
+        self.assertIn('"candidate": CANDIDATE_CEILING', src)
+
+
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False, verbosity=2).result.wasSuccessful() else 1)
