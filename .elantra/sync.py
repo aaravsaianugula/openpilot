@@ -643,12 +643,23 @@ def main() -> int:
                               # pins the override-yield arithmetic (-242 -> -254.5 counts) that
                               # the road-test document cites as confirmed by executable test
                               ("test_torque_projection.py", [])):
-            proc = run([sys.executable, str(repo / ".elantra" / script), *extra], check=False)
+            # Three of these import opendbc (test_scanner_decoders through ceiling_replay,
+            # test_torque_projection through CarControllerParams). Point PYTHONPATH at the
+            # opendbc we just BUILT rather than relying on opendbc_tests() having pip-installed
+            # it: that only happens under --opendbc-tests, so without this a plain run aborts
+            # here on an ImportError and reports it as "the guards can no longer detect a real
+            # divergence", which is not what happened.
+            env = dict(os.environ)
+            odbc = str(workdir / "opendbc")
+            env["PYTHONPATH"] = odbc + os.pathsep + env.get("PYTHONPATH", "")
+            proc = subprocess.run([sys.executable, str(repo / ".elantra" / script), *extra],
+                                  env=env, capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace")
             log(proc.stdout)
             if proc.returncode != 0:
                 raise SyncError(script + " failed -- the guards can no longer detect a real " +
                                 "divergence, so a green guard run proves nothing. " +
-                                "Nothing published.")
+                                "Nothing published.\n" + (proc.stderr or "")[-1500:])
 
         publish_opendbc(workdir / "opendbc", opendbc_sha, odbc_prev, args.dry_run)
         publish(repo, new, prev, args.dry_run)
