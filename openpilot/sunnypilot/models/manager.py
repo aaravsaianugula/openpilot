@@ -267,10 +267,14 @@ class ModelManagerSP:
     while True:
       try:
         self.sm.update(0)
+        # The dock picks the catalog, but so does the toggle: the eGPU models have to be
+        # browsable and downloadable with nothing plugged in. Selecting one without the dock
+        # is safe -- selfdrived raises bigModelFailed rather than engaging on it.
         chestnut_present = self.sm['deviceState'].chestnutPresent
-        self.available_models = self.model_fetcher.get_available_bundles(chestnut_present)
+        use_chestnut = chestnut_present or self.params.get_bool("ModelManager_ShowChestnutModels")
+        self.available_models = self.model_fetcher.get_available_bundles(use_chestnut)
         if boot_ticks >= self.BOOT_SETTLE_TICKS:
-          validate_active_bundle(self.params, self.available_models, is_usbgpu=chestnut_present)
+          validate_active_bundle(self.params, self.available_models, is_usbgpu=use_chestnut)
         boot_ticks = min(boot_ticks + 1, self.BOOT_SETTLE_TICKS)
         self.active_bundle = get_active_bundle(self.params)
 

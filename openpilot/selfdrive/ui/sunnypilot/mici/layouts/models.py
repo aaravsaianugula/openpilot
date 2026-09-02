@@ -8,7 +8,7 @@ import pyray as rl
 
 from openpilot.cereal import custom
 from openpilot.sunnypilot.models.default_model import get_default_model
-from openpilot.selfdrive.ui.mici.widgets.button import BigButton
+from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigToggle
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.models import ModelsLayout
 from openpilot.selfdrive.ui.ui_state import ui_state, device
 from openpilot.system.ui.lib.application import FontWeight, gui_app
@@ -62,7 +62,12 @@ class ModelsLayoutMici(NavScroller):
     self.cancel_download_btn = BigButton(tr("cancel download"))
     self.cancel_download_btn.set_click_callback(lambda: ui_state.params.remove("ModelManager_DownloadIndex"))
 
-    self.main_items = [self.current_model_info, self.select_model_btn, self.cancel_download_btn]
+    self.show_chestnut_toggle = BigToggle(text=tr("egpu models"),
+                                          initial_state=ui_state.params.get_bool("ModelManager_ShowChestnutModels"),
+                                          toggle_callback=self._show_chestnut_callback)
+
+    self.main_items = [self.current_model_info, self.select_model_btn, self.show_chestnut_toggle,
+                       self.cancel_download_btn]
     self._scroller.add_widgets(self.main_items)
 
   @property
@@ -99,15 +104,21 @@ class ModelsLayoutMici(NavScroller):
     default_btn.set_click_callback(self._select_default)
     folder_buttons.append(default_btn)
 
+    # Every folder the catalog publishes gets a button. An allowlist used to live here and
+    # silently hid whole folders -- the eGPU catalog keeps 8 of its 10 models in "2026 Deep RL
+    # Models", so the menu showed exactly one model.
     for folder in sorted(folders.keys(), key=lambda f: max((bundle.index for bundle in folders[f]), default=-1), reverse=True):
-      if folder.lower() in ["release models", "master models", "favorites"]:
-        btn = BigButton(folder.lower())
-        btn.set_click_callback(lambda f=folder: self._select_folder(f))
-        if folder.lower() == "favorites":
-          folder_buttons.insert(0, btn)
-        else:
-          folder_buttons.append(btn)
+      btn = BigButton(folder.lower() if folder else tr("other models"))
+      btn.set_click_callback(lambda f=folder: self._select_folder(f))
+      if folder.lower() == "favorites":
+        folder_buttons.insert(0, btn)
+      else:
+        folder_buttons.append(btn)
     self._push_selection_view(folder_buttons)
+
+  @staticmethod
+  def _show_chestnut_callback(state: bool):
+    ui_state.params.put_bool("ModelManager_ShowChestnutModels", state)
 
   def _pop_to_main(self):
     gui_app.pop_widgets_to(self)
@@ -145,6 +156,9 @@ class ModelsLayoutMici(NavScroller):
     super()._update_state()
 
     self.select_model_btn.set_enabled(ui_state.is_offroad())
+    self.show_chestnut_toggle.set_enabled(ui_state.is_offroad())
+    self.show_chestnut_toggle.set_checked(ui_state.params.get_bool("ModelManager_ShowChestnutModels"))
+    self.show_chestnut_toggle.set_visible(not ui_state.usbgpu)
     self.cancel_download_btn.set_visible(False)
     self.current_model_info.current_model_header._shimmer = False
     self.current_model_info.info_header._shimmer = False

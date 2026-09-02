@@ -102,6 +102,8 @@ OVERLAY_ADDED = [
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_manifest.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/onroad/steer_headroom.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/onroad/steer_headroom_bar.py",
+    "openpilot/sunnypilot/models/catalog.py",
+    "openpilot/sunnypilot/models/tests/test_catalog.py",
 ]
 
 # Upstream files we modify. Kept deliberately tiny -- this is the only conflict surface in
@@ -112,6 +114,14 @@ OVERLAY_MODIFIED = [
     "openpilot/system/updated/updated.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/onroad/hud_renderer.py",
+    # Model catalog: resolve the published catalog instead of hardcoding a filename, and let
+    # the eGPU list be reached without the dock. The mici picker had an allowlist that hid
+    # whole folders. The tici picker is deliberately NOT here -- big_ui() is false on a
+    # comma 4, so that layout never renders and would be pure conflict surface.
+    "openpilot/sunnypilot/models/fetcher.py",
+    "openpilot/sunnypilot/models/manager.py",
+    "openpilot/sunnypilot/models/README.md",
+    "openpilot/selfdrive/ui/sunnypilot/mici/layouts/models.py",
 ]
 
 # check-run conclusions that mean "this commit is not safe to ship".

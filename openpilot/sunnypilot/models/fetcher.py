@@ -12,7 +12,9 @@ from requests.exceptions import (SSLError, RequestException, HTTPError)
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.hardware.hw import Paths
-from openpilot.sunnypilot.models.helpers import is_bundle_version_compatible
+from openpilot.sunnypilot.models import catalog
+from openpilot.sunnypilot.models.helpers import REQUIRED_JSON_VERSION, is_bundle_version_compatible
+from openpilot.sunnypilot.models.tinygrad_ref import get_tinygrad_ref
 from openpilot.cereal import custom
 
 
@@ -138,8 +140,10 @@ class ModelCache:
 
 class ModelFetcher:
   """Handles fetching and caching of model data from remote source"""
-  MODEL_URL = "https://raw.githubusercontent.com/sunnypilot/sunnypilot-models/refs/heads/gh-pages/docs/driving_models_v21.json"
-  MODEL_URL_USBGPU = "https://raw.githubusercontent.com/sunnypilot/sunnypilot-models/refs/heads/gh-pages/docs/driving_models_usbgpu_v22.json"
+  # Fallbacks only: the catalog this build shipped against, used when nothing resolves.
+  # The URL actually fetched is resolved at runtime -- see openpilot/sunnypilot/models/catalog.py.
+  MODEL_URL = catalog.floor_url(is_chestnut=False)
+  MODEL_URL_USBGPU = catalog.floor_url(is_chestnut=True)
 
   def __init__(self, params: Params):
     self.params = params
@@ -147,6 +151,34 @@ class ModelFetcher:
     self._is_usbgpu: bool | None = None
     self.model_cache = ModelCache(params)
     self.model_url = self.MODEL_URL
+    self._published_url: str | None = None
+    self._resolver = catalog.CatalogResolver(head_ok=self._head_ok, fetch_json=self._fetch_json,
+                                             tinygrad_ref=get_tinygrad_ref(),
+                                             required_version=REQUIRED_JSON_VERSION)
+
+  @staticmethod
+  def _head_ok(url: str) -> bool:
+    try:
+      return requests.head(url, timeout=10).status_code == 200
+    except RequestException:
+      return False
+
+  @staticmethod
+  def _fetch_json(url: str) -> dict | None:
+    try:
+      response = requests.get(url, timeout=10)
+      if response.status_code != 200:
+        return None
+      return response.json()
+    except (RequestException, ValueError):
+      return None
+
+  def _resolve_model_url(self, is_usbgpu: bool) -> str:
+    """Newest published catalog this build can run, or the one it shipped against."""
+    found = self._resolver.resolve(is_usbgpu)
+    if found is None:
+      return self.MODEL_URL_USBGPU if is_usbgpu else self.MODEL_URL
+    return found.url
 
   def _update_model_source(self, chestnut_present: bool) -> None:
     """Updates what json to use based on chestnut hardware presence via deviceState"""
@@ -154,7 +186,11 @@ class ModelFetcher:
     if is_usbgpu != self._is_usbgpu:
       self._is_usbgpu = is_usbgpu
       self.model_cache = ModelCache(self.params, suffix="_USBGPU" if is_usbgpu else "")
-      self.model_url = self.MODEL_URL_USBGPU if is_usbgpu else self.MODEL_URL
+
+    self.model_url = self._resolve_model_url(is_usbgpu)
+    if self.model_url != self._published_url:
+      self._published_url = self.model_url
+      cloudlog.info(f"Model catalog (usbgpu={is_usbgpu}): {self.model_url}")
       self.params.put("ModelManager_ActiveJson", self.model_url, block=True)
 
   def _fetch_and_cache_models(self) -> list[custom.ModelManagerSP.ModelBundle] | None:

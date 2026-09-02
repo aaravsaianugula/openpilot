@@ -318,6 +318,50 @@ def guard_ui_headroom(repo: Path, opendbc: Path) -> None:
           re.search(r"class TorqueBar.*?def __init__\(self, demo[^)]*scale[^)]*always", up, re.S) is not None)
 
 
+def guard_model_catalog(repo: Path) -> None:
+    """The driving-model picker must still show every model, and still find the eGPU catalog.
+
+    Both failures here are silent. A dropped overlay leaves a picker that renders one model
+    out of ten with no error, and a fetcher pinned to a catalog filename that was renamed
+    months ago -- which is exactly the state this overlay was written to fix. The sync would
+    publish either one happily, so assert them rather than trust that the diff applied.
+    """
+    print("\n[models] catalog resolution and picker")
+
+    catalog = repo / "openpilot/sunnypilot/models/catalog.py"
+    check("model catalog resolver present", catalog.is_file(),
+          "the fetcher would fail to import and no models would list at all")
+
+    fetcher = repo / "openpilot/sunnypilot/models/fetcher.py"
+    if fetcher.is_file():
+        text = read(fetcher)
+        check("fetcher resolves the catalog instead of naming one",
+              "catalog.CatalogResolver(" in text and "catalog.floor_url(" in text,
+              "a hardcoded filename goes stale the next time the feed is versioned or renamed")
+        check("fetcher has no hardcoded catalog URL left",
+              "gh-pages/docs/driving_models" not in text,
+              "a leftover literal URL would pin the device to that version forever")
+
+    manager = repo / "openpilot/sunnypilot/models/manager.py"
+    if manager.is_file():
+        check("eGPU catalog is reachable without the dock",
+              "ModelManager_ShowChestnutModels" in read(manager),
+              "eGPU models could only be browsed with the chestnut physically attached")
+
+    keys = repo / "openpilot/common/params_keys.h"
+    if keys.is_file():
+        check("ModelManager_ShowChestnutModels is a declared param",
+              "ModelManager_ShowChestnutModels" in read(keys),
+              "an undeclared param raises UnknownKeyName and takes models_manager down")
+
+    picker = repo / "openpilot/selfdrive/ui/sunnypilot/mici/layouts/models.py"
+    if picker.is_file():
+        check("model picker has no folder allowlist",
+              "if folder.lower() in [" not in read(picker),
+              "an allowlist hides whole folders; the eGPU catalog keeps 8 of its 10 models in " +
+              "one of them, so the menu shows a single model and looks like a fetch failure")
+
+
 def guard_superproject(repo: Path) -> None:
     print("\n[superproject] submodule wiring")
     gitmodules = read(repo / ".gitmodules")
@@ -691,6 +735,7 @@ def main() -> int:
     if args.repo:
         guard_superproject(args.repo.resolve())
         guard_ui_headroom(args.repo.resolve(), opendbc)
+        guard_model_catalog(args.repo.resolve())
         guard_opendbc_pin(args.repo.resolve(), opendbc)
 
     print("\n" + "-" * 60)
