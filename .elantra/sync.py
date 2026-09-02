@@ -7,8 +7,9 @@ replays a small overlay, so there is no merge history to rot -- which is precise
 community elantra-2024-port branch ends up months behind.
 
 What the overlay is:
-  * two files copied wholesale from the previous build (they are ours, they never conflict)
-  * a ~26-line diff against four upstream files, applied three-way
+  * the .elantra directory, the sync workflow and four UI files of our own, copied wholesale
+    from the previous build (they are ours, they never conflict)
+  * a ~31-line diff against five upstream files, applied three-way
   * the opendbc submodule URL and gitlink, pointed at our Elantra-enabled opendbc
 
 Nothing is published unless every gate passes. If the overlay will not apply, or the guards
@@ -58,6 +59,8 @@ OVERLAY_ADDED = [
     ".github/workflows/elantra-sync.yaml",
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_updates.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_manifest.py",
+    "openpilot/selfdrive/ui/sunnypilot/mici/onroad/steer_headroom.py",
+    "openpilot/selfdrive/ui/sunnypilot/mici/onroad/steer_headroom_bar.py",
 ]
 
 # Upstream files we modify. Kept deliberately tiny -- this is the only conflict surface in
@@ -67,6 +70,7 @@ OVERLAY_MODIFIED = [
     "openpilot/common/params_keys.h",
     "openpilot/system/updated/updated.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py",
+    "openpilot/selfdrive/ui/sunnypilot/mici/onroad/hud_renderer.py",
 ]
 
 # check-run conclusions that mean "this commit is not safe to ship".
