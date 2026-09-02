@@ -10,7 +10,8 @@ What the overlay is:
   * the .elantra directory, the sync workflow and four UI files of our own, copied wholesale
     from the previous build (they are ours, they never conflict)
   * a ~31-line diff against five upstream files, applied three-way
-  * the opendbc submodule URL and gitlink, pointed at our Elantra-enabled opendbc
+  * the opendbc submodule URL and gitlink, pointed at our Elantra-enabled opendbc, which is
+    itself rebuilt the same way: our opendbc master's delta, replayed onto upstream's
 
 Nothing is published unless every gate passes. If the overlay will not apply, or the guards
 fail, or opendbc's own tests fail, the run aborts with the branch untouched. Losing Elantra
@@ -28,6 +29,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import hashlib
 import os
 import re
 import shutil
@@ -41,13 +43,52 @@ FORK_REPO = "aaravsaianugula/openpilot"
 UPSTREAM_OPENDBC = "sunnypilot/opendbc"
 FORK_OPENDBC = "aaravsaianugula/opendbc"
 
-# The community port branch. Its delta is recomputed from opendbc master on every run rather
-# than replayed from a frozen patch, so upstream fixes to the port arrive automatically.
-OPENDBC_PORT_BRANCH = "elantra-2024-port"
-
 MAIN_BRANCH = "master"
 ROLLBACK_BRANCH = "master-previous"
-OPENDBC_BRANCH = "elantra"
+
+# Our opendbc lives on its own master, and that branch is the SOURCE OF TRUTH this rebuild
+# derives next week's delta from -- not a disposable mirror of upstream. It used to be rebuilt
+# from sunnypilot/opendbc:elantra-2024-port, the 83-line community port, which carries no
+# raised ceiling, no per-platform 0x485 split and no RAISED_LIMITS flag; the guards correctly
+# refused the result, so every scheduled sync since 2026-08-31 aborted. The delta is now
+# recomputed from our own master instead, which is the same mechanism build_superproject()
+# already uses for the openpilot overlay.
+OPENDBC_BRANCH = MAIN_BRANCH
+OPENDBC_ROLLBACK = ROLLBACK_BRANCH
+
+# Every path our opendbc delta is allowed to touch. Anything outside it aborts BY NAME rather
+# than turning up as an unexplained three-way conflict weeks later. The fork's own scheduled
+# "Update CARS.md" job is the concrete case this exists for: it commits straight to the default
+# branch, which is now the delta source.
+OPENDBC_DELTA_PATHS = (
+    "docs/CARS.md",
+    "opendbc/car/hyundai/fingerprints.py",
+    "opendbc/car/hyundai/hyundaican.py",
+    "opendbc/car/hyundai/interface.py",
+    "opendbc/car/hyundai/tests/test_hyundai.py",
+    "opendbc/car/hyundai/values.py",
+    "opendbc/car/tests/routes.py",
+    "opendbc/car/torque_data/substitute.toml",
+    "opendbc/dbc/generator/hyundai/_hyundai_can_common.dbc",
+    "opendbc/dbc/generator/hyundai/hyundai_can.dbc",
+    "opendbc/dbc/generator/hyundai/hyundai_can_cn7.dbc",
+    "opendbc/safety/modes/hyundai.h",
+    "opendbc/safety/modes/hyundai_common.h",
+    "opendbc/safety/tests/common.py",
+    "opendbc/safety/tests/test_hyundai.py",
+    "opendbc/sunnypilot/car/car_list.json",
+)
+
+# Tokens that must survive INTO the recomputed delta. An empty delta is only the loudest way
+# to lose Elantra support; one reduced to a docs refresh would sail past an emptiness check.
+REQUIRED_IN_DELTA = (
+    "HYUNDAI_ELANTRA_2024",
+    "HYUNDAI_ELANTRA_HEV_2024",
+    "RAISED_LIMITS",
+    "HYUNDAI_PARAM_RAISED_LIMITS",
+    "LFAHDA_MFC_8",
+    "hyundai_can_cn7",
+)
 
 # The platforms this branch exists to support. Used by the test gate so a selector that
 # stops matching is caught rather than silently reducing coverage.
@@ -199,6 +240,19 @@ def opendbc_tests(repo: Path) -> None:
             f"expected at least {len(PLATFORMS)} car-interface tests to run (one per Elantra platform), but only {passed} passed. The selector "
             + f"{selector!r} no longer matches -- the gate is not testing what it claims.")
 
+    # The guards read values.py, hyundai.h, hyundai_common.h, interface.py and
+    # carcontroller.py -- never opendbc's own Elantra tests. A delta that kept the 409 but
+    # dropped the test changes would pass every other gate in this file.
+    log("  pytest: the Elantra tests themselves")
+    own = run([sys.executable, "-m", "pytest",
+               "opendbc/car/hyundai/tests/test_hyundai.py",
+               "-q", "--no-header", "-p", "no:cacheprovider"], cwd=repo, check=False)
+    log((own.stdout or "")[-3000:])
+    if own.returncode != 0:
+        raise SyncError("opendbc's own Hyundai tests failed against the rebuilt tree -- the "
+                        + "ceiling, the 0x485 split or the platform flags did not survive the "
+                        + "delta. Nothing published.")
+
     log("  pytest: car list / docs consistency")
     docs = run([sys.executable, "-m", "pytest", "opendbc/car/tests/test_docs.py",
                 "-q", "--no-header", "-p", "no:cacheprovider"], cwd=repo, check=False)
@@ -208,13 +262,21 @@ def opendbc_tests(repo: Path) -> None:
                         + "inconsistent with opendbc's own metadata rules. Nothing published.")
 
 
-def build_opendbc(workdir: Path, dry_run: bool) -> str:
-    """Rebuild <fork>/opendbc:elantra as opendbc master + the recomputed port delta."""
+def build_opendbc(workdir: Path, dry_run: bool) -> tuple[str, str]:
+    """Rebuild our opendbc as upstream master + our own recomputed Elantra delta.
+
+    Same mechanism as build_superproject: the delta is DERIVED from the last published build
+    rather than stored as a frozen patch, so upstream fixes flow through automatically, a fix
+    committed by hand to our master is picked up on the next run, and nothing ever carries a
+    stale conflict resolution forward.
+
+    Returns (new_sha, prev_sha). It does NOT push -- see publish_opendbc(). Our opendbc master
+    is the source of truth this function reads next week, so overwriting it before the
+    superproject is known good would destroy that on a run that later aborts.
+    """
     repo = workdir / "opendbc"
     log("\n=== opendbc ===")
-    log(f"cloning {UPSTREAM_OPENDBC} (blobless, two branches)")
-    # Blobless and single-branch: opendbc carries hundreds of stale port branches and we only
-    # ever need master and the community Elantra branch.
+    log(f"cloning {UPSTREAM_OPENDBC} (blobless)")
     run(["git", "clone", "-q", "--filter=blob:none", "--single-branch",
          "--branch", MAIN_BRANCH, f"https://github.com/{UPSTREAM_OPENDBC}.git", str(repo)])
     git(["remote", "rename", "origin", "upstream"], repo)
@@ -223,24 +285,51 @@ def build_opendbc(workdir: Path, dry_run: bool) -> str:
     # narrower than a personal access token, which would carry account-wide repo scope.
     git(["remote", "add", "fork",
          os.environ.get("OPENDBC_PUSH_URL", f"https://github.com/{FORK_OPENDBC}.git")], repo)
-    git(["config", "--add", "remote.upstream.fetch",
-         f"+refs/heads/{OPENDBC_PORT_BRANCH}:refs/remotes/upstream/{OPENDBC_PORT_BRANCH}"], repo)
-    git(["fetch", "-q", "upstream"], repo)
+    git(["fetch", "-q", "--filter=blob:none", "fork", OPENDBC_BRANCH], repo)
 
     master_sha = git(["rev-parse", f"refs/remotes/upstream/{MAIN_BRANCH}"], repo)
-    port_sha = git(["rev-parse", f"refs/remotes/upstream/{OPENDBC_PORT_BRANCH}"], repo)
-    base = git(["merge-base", master_sha, port_sha], repo)
-    log(f"  master {master_sha[:9]}  port {port_sha[:9]}  base {base[:9]}")
+    prev_sha = git(["rev-parse", f"refs/remotes/fork/{OPENDBC_BRANCH}"], repo)
+    base = git(["merge-base", master_sha, prev_sha], repo)
+    log(f"  upstream {master_sha[:9]}  ours {prev_sha[:9]}  base {base[:9]}")
+
+    # (1) Our master must descend from an upstream commit and carry something of its own.
+    if base == prev_sha:
+        raise SyncError(
+            f"{FORK_OPENDBC}:{OPENDBC_BRANCH} is an ancestor of "
+            + f"{UPSTREAM_OPENDBC}:{MAIN_BRANCH} -- it carries no Elantra delta at all. Either "
+            + "it was force-mirrored to upstream, or the port was merged upstream. Refusing to "
+            + f"publish an opendbc with no Elantra support. Recover from {OPENDBC_ROLLBACK}.")
+
+    names = [n for n in git(["diff", "--name-only", base, prev_sha], repo).splitlines() if n]
+    # (2) A delta that vanished entirely.
+    if not names:
+        raise SyncError(
+            f"{FORK_OPENDBC}:{OPENDBC_BRANCH} carries no delta over "
+            + f"{UPSTREAM_OPENDBC}:{MAIN_BRANCH}. Refusing to publish an opendbc with no "
+            + "Elantra support.")
+
+    # (3) A delta that grew paths the port has no business touching. The fork's own scheduled
+    #     CARS.md job commits straight to this branch; this names it rather than letting it
+    #     ride along or surface as an unexplained three-way conflict weeks later.
+    stray = [n for n in names if n not in OPENDBC_DELTA_PATHS]
+    if stray:
+        raise SyncError(
+            f"{FORK_OPENDBC}:{OPENDBC_BRANCH} carries changes outside the Elantra port: "
+            + f"{stray}. Disable the scheduled workflows on the opendbc fork, or add the path "
+            + "to OPENDBC_DELTA_PATHS on purpose.")
+
+    diff = run(["git", "diff", "--binary", base, prev_sha], cwd=repo).stdout
+    # (4) A delta that still exists but no longer contains the port.
+    missing = [t for t in REQUIRED_IN_DELTA if t not in diff]
+    if missing:
+        raise SyncError(
+            f"the recomputed Elantra delta no longer mentions {missing}. The raised ceiling, "
+            + "the 0x485 split or the platforms themselves are gone from "
+            + f"{FORK_OPENDBC}:{OPENDBC_BRANCH}. Refusing to publish.")
 
     patch = repo.parent / "elantra-delta.patch"
-    diff = run(["git", "diff", "--binary", base, port_sha], cwd=repo).stdout
-    if not diff.strip():
-        raise SyncError(
-            f"{UPSTREAM_OPENDBC}:{OPENDBC_PORT_BRANCH} carries no delta over master. "
-            + "Either the port was merged upstream or the branch was reset -- refusing to "
-            + "publish an opendbc with no Elantra support.")
     patch.write_text(diff, encoding="utf-8", newline="\n")
-    log(f"  recomputed port delta: {len(diff.splitlines())} lines")
+    log(f"  recomputed delta: {len(names)} files, {len(diff.splitlines())} lines")
 
     git(["checkout", "-q", "-B", OPENDBC_BRANCH, master_sha], repo)
     apply = run(["git", "apply", "-3", str(patch)], cwd=repo, check=False)
@@ -248,7 +337,9 @@ def build_opendbc(workdir: Path, dry_run: bool) -> str:
         raise SyncError(
             "the Elantra opendbc delta no longer applies to opendbc master:\n"
             + (apply.stderr or "").strip()
-            + "\n\nRefusing to publish. Refresh the delta by hand, then re-run.")
+            + "\n\nRefusing to publish. Resolve it by hand and commit the fix to "
+            + f"{FORK_OPENDBC}:{OPENDBC_BRANCH}; next week's delta is recomputed from there, "
+            + "so the resolution is not carried forward.")
 
     local_extras = Path(__file__).resolve().parent / "local-extras.patch"
     # Only treat it as a patch if it actually contains a diff -- a file of nothing but
@@ -263,6 +354,12 @@ def build_opendbc(workdir: Path, dry_run: bool) -> str:
     git(["add", "-A"], repo)
     # Pin the commit timestamp to opendbc master's so the result is reproducible: same inputs
     # give the same sha, and an unchanged week does not churn the gitlink for no reason.
+    #
+    # prev_sha is deliberately NOT named in this message. Naming it would make each run depend
+    # on the previous run's hash, so an unchanged week would still produce a new commit, the
+    # gitlink would move, and the car would rebuild for nothing. master_sha plus a digest of
+    # the patch content identifies the inputs exactly, and is a fixed point.
+    digest = hashlib.sha256(diff.encode()).hexdigest()[:12]
     stamp = git(["show", "-s", "--format=%cI", master_sha], repo)
     env = dict(os.environ, GIT_AUTHOR_DATE=stamp, GIT_COMMITTER_DATE=stamp)
     commit = subprocess.run(
@@ -270,36 +367,57 @@ def build_opendbc(workdir: Path, dry_run: bool) -> str:
          "-c", "user.email=elantra-sync@users.noreply.github.com",
          "commit", "-q", "-m",
          "Elantra 2024-25 support, rebased onto opendbc master\n\n"
-         + f"opendbc master     {master_sha}\n"
-         + f"{OPENDBC_PORT_BRANCH}  {port_sha}\n\n"
-         + "Delta recomputed on every sync so upstream fixes to the port flow through."],
+         + f"opendbc master  {master_sha}\n"
+         + f"delta           {len(names)} files, sha256 {digest}\n\n"
+         + f"Recomputed from {FORK_OPENDBC}:{OPENDBC_BRANCH} on every sync, so upstream fixes "
+         + "flow through\nand a hand fix committed there is picked up automatically. "
+         + "Not a merge."],
         cwd=repo, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
     if commit.returncode != 0:
         raise SyncError("opendbc commit failed:\n" + (commit.stderr or "").strip())
     new_sha = git(["rev-parse", "HEAD"], repo)
 
-    guards = Path(__file__).resolve().parent / "guards.py"
+    here = Path(__file__).resolve().parent
     log("  running structural guards on opendbc")
-    proc = run([sys.executable, str(guards), "--opendbc", str(repo)], check=False, capture=True)
+    proc = run([sys.executable, str(here / "guards.py"), "--opendbc", str(repo)],
+               check=False, capture=True)
     log(proc.stdout)
     if proc.returncode != 0:
         raise SyncError("opendbc guards failed -- Elantra support is not intact. "
                         + "Nothing published.")
 
+    # A guard suite that has never been shown to fail is decoration. This one needs the opendbc
+    # checkout, so it belongs here, before the opendbc push, rather than after it.
+    log("  proving those guards can still fail")
+    proc = run([sys.executable, str(here / "test_guard_torque_chain.py"),
+                "--opendbc", str(repo)], check=False, capture=True)
+    log(proc.stdout)
+    if proc.returncode != 0:
+        raise SyncError("test_guard_torque_chain.py failed -- the opendbc guards can no "
+                        + "longer detect a real divergence, so a green guard run proves "
+                        + "nothing. Nothing published.")
+
     if RUN_OPENDBC_TESTS:
         opendbc_tests(repo)
 
+    return new_sha, prev_sha
+
+
+def publish_opendbc(repo: Path, new_sha: str, prev_sha: str, dry_run: bool) -> None:
+    """Push opendbc -- rollback pointer first, and only once everything else is green.
+
+    This branch is what next week's delta is derived from, so it gets the same rollback pointer
+    master has. Without it, a superproject rollback to master-previous pins an opendbc sha that
+    only ever existed on a branch we have since force-pushed away.
+    """
     if dry_run:
         log(f"  [dry-run] would push {new_sha[:9]} to {FORK_OPENDBC}:{OPENDBC_BRANCH}")
-    else:
-        # Keep the fork's master mirroring upstream too, so the elantra branch always has a
-        # meaningful "ahead by" and the delta stays reviewable on GitHub.
-        git(["push", "--no-verify", "--force", "fork",
-             f"{master_sha}:refs/heads/{MAIN_BRANCH}"], repo, check=False)
-        git(["push", "--no-verify", "--force", "fork", f"{OPENDBC_BRANCH}:refs/heads/{OPENDBC_BRANCH}"], repo)
-        log(f"  pushed {new_sha[:9]} -> {FORK_OPENDBC}:{OPENDBC_BRANCH}")
-
-    return new_sha
+        return
+    git(["push", "--no-verify", "--force", "fork",
+         f"{prev_sha}:refs/heads/{OPENDBC_ROLLBACK}"], repo, check=False)
+    git(["push", "--no-verify", "--force", "fork",
+         f"{new_sha}:refs/heads/{OPENDBC_BRANCH}"], repo)
+    log(f"  pushed {new_sha[:9]} -> {FORK_OPENDBC}:{OPENDBC_BRANCH}")
 
 
 # --- superproject -------------------------------------------------------------------------
@@ -476,7 +594,7 @@ def main() -> int:
             + f"CI={target['ci_conclusion']} ({target['ci_checks']} checks)")
         log(f"        {target['message'][:100]}")
 
-        opendbc_sha = build_opendbc(workdir, args.dry_run)
+        opendbc_sha, odbc_prev = build_opendbc(workdir, args.dry_run)
 
         if args.repo:
             repo = args.repo.resolve()
@@ -515,9 +633,13 @@ def main() -> int:
         # matches nothing, a check whose subject moved -- and every sync would still pass.
         # They were written for this branch and, until now, ran nowhere.
         log("\n=== negative tests: prove the guards can still fail ===")
-        for script, extra in (("test_guard_torque_chain.py", ["--opendbc", str(workdir / "opendbc")]),
-                              ("test_guard_opendbc_pin.py", []),
+        for script, extra in (("test_guard_opendbc_pin.py", []),
                               ("test_lateral_report.py", []),
+                              # cross-checks that all four scanners decode the same bytes the
+                              # same way; they deploy separately and each carries its own copy
+                              ("test_scanner_decoders.py", []),
+                              # the onroad arc's decision logic, which nothing else exercises
+                              ("test_steer_headroom.py", []),
                               # pins the override-yield arithmetic (-242 -> -254.5 counts) that
                               # the road-test document cites as confirmed by executable test
                               ("test_torque_projection.py", [])):
@@ -528,6 +650,7 @@ def main() -> int:
                                 "divergence, so a green guard run proves nothing. " +
                                 "Nothing published.")
 
+        publish_opendbc(workdir / "opendbc", opendbc_sha, odbc_prev, args.dry_run)
         publish(repo, new, prev, args.dry_run)
         log("\nDone." + ("  (dry run -- nothing was published)" if args.dry_run else ""))
         return 0

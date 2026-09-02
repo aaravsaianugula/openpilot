@@ -96,8 +96,18 @@ jobs:
           } >> ~/.ssh/config
           chmod 600 ~/.ssh/config
 
-      - name: Test the port panel's update and rollback logic
-        run: python .elantra/test_port_panel.py
+      # These need no opendbc checkout, so they can run before the sync rather than inside
+      # it. Until now only test_port_panel.py reached CI at all: the rest ran only from
+      # sync.py, which means they were skipped entirely on any week where nothing changed
+      # and the run took the "already current" early return.
+      - name: Elantra script tests
+        run: |
+          python -m pip install -q ruff
+          python .elantra/test_port_panel.py
+          python .elantra/test_lateral_report.py
+          python .elantra/test_steer_headroom.py
+          python .elantra/test_guard_opendbc_pin.py
+          python -m ruff check .elantra/
 
       - name: Sync
         env:
