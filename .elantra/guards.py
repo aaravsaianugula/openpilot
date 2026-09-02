@@ -43,9 +43,11 @@ LFAHDA_MFC_LEN_STOCK = 4
 # a reflash). The 103 counts between them are unenforced.
 #
 # That gap is why STEER_MAX_RAISED is checked as a LITERAL and not merely as "at or under
-# panda". 500 and 450 were both driven on this car and both threw an EPS fault -- the MDPS
-# refuses above 409 and drops steering -- so the unpoliced band is exactly the band the car
-# fails in. A relational check would happily pass a 450. These guards are what hold 409.
+# panda". Measured 2026-09-01: this MDPS accepts 409 and trips CF_Mdps_ToiFlt at 410 -- 19 fault
+# onsets across routes 000000dc (500 schedule) and 000000dd (450 schedule) at commanded counts
+# 410 through 433, against ~1.59M engaged frames at 409 or below with none at all. So 410-512 is
+# precisely the band the car fails in, and panda polices none of it. A relational check would
+# happily pass a 450, which stops the car steering. These guards are what hold 409.
 STEER_MAX_RAISED = 409
 PANDA_RAISED_CEILING = 512
 STEER_MAX_STOCK = 384

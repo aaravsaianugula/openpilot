@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """What moving the steering ceiling would cost, measured against the recorded drives.
 
-THE ANSWER FOR THIS CAR IS ALREADY IN: DO NOT RAISE IT. 500 and 450 were both driven and both
-threw an EPS fault -- the MDPS refuses above 409 and drops steering, recovering only when the
-ceiling comes back down. So this tool now refuses any candidate above 409 (see EPS_CEILING).
+THE ANSWER FOR THIS CAR IS ALREADY IN: DO NOT RAISE IT. Measured 2026-09-01 -- the MDPS accepts
+409 and trips CF_Mdps_ToiFlt at 410. The two raised builds put 158 frames above 409 on the wire
+and took 19 fault onsets, at commanded counts 410 to 433, all of them under a ceiling that was
+STATIONARY at the time (np.interp clamps below its first breakpoint, and every onset was below
+it). So this tool refuses any candidate above 409 (see EPS_CEILING).
 It is kept because the counterfactual machinery below is the only honest way to price a
 ceiling change against real drives, and because a LOWER candidate is still a live question.
 
@@ -83,15 +85,18 @@ BEFORE_FLAT = 409         # what the recorded drives actually ran
 DEFAULT_CANDIDATE = 409   # the flat candidate to price against it; override with --candidate
 CANDIDATE_CEILING = DEFAULT_CANDIDATE   # rebound by main() when --candidate is given
 
-# THE HIGHEST CEILING THIS CAR HAS STEERED ON SUCCESSFULLY. Not panda's number, and not a
-# proven hardware limit either: 500 and 450 were both driven and both coincided with EPS
-# faults, but both used the same speed-scheduled machinery, so the value and the mechanism
-# were never separated. No FLAT ceiling above 409 has ever been driven.
+# THE HIGHEST COUNT THIS MDPS ACCEPTS. Measured 2026-09-01, not inferred: routes 000000dc (500
+# schedule) and 000000dd (450 schedule) put 158 frames above 409 on the wire and took 19
+# CF_Mdps_ToiFlt onsets while steering, at commanded counts of 410 through 433 -- minimum 410 --
+# against ~1.59M engaged frames at 409 or below with none at all.
 #
-# The tool refuses above this anyway. A projection is a number someone acts on, and the honest
-# statement about 410+ is "untested, and twice associated with the steering dropping out" --
-# which is not something to hand over as a tidy per-band delta table. Settle it on the car with
-# an instrumented test, then raise this constant.
+# It is the VALUE, not the schedule: np.interp clamps below its first breakpoint, so under
+# 8.94 m/s both schedules held a CONSTANT ceiling, and all 19 onsets happened between 2.1 and
+# 8.6 m/s. Every fault therefore happened under a stationary ceiling, which is the flat-ceiling
+# experiment that was thought never to have run.
+#
+# So this is a hardware boundary and the tool refuses above it. Do not raise this constant: a
+# projection is a number someone acts on, and every count from 410 up is one the EPS rejects.
 EPS_CEILING = 409
 
 # What panda would let out. Deliberately NOT the limit this tool enforces -- panda sits 103
@@ -138,12 +143,13 @@ def assert_params_match() -> None:
 
     if CANDIDATE_CEILING > EPS_CEILING:
         raise SystemExit(
-            f"refusing to project a {CANDIDATE_CEILING}-count ceiling: nothing above " +
-            f"{EPS_CEILING} has ever steered this car successfully. 500 and 450 were both " +
-            "driven and both coincided with EPS faults -- though both used the same scheduled " +
-            "machinery, so value vs mechanism is UNSETTLED and a flat build above 409 has " +
-            f"never been tried. panda would pass it ({PANDA_CEILING}); that is not the check " +
-            "made here. Settle it on the car, then raise EPS_CEILING.")
+            f"refusing to project a {CANDIDATE_CEILING}-count ceiling: this MDPS accepts " +
+            f"{EPS_CEILING} and trips CF_Mdps_ToiFlt at {EPS_CEILING + 1}. Measured on routes " +
+            "000000dc and 000000dd -- 158 frames above 409, 19 fault onsets, lowest at 410 -- " +
+            "against ~1.59M engaged frames at 409 or below with none. Every onset happened " +
+            "under a STATIONARY ceiling, so this is the value and not the schedule. panda " +
+            f"would pass it ({PANDA_CEILING}); that is not the check made here, and 410-512 " +
+            "is exactly the band the EPS rejects. Do not raise EPS_CEILING.")
 
 
 def band_of(v: float) -> str | None:
