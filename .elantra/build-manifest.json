@@ -5,13 +5,13 @@
   "upstream_ci_conclusion": "success",
   "upstream_ci_checked": 21,
   "upstream_ci_url": "https://github.com/sunnypilot/sunnypilot/commit/b742b96c4482aced861525c33c55e1374aa8bb0c/checks",
-  "opendbc_sha": "1ded2adf864e6b6ed40ad0eca2061f6317b03f05",
+  "opendbc_sha": "bc4fd936dc769dd4a9e1c7f1f85051a953aaf9db",
   "opendbc_repo": "aaravsaianugula/opendbc",
   "elantra_platforms": [
     "HYUNDAI_ELANTRA_2024",
     "HYUNDAI_ELANTRA_HEV_2024"
   ],
-  "previous_master_sha": "4196916071010920d325f2b9738066e1ef84fd1b",
+  "previous_master_sha": "56ce3ab7ac634aa3f2e712f9d5cae12bb17c3622",
   "rollback_branch": "master-previous",
   "synced_at_utc": "2026-08-25T21:33:12Z"
 }
