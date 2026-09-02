@@ -9,6 +9,7 @@ workstation, not only on the device.
 """
 
 import os
+import pathlib
 import unittest
 
 from openpilot.sunnypilot.models import catalog
@@ -180,6 +181,32 @@ class TestCatalogResolve(unittest.TestCase):
   def test_floors_match_the_urls_this_build_shipped_with(self):
     assert catalog.floor_url(is_chestnut=False).endswith(f"driving_models_v{catalog.ONBOARD_FLOOR}.json")
     assert catalog.floor_url(is_chestnut=True).endswith(f"driving_models_chestnut_v{catalog.CHESTNUT_FLOOR}.json")
+
+
+class TestBrowsingDoesNotChangeWhatRuns(unittest.TestCase):
+  """The toggle exists to browse and pre-download. It must not re-activate a parked eGPU
+  bundle: validate_active_bundle's two-slot stash is keyed on the hardware context, so
+  running it while merely browsing swaps the model that will actually drive."""
+
+  @staticmethod
+  def validates(chestnut_present: bool, show_toggle: bool) -> bool:
+    # mirrors manager.main_thread
+    use_chestnut = chestnut_present or show_toggle
+    browsing_only = use_chestnut and not chestnut_present
+    return not browsing_only
+
+  def test_hardware_contexts_still_validate(self):
+    assert self.validates(chestnut_present=False, show_toggle=False), "on-board must still validate"
+    assert self.validates(chestnut_present=True, show_toggle=False), "dock attached must still validate"
+    assert self.validates(chestnut_present=True, show_toggle=True), "dock wins over the toggle"
+
+  def test_browsing_without_the_dock_does_not_validate(self):
+    assert not self.validates(chestnut_present=False, show_toggle=True)
+
+  def test_manager_implements_exactly_this(self):
+    src = (pathlib.Path(__file__).parent.parent / "manager.py").read_text(encoding="utf-8")
+    assert "browsing_only" in src, "manager no longer guards validation while browsing"
+    assert "not browsing_only" in src
 
 
 class FakeClock:

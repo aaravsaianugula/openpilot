@@ -268,13 +268,19 @@ class ModelManagerSP:
       try:
         self.sm.update(0)
         # The dock picks the catalog, but so does the toggle: the eGPU models have to be
-        # browsable and downloadable with nothing plugged in. Selecting one without the dock
-        # is safe -- selfdrived raises bigModelFailed rather than engaging on it.
+        # browsable and downloadable with nothing plugged in.
         chestnut_present = self.sm['deviceState'].chestnutPresent
         use_chestnut = chestnut_present or self.params.get_bool("ModelManager_ShowChestnutModels")
         self.available_models = self.model_fetcher.get_available_bundles(use_chestnut)
-        if boot_ticks >= self.BOOT_SETTLE_TICKS:
-          validate_active_bundle(self.params, self.available_models, is_usbgpu=use_chestnut)
+
+        # Listing the eGPU catalog with no dock is browsing, and browsing must not change
+        # what drives. validate_active_bundle's two-slot stash is keyed on the hardware
+        # context, so running it here would restore a parked eGPU bundle as the active one
+        # just because the list was opened. Skip it; toggling back off (or plugging the dock
+        # in) puts the selection through validation again.
+        browsing_only = use_chestnut and not chestnut_present
+        if boot_ticks >= self.BOOT_SETTLE_TICKS and not browsing_only:
+          validate_active_bundle(self.params, self.available_models, is_usbgpu=chestnut_present)
         boot_ticks = min(boot_ticks + 1, self.BOOT_SETTLE_TICKS)
         self.active_bundle = get_active_bundle(self.params)
 
