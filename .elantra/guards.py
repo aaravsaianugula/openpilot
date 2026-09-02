@@ -217,6 +217,95 @@ def guard_torque(opendbc: Path) -> None:
         check(platform + " has a torque substitute", '"' + platform + '"' in source)
 
 
+def _module_ints(source: str, names: tuple[str, ...]) -> dict:
+    """{name: value} for top-level `NAME = <int expr>` assignments. Missing names are absent."""
+    out: dict = {}
+    for stmt in ast.parse(source).body:
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
+                and isinstance(stmt.targets[0], ast.Name) and stmt.targets[0].id in names:
+            out[stmt.targets[0].id] = _int_expr(stmt.value)
+    return out
+
+
+def guard_ui_headroom(repo: Path, opendbc: Path) -> None:
+    """The onroad arc's two ceilings, and the chain that has to hold for it to mean anything.
+
+    This is display only -- it cannot change what the car commands -- so what is guarded here
+    is not safety but honesty. An arc that says "past the stock ceiling" while reading a stale
+    constant, the wrong flag, or a field nothing populates any more is worse than no arc at
+    all, because it is the instrument this build's raised ceiling gets judged by.
+    """
+    print("\n[ui] steering headroom indicator")
+    onroad = repo / "openpilot/selfdrive/ui/sunnypilot/mici/onroad"
+    logic, widget = onroad / "steer_headroom.py", onroad / "steer_headroom_bar.py"
+    hud = onroad / "hud_renderer.py"
+    for f in (logic, widget):
+        check("overlay file " + f.name + " present", f.is_file(),
+              "a dropped overlay file is an ImportError on the driving screen")
+    if not (logic.is_file() and widget.is_file() and hud.is_file()):
+        return
+
+    logic_src = read(logic)
+    consts = _module_ints(logic_src, ("STOCK_COUNTS", "RAISED_COUNTS", "RAISED_LIMITS_FLAG",
+                                      "RAISED_COUNTS_LOW_SPEED", "NEAR_MARGIN"))
+    check("the UI's stock ceiling is " + str(STEER_MAX_STOCK),
+          consts.get("STOCK_COUNTS") == STEER_MAX_STOCK,
+          "found " + str(consts.get("STOCK_COUNTS"))
+          + " -- the arc would mark the old line in the wrong place")
+    check("the UI's high-speed ceiling is " + str(STEER_MAX_RAISED),
+          consts.get("RAISED_COUNTS") == STEER_MAX_RAISED,
+          "found " + str(consts.get("RAISED_COUNTS"))
+          + " -- the arc would be scaled against a ceiling nothing commands")
+    check("the UI carries no schedule of its own",
+          "RAISED_SCHEDULE_BP" not in logic_src and "RAISED_COUNTS_LOW_SPEED" not in logic_src,
+          "the ceiling is flat; a schedule here would draw an edge the car does not have")
+    check("the UI's ceiling does not vary with speed",
+          "def ceiling_at" not in logic_src,
+          "leftover schedule machinery in the arc")
+
+    # The arc reads the signed integer actually put on CAN, not the value normalised by
+    # STEER_MAX. If opendbc stops populating it the bar reads a constant zero and simply never
+    # lights: no error, no alert, just an indicator that has quietly stopped being one.
+    carctl = read(opendbc / "opendbc/car/hyundai/carcontroller.py")
+    check("carcontroller still reports the raw CAN counts the arc reads",
+          "new_actuators.torqueOutputCan = apply_torque" in carctl,
+          "the arc would read zero for ever and never light")
+    widget_src = read(widget)
+    check("the arc still reads torqueOutputCan rather than the normalised value",
+          "torqueOutputCan" in widget_src,
+          "normalising by STEER_MAX draws the raised ceiling exactly where 384 used to be, "
+          + "which is the whole bug this exists to fix")
+    # Raw counts only mean something against the ceiling in force, so the widget has to feed
+    # the state a speed. Without this the arc silently reverts to a fixed 409 and paints the
+    # limit tier 91 counts early at low speed -- the failure this whole section guards.
+    check("the arc does not read speed",
+          "vEgoRaw" not in widget_src,
+          "a flat ceiling needs no speed; leftovers mean half-reverted")
+
+    hud_src = read(hud)
+    check("SteerHeadroomBar is installed in the SP mici HUD",
+          "steer_headroom_bar import SteerHeadroomBar" in hud_src
+          and re.search(r"self\._torque_bar\s*=\s*SteerHeadroomBar\(", hud_src) is not None,
+          "the widget exists but the arc on screen is still upstream's")
+
+    # It subclasses upstream rather than copying it, so upstream's shape is a real dependency.
+    # A rename there is an ImportError on the driving screen, which is not a place to find one.
+    upstream = repo / "openpilot/selfdrive/ui/mici/onroad/torque_bar.py"
+    if not upstream.is_file():
+        check("upstream torque_bar.py present", False,
+              "SteerHeadroomBar has nothing to subclass. In a sparse checkout, "
+              + "git sparse-checkout add openpilot/selfdrive/ui/mici/onroad")
+        return
+    up = read(upstream)
+    for name in ("class TorqueBar", "def arc_bar_pts", "TORQUE_ANGLE_SPAN"):
+        check("upstream still provides " + name, name in up,
+              "SteerHeadroomBar imports it by name")
+    check("arc_bar_pts still takes cap_radius",
+          re.search(r"def arc_bar_pts\([^)]*cap_radius", up, re.S) is not None)
+    check("TorqueBar still takes demo, scale and always",
+          re.search(r"class TorqueBar.*?def __init__\(self, demo[^)]*scale[^)]*always", up, re.S) is not None)
+
+
 def guard_superproject(repo: Path) -> None:
     print("\n[superproject] submodule wiring")
     gitmodules = read(repo / ".gitmodules")
@@ -567,6 +656,7 @@ def main() -> int:
     guard_torque(opendbc)
     if args.repo:
         guard_superproject(args.repo.resolve())
+        guard_ui_headroom(args.repo.resolve(), opendbc)
         guard_opendbc_pin(args.repo.resolve(), opendbc)
 
     print("\n" + "-" * 60)
