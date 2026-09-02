@@ -20,9 +20,11 @@ what panda sees, and that is what this puts through it.
 
 Three things make this a test rather than a demonstration:
 
-  * The CONTROL. It also replays a command sequence built against a ceiling panda is NOT
-    configured for (a deliberately-too-high 420). If that is also accepted, the harness is not
-    enforcing anything and the pass above is worthless.
+  * The CONTROL. It also replays a command sequence built one count above what panda is
+    configured to accept (513). If that is also accepted, the harness is not enforcing
+    anything and the pass above is worthless. It has to be above PANDA's 512 and not above
+    the commanded 409: panda is what rejects, so a control inside the unenforced 410-512 band
+    sails straight through and proves nothing.
   * controls_allowed is set explicitly, because with it clear panda rejects everything and a
     "zero rejections" result would be vacuous in the other direction -- it would mean nothing
     was ever sent.
