@@ -33,11 +33,23 @@ PLATFORMS = ("HYUNDAI_ELANTRA_2024", "HYUNDAI_ELANTRA_HEV_2024")
 LFAHDA_MFC_LEN_CN7 = 8
 LFAHDA_MFC_LEN_STOCK = 4
 
-# The CN7 flat raised steering torque ceiling, stated here as the third opinion.
-# opendbc decides what the car commands, panda decides what it will let out, and these
-# literals are what both are checked against -- a guard that only compared the two against
-# each other would stay green while they moved together.
+# The CN7 raised steering torque ceiling, stated here as the third opinion. opendbc decides
+# what the car commands, panda decides what it will let out, and these literals are what both
+# are checked against -- a guard that only compared the two against each other would stay
+# green while they moved together.
+#
+# BOTH SIDES ARE FLAT, AT DIFFERENT NUMBERS. opendbc commands 409 at every speed; panda
+# enforces 512 at every speed (carrotpilot parity, and what lets opendbc's number move without
+# a reflash). The 103 counts between them are unenforced.
+#
+# That gap is why STEER_MAX_RAISED is checked as a LITERAL and not merely as "at or under
+# panda". Measured 2026-09-01: this MDPS accepts 409 and trips CF_Mdps_ToiFlt at 410 -- 19 fault
+# onsets across routes 000000dc (500 schedule) and 000000dd (450 schedule) at commanded counts
+# 410 through 433, against ~1.59M engaged frames at 409 or below with none at all. So 410-512 is
+# precisely the band the car fails in, and panda polices none of it. A relational check would
+# happily pass a 450, which stops the car steering. These guards are what hold 409.
 STEER_MAX_RAISED = 409
+PANDA_RAISED_CEILING = 512
 STEER_MAX_STOCK = 384
 STEER_RATES = (3, 7)
 
@@ -519,13 +531,13 @@ def guard_panda_enforcement(opendbc: Path) -> None:
 
 
 def guard_raised_torque_pair(opendbc: Path) -> None:
-    """The CN7 flat raised torque ceiling, end to end.
+    """The CN7 raised torque ceiling, end to end: flat 409 in opendbc, flat 512 in panda.
 
     The ceiling lives in four files that cannot see each other, and every link has a failure
     mode that looks exactly like success. Each check below exists because breaking that link
     alone leaves every other check green.
     """
-    print("\n[values.py <-> safety] flat raised steering torque")
+    print("\n[values.py <-> safety] raised steering torque, flat 409 in opendbc under a flat 512 panda")
     values = read(opendbc / "opendbc/car/hyundai/values.py")
     carctl = read(opendbc / "opendbc/car/hyundai/carcontroller.py")
     iface = read(opendbc / "opendbc/car/hyundai/interface.py")
@@ -542,14 +554,17 @@ def guard_raised_torque_pair(opendbc: Path) -> None:
     check(f"the stock ceiling under it is still {STEER_MAX_STOCK}",
           re.search(rf"self\.STEER_MAX\s*=\s*{STEER_MAX_STOCK}\b", values) is not None)
 
-    # carcontroller must be upstream's shape. The flat ceiling needs no per-frame ceiling at
-    # all, so anything left of the schedule here means a half-applied change.
+    # --- the ceiling is FLAT, and the MECHANISM for anything else is absent -------------
+    # A speed schedule was built and driven here; the EPS faulted at both 500 and 450, so it
+    # is not coming back. These guards assert the machinery is GONE rather than merely unused,
+    # because inert machinery is one edit away from live machinery.
     check("carcontroller multiplies by the static STEER_MAX",
           "int(round(actuators.torque * self.params.STEER_MAX))" in carctl)
     check("carcontroller normalises the feedback by the same STEER_MAX",
           "new_actuators.torque = apply_torque / self.params.STEER_MAX" in carctl)
-    for dead in ("STEER_MAX_LOOKUP", "steer_max"):
-        check(f"no {dead} left in carcontroller", dead not in carctl,
+    for dead in ("STEER_MAX_LOOKUP", "steer_max_at", "steer_max"):
+        check(f"no {dead} left in values.py or carcontroller",
+              dead not in values and dead not in carctl,
               "a flat ceiling needs none of the schedule machinery; leftovers mean half-applied")
 
     # --- the bridge -------------------------------------------------------------------
@@ -560,20 +575,39 @@ def guard_raised_torque_pair(opendbc: Path) -> None:
           f"every frame above {STEER_MAX_STOCK}")
 
     # --- the panda half ---------------------------------------------------------------
-    inst = re.search(r"HYUNDAI_STEERING_LIMITS_RAISED\s*=\s*HYUNDAI_LIMITS\(([^)]*)\)", safety)
+    # Anchored to a real DECLARATION at the start of a line. Unanchored, re.search takes the
+    # FIRST match in the file, so a stale value left in a comment above the live line reads
+    # instead of the value in force -- and PANDA_RAISED_CEILING below, the "third opinion", is
+    # fed from this same match, so it is neutralised too. Verified by decoy: with the real line
+    # lowered to 450 and a 512 comment above it, every guard in this file passed green.
+    raised_decl = (r"^\s*const\s+TorqueSteeringLimits\s+HYUNDAI_STEERING_LIMITS_RAISED\s*=" +
+                   r"\s*HYUNDAI_LIMITS\(([^)]*)\)")
+    inst = re.search(raised_decl, safety, re.MULTILINE)
     check("panda instantiates the raised limits from the plain HYUNDAI_LIMITS macro",
           inst is not None,
           "anything else is a different enforcement path with different fudges")
     if inst is not None:
         args = [a.strip() for a in inst.group(1).split(",")]
-        check(f"panda's ceiling is {STEER_MAX_RAISED}",
-              args[:1] == [str(STEER_MAX_RAISED)], "found " + str(args[:1]))
+        check(f"panda's flat ceiling is {PANDA_RAISED_CEILING}",
+              args[:1] == [str(PANDA_RAISED_CEILING)], "found " + str(args[:1]))
+        # The relationship, kept -- but note it is the WEAK half of this pair. panda sits 103
+        # counts above what opendbc commands, and the EPS faults inside that gap, so passing
+        # this check says nothing about whether the car can steer. The literal 409 asserted
+        # against values.py above is what actually holds the line; this only catches the case
+        # where someone raises opendbc past panda as well.
+        check(f"what opendbc commands is within panda's {PANDA_RAISED_CEILING}",
+              STEER_MAX_RAISED <= int(args[0]) if args[:1] and args[0].isdigit() else False,
+              f"opendbc commands {STEER_MAX_RAISED}")
+        check(f"the unenforced headroom is still {PANDA_RAISED_CEILING - STEER_MAX_RAISED} counts",
+              int(args[0]) - STEER_MAX_RAISED == PANDA_RAISED_CEILING - STEER_MAX_RAISED
+              if args[:1] and args[0].isdigit() else False,
+              "someone widened the band panda does not police; the EPS faults inside it")
         check(f"steer ramp rates are unchanged at {rate_up}/{rate_down}",
               args[1:3] == [str(rate_up), str(rate_down)], "found " + str(args[1:3]))
 
-    # The flat ceiling exists to be speed-independent. If anything puts the CN7 back on the
-    # dynamic path, panda silently regains the -1 m/s shift and the +1 count of slack, and
-    # every "speed cannot move the ceiling" claim on this branch becomes false.
+    # NEITHER SIDE READS SPEED, and this is panda's half of that. If anything puts the CN7
+    # back on panda's dynamic path, panda silently regains the -1 m/s shift and the +1 count of
+    # slack, and every "no speed reading can move what panda accepts" claim here becomes false.
     for dead in ("dynamic_max_torque", "HYUNDAI_LIMITS_DYNAMIC", "max_torque_lookup"):
         check(f"no {dead} anywhere on the hyundai path",
               dead not in safety and dead not in common_h)

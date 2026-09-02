@@ -73,10 +73,20 @@ ENFORCEMENT_CASES = [
 
 # Each case: (label, relative file, find, replace). One link, one break.
 CASES = [
-    ("opendbc ceiling edited alone",
+    ("opendbc's ceiling edited alone",
      "opendbc/car/hyundai/values.py",
-     "        self.STEER_MAX = 409",
-     "        self.STEER_MAX = 450"),
+     "      if CP.flags & HyundaiFlags.RAISED_LIMITS:\n        self.STEER_MAX = 409\n",
+     "      if CP.flags & HyundaiFlags.RAISED_LIMITS:\n        self.STEER_MAX = 450\n"),
+
+    # The ceiling is FLAT again, so what has to be caught is a schedule COMING BACK without
+    # the guards moving with it. While the schedule was live this case was its mirror image.
+    # 450 is the number deliberately: it is one of the two ceilings that actually threw an EPS
+    # fault on this car, and it sits UNDER panda's 512 -- so nothing downstream would reject
+    # it. This case is the only thing standing between that edit and a steering dropout.
+    ("a speed schedule is reintroduced",
+     "opendbc/car/hyundai/values.py",
+     "        self.STEER_MAX = 409\n",
+     "        self.STEER_MAX = 409\n        self.STEER_MAX_LOOKUP = [8.94, 13.41], [450, 409]\n"),
 
     ("the raise is moved outside the if/elif chain (precedence inverted)",
      "opendbc/car/hyundai/values.py",
@@ -90,21 +100,34 @@ CASES = [
      "      self.STEER_MAX = 384\n",
      "      self.STEER_MAX = 409\n"),
 
-    ("panda ceiling lowered to the stock value",
+    ("panda ceiling lowered below what opendbc commands",
      "opendbc/safety/modes/hyundai.h",
-     "HYUNDAI_LIMITS(409, 3, 7)",
-     "HYUNDAI_LIMITS(384, 3, 7)"),
+     "HYUNDAI_LIMITS(512, 3, 7)",
+     "HYUNDAI_LIMITS(409, 3, 7)"),
+
+    # The FAIL-OPEN decoy. Both parsers of this line used an unanchored re.search, which takes
+    # the first match anywhere in the file -- so a stale value left in a comment above the live
+    # declaration, which is exactly what a person writes when lowering it, was read instead of
+    # the value in force. Measured before the fix: the real ceiling at 450 with a 512 comment
+    # above it left every guard and subtest GREEN, while panda would have dropped every
+    # frame the schedule commands above 450. It failed open in one direction only, which is why
+    # the plain "lowered" case above never exposed it.
+    ("panda ceiling lowered behind a stale comment (fail-open decoy)",
+     "opendbc/safety/modes/hyundai.h",
+     "  const TorqueSteeringLimits HYUNDAI_STEERING_LIMITS_RAISED = HYUNDAI_LIMITS(512, 3, 7);",
+     ("  // was: HYUNDAI_STEERING_LIMITS_RAISED = HYUNDAI_LIMITS(512, 3, 7);\n" +
+      "  const TorqueSteeringLimits HYUNDAI_STEERING_LIMITS_RAISED = HYUNDAI_LIMITS(450, 3, 7);")),
 
     ("panda ramp rates changed",
      "opendbc/safety/modes/hyundai.h",
-     "HYUNDAI_LIMITS(409, 3, 7)",
-     "HYUNDAI_LIMITS(409, 5, 9)"),
+     "HYUNDAI_LIMITS(512, 3, 7)",
+     "HYUNDAI_LIMITS(512, 5, 9)"),
 
     ("panda put back on the speed-scheduled path (regains the fudges)",
      "opendbc/safety/modes/hyundai.h",
-     "HYUNDAI_STEERING_LIMITS_RAISED = HYUNDAI_LIMITS(409, 3, 7);",
-     ("HYUNDAI_STEERING_LIMITS_RAISED = { .max_torque = 409, .dynamic_max_torque = true, " +
-     ".max_torque_lookup = { {8., 16., 16.}, {409., 384., 384.} }, " +
+     "HYUNDAI_STEERING_LIMITS_RAISED = HYUNDAI_LIMITS(512, 3, 7);",
+     ("HYUNDAI_STEERING_LIMITS_RAISED = { .max_torque = 512, .dynamic_max_torque = true, " +
+     ".max_torque_lookup = { {8.94, 13.41, 13.41}, {500., 409., 409.} }, " +
      ".max_rate_up = 3, .max_rate_down = 7, .type = TorqueDriverLimited };")),
 
     ("panda tests the raised ceiling before the lower ALT limits",
@@ -132,13 +155,22 @@ CASES = [
      "        ret.safetyConfigs[0].safetyParam |= HyundaiSafetyFlags.RAISED_LIMITS.value\n"),
      ""),
 
-    ("carcontroller keeps a per-frame ceiling the flat limit does not need",
+    # The carcontroller is byte-for-byte upstream's again, so these are the mirror image of
+    # what they were while the schedule was live: what must be caught is the per-frame ceiling
+    # COMING BACK, not going away. The machinery being absent rather than merely unused is the
+    # property under test -- inert machinery is one edit from live machinery.
+    ("carcontroller grows a per-frame ceiling again",
      "opendbc/car/hyundai/carcontroller.py",
      "    new_torque = int(round(actuators.torque * self.params.STEER_MAX))",
-     ("    steer_max = self.params.STEER_MAX\n" +
-     "    new_torque = int(round(actuators.torque * steer_max))")),
+     ("    steer_max = self.params.steer_max_at(CS.out.vEgoRaw)\n" +
+      "    new_torque = int(round(actuators.torque * steer_max))")),
 
-    ("carcontroller normalises the feedback by something else",
+    ("carcontroller multiplies by something other than the static ceiling",
+     "opendbc/car/hyundai/carcontroller.py",
+     "    new_torque = int(round(actuators.torque * self.params.STEER_MAX))",
+     "    new_torque = int(round(actuators.torque * 450))"),
+
+    ("carcontroller normalises the feedback by a different ceiling",
      "opendbc/car/hyundai/carcontroller.py",
      "new_actuators.torque = apply_torque / self.params.STEER_MAX",
      "new_actuators.torque = apply_torque / 384"),
