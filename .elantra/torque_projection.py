@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""What flat 409 costs, measured against the recorded drives.
+"""What moving the steering ceiling would cost, measured against the recorded drives.
+
+THE ANSWER FOR THIS CAR IS ALREADY IN: DO NOT RAISE IT. Measured 2026-09-01 -- the MDPS accepts
+409 and trips CF_Mdps_ToiFlt at 410. The two raised builds put 158 frames above 409 on the wire
+and took 19 fault onsets, at commanded counts 410 to 433, all of them under a ceiling that was
+STATIONARY at the time (np.interp clamps below its first breakpoint, and every onset was below
+it). So this tool refuses any candidate above 409 (see EPS_CEILING).
+It is kept because the counterfactual machinery below is the only honest way to price a
+ceiling change against real drives, and because a LOWER candidate is still a live question.
 
 Two questions, answered in one pass, because a pass over the whole route store costs an hour.
 
@@ -8,6 +16,11 @@ Two questions, answered in one pass, because a pass over the whole route store c
    apply_driver_steer_torque_limits under each ceiling. Deliberately NOT `fraction * ceiling`:
    the rate limiter and the driver-torque envelope are history dependent, so the delta they
    produce is not the delta the multiplication predicts.
+
+   BEFORE is the flat 409 the recorded drives ACTUALLY ran, so the BEFORE chain is a real
+   one-frame prediction test -- it must reproduce the next recorded command exactly. AFTER is
+   the flat candidate, which defaults to 409 (a no-op, so the tool reports honestly that
+   nothing changed) and is set with --candidate.
 
    One step, not a free-running trajectory, and that is a deliberate limit rather than a
    shortcut. Lateral control is a feedback loop: a counterfactual that ran for 60 s would have
@@ -51,7 +64,13 @@ TORQUE_OFFSET = 1024
 OP_TX_SRC = 128          # src >= 128 is a frame openpilot transmitted
 CAMERA_BUS = 2           # the factory camera's own LKAS11 lives here
 
-SPEED_BANDS = ((0.0, 3.0), (3.0, 7.0), (7.0, 10.0), (10.0, 14.0), (14.0, 18.0), (18.0, 1e9))
+# 8.94 and 13.41 m/s are 20.0 and 30.0 mph, and they are band edges on purpose: 20 mph falls
+# INSIDE a 7-10 band, so "what happens under 20 mph" -- the regime this car's shortfall
+# actually lives in -- could not be read off the table without mixing in frames from above it.
+# Holding these splits still also keeps reports comparable across scans, which matters because
+# a re-scan needs the car. This costs comparability with the 10-14 / 14-18 split used
+# elsewhere; lateral_report.py keeps those and is unchanged.
+SPEED_BANDS = ((0.0, 3.0), (3.0, 7.0), (7.0, 8.94), (8.94, 13.41), (13.41, 18.0), (18.0, 1e9))
 BAND_NAMES = [f"{lo:g}-{hi:g}" if hi < 1e9 else f"{lo:g}+" for lo, hi in SPEED_BANDS]
 
 # CarControllerParams for this platform, restated so the tool does not move when the checkout
@@ -62,8 +81,27 @@ DRIVER_ALLOWANCE = 50
 DRIVER_MULTIPLIER = 2
 DRIVER_FACTOR = 1
 
-BEFORE_SCHEDULE = ([8.0, 16.0], [409, 384])   # the superseded schedule, kept as the baseline
-AFTER_FLAT = 409                              # what replaces it
+BEFORE_FLAT = 409         # what the recorded drives actually ran
+DEFAULT_CANDIDATE = 409   # the flat candidate to price against it; override with --candidate
+CANDIDATE_CEILING = DEFAULT_CANDIDATE   # rebound by main() when --candidate is given
+
+# THE HIGHEST COUNT THIS MDPS ACCEPTS. Measured 2026-09-01, not inferred: routes 000000dc (500
+# schedule) and 000000dd (450 schedule) put 158 frames above 409 on the wire and took 19
+# CF_Mdps_ToiFlt onsets while steering, at commanded counts of 410 through 433 -- minimum 410 --
+# against ~1.59M engaged frames at 409 or below with none at all.
+#
+# It is the VALUE, not the schedule: np.interp clamps below its first breakpoint, so under
+# 8.94 m/s both schedules held a CONSTANT ceiling, and all 19 onsets happened between 2.1 and
+# 8.6 m/s. Every fault therefore happened under a stationary ceiling, which is the flat-ceiling
+# experiment that was thought never to have run.
+#
+# So this is a hardware boundary and the tool refuses above it. Do not raise this constant: a
+# projection is a number someone acts on, and every count from 410 up is one the EPS rejects.
+EPS_CEILING = 409
+
+# What panda would let out. Deliberately NOT the limit this tool enforces -- panda sits 103
+# counts above the EPS ceiling, so "under panda" is not the same as "the car can steer".
+PANDA_CEILING = 512
 
 
 class Limits:
@@ -103,6 +141,16 @@ def assert_params_match() -> None:
     if mismatched:
         raise SystemExit("CarControllerParams no longer match this tool's copy: " + repr(mismatched))
 
+    if CANDIDATE_CEILING > EPS_CEILING:
+        raise SystemExit(
+            f"refusing to project a {CANDIDATE_CEILING}-count ceiling: this MDPS accepts " +
+            f"{EPS_CEILING} and trips CF_Mdps_ToiFlt at {EPS_CEILING + 1}. Measured on routes " +
+            "000000dc and 000000dd -- 158 frames above 409, 19 fault onsets, lowest at 410 -- " +
+            "against ~1.59M engaged frames at 409 or below with none. Every onset happened " +
+            "under a STATIONARY ceiling, so this is the value and not the schedule. panda " +
+            f"would pass it ({PANDA_CEILING}); that is not the check made here, and 410-512 " +
+            "is exactly the band the EPS rejects. Do not raise EPS_CEILING.")
+
 
 def band_of(v: float) -> str | None:
     for (lo, hi), name in zip(SPEED_BANDS, BAND_NAMES, strict=False):
@@ -117,12 +165,6 @@ def decode_lkas11(dat: bytes):
         return None
     word = int.from_bytes(dat[0:4], "little")
     return ((word >> 16) & 0x7FF) - TORQUE_OFFSET, (word >> 27) & 1
-
-
-def schedule_ceiling(v: float) -> int:
-    """The carcontroller's own interpolation, restated: int(round(interp(vEgoRaw, bp, vals)))."""
-    import numpy as np
-    return int(round(float(np.interp(v, *BEFORE_SCHEDULE))))
 
 
 def new_band() -> dict:
@@ -194,15 +236,18 @@ def collect_segment(seg: str, factory: dict, tx: dict):
     return ccs, reals
 
 
-def step(frac: float, prev: int, driver: float, limits, ceiling: int, scheduled: bool) -> int:
+def step(frac: float, prev: int, driver: float, limits, ceiling: int, explicit_ceiling: bool) -> int:
     """One frame of the car's own limiter, seeded from `prev`.
 
-    `scheduled` picks the shape: the fork hands the interpolated ceiling to the rate limiter as
-    well as using it as the multiplier, while flat 409 is upstream's shape and passes nothing.
+    `explicit_ceiling` picks the CALL SHAPE, which is a real behavioural choice and not a
+    formality: upstream's apply_driver_steer_torque_limits takes an optional 5th argument, and
+    a caller that passes it drives the driver-override envelope from that value instead of
+    from limits.STEER_MAX. With a flat candidate the two agree, so both shapes are exercised
+    here deliberately -- if they ever stop agreeing, the tests below are what says so.
     """
     from opendbc.car.lateral import apply_driver_steer_torque_limits
     new_torque = int(round(frac * ceiling))
-    if scheduled:
+    if explicit_ceiling:
         return apply_driver_steer_torque_limits(new_torque, prev, driver, limits, ceiling)
     return apply_driver_steer_torque_limits(new_torque, prev, driver, limits)
 
@@ -210,8 +255,8 @@ def step(frac: float, prev: int, driver: float, limits, ceiling: int, scheduled:
 def simulate_segment(seg: str, bands: dict, factory: dict, valid: dict, tx: dict) -> None:
     ccs, reals = collect_segment(seg, factory, tx)
 
-    lim_before = Limits(max(BEFORE_SCHEDULE[1]))
-    lim_after = Limits(AFTER_FLAT)
+    lim_before = Limits(BEFORE_FLAT)
+    lim_after = Limits(CANDIDATE_CEILING)
 
     # carOutput at cycle k reports the CarController result computed from carControl at k-1, so
     # the car's own apply_torque_last while processing ccs[i] was reals[i], and the command it
@@ -225,9 +270,8 @@ def simulate_segment(seg: str, bands: dict, factory: dict, valid: dict, tx: dict
         if not lat:
             before = after = 0
         else:
-            ceil_before = schedule_ceiling(v_raw)
-            before = step(frac, prev, driver_tq, lim_before, ceil_before, True)
-            after = step(frac, prev, driver_tq, lim_after, AFTER_FLAT, False)
+            before = step(frac, prev, driver_tq, lim_before, BEFORE_FLAT, False)
+            after = step(frac, prev, driver_tq, lim_after, CANDIDATE_CEILING, True)
 
         valid["paired"] += 1
         if before == reals[i + 1]:
@@ -252,9 +296,9 @@ def simulate_segment(seg: str, bands: dict, factory: dict, valid: dict, tx: dict
         b["after_sum_abs"] += aa
         b["before_max_abs"] = max(b["before_max_abs"], ab)
         b["after_max_abs"] = max(b["after_max_abs"], aa)
-        if ab >= schedule_ceiling(v_raw):
+        if ab >= BEFORE_FLAT:
             b["before_at_ceiling"] += 1
-        if aa >= AFTER_FLAT:
+        if aa >= CANDIDATE_CEILING:
             b["after_at_ceiling"] += 1
         delta = after - before
         if delta:
@@ -288,6 +332,12 @@ def cmd_scan(args) -> int:
             name = os.path.basename(os.path.dirname(seg))
             rec = {
                 "seg": name,
+                # Stamped per record, not per file. `report` reads it back instead of trusting
+                # the module default -- otherwise `scan --candidate 384` followed by a bare
+                # `report` prints a header naming a ceiling the data was never scanned at. The
+                # resume path makes it worse: two runs at different candidates append to the
+                # SAME jsonl, and without this nothing anywhere records that they differ.
+                "candidate": CANDIDATE_CEILING,
                 "bands": {b: new_band() for b in BAND_NAMES},
                 "factory": {"frames": 0, "nonzero": 0, "max_abs": 0, "act_toi": 0},
                 "tx": {"frames": 0, "max_abs": 0},
@@ -341,6 +391,22 @@ def cmd_report(args) -> int:
         raise SystemExit("no scan output at " + str(path))
     recs = [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
     errored = [r["seg"] for r in recs if r["error"]]
+
+    # Which ceiling was this scanned AT? Read from the records, never from the module default.
+    # Records predating this stamp have no candidate; they are reported as unknown rather than
+    # assumed, because assuming is how a report ends up naming a ceiling it never measured.
+    seen = {r.get("candidate") for r in recs}
+    if len(seen) > 1:
+        raise SystemExit(
+            "this scan file mixes candidate ceilings " + repr(sorted(seen, key=str)) + ". " +
+            "Two runs at different --candidate values appended to the same file, so no single " +
+            "number describes it. Re-scan with --force, or report each separately.")
+    candidate = next(iter(seen)) if seen else None
+    if candidate is None:
+        raise SystemExit(
+            "this scan file predates candidate stamping, so what ceiling it measured is " +
+            "unrecorded. Re-scan with --force rather than guessing.")
+
     bands, factory, tx, valid = merge(recs)
 
     print(f"segments scanned: {len(recs)}   unreadable: {len(errored)}")
@@ -361,7 +427,8 @@ def cmd_report(args) -> int:
         print("  !! lag 0 fits better than lag 1 -- the pipeline alignment assumed here has")
         print("     changed, and every delta below is measured against a shifted signal.")
 
-    print("\n--- what flat 409 changes, by speed band ---")
+    print(f"\n--- what a flat {candidate} changes, by speed band " +
+          f"(BEFORE = flat {BEFORE_FLAT}) ---")
     print(f"  {'band':>8} {'frames':>9} {'changed':>9} {'%chg':>7} {'mean|d|':>8} {'max|d|':>7} " +
           f"{'pin_before':>11} {'pin_after':>10} {'maxcmd_b':>9} {'maxcmd_a':>9}")
     tot_frames = tot_changed = 0
@@ -402,11 +469,21 @@ def main() -> int:
     s.add_argument("--out", default="/data/elantra-projection.jsonl")
     s.add_argument("--limit", type=int, default=0)
     s.add_argument("--force", action="store_true")
+    s.add_argument("--candidate", type=int, default=DEFAULT_CANDIDATE,
+                   help=f"flat ceiling to price against the recorded {BEFORE_FLAT} " +
+                        f"(default {DEFAULT_CANDIDATE}; refused above {EPS_CEILING}, " +
+                        "where this car's EPS faults)")
     s.set_defaults(func=cmd_scan)
     r = sub.add_parser("report", help="aggregate a completed scan")
     r.add_argument("--out", default="/data/elantra-projection.jsonl")
     r.set_defaults(func=cmd_report)
+    global CANDIDATE_CEILING
     args = ap.parse_args()
+    if getattr(args, "candidate", None) is not None:
+        # Bound to the module global rather than threaded through, because simulate_segment
+        # and the report both read it and the alternative is six extra parameters. Set before
+        # assert_params_match() runs, so an out-of-range candidate is refused up front.
+        CANDIDATE_CEILING = args.candidate
     return args.func(args)
 
 
