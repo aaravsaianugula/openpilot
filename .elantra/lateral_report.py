@@ -79,6 +79,11 @@ ESTIMATOR_TOLERANCE = 0.02
 ESTIMATOR_REL_TOLERANCE = 0.25
 UNREADABLE_FILE = "_unreadable.json"
 
+# How long after lateral drops out a fault still counts as "at the disengagement". 2 s at 100 Hz.
+# A fault that disengages the car sets its bit once latActive is already false, so without this
+# window the engaged-only counter reports zero for exactly the events worth counting.
+DISENGAGE_WINDOW_FRAMES = 200
+
 # Params that change lateral behaviour. Part of the provenance tag: a route recorded with NNLC
 # on is not comparable to one recorded with it off, and must never share a bin.
 LATERAL_PARAMS = (
@@ -116,6 +121,41 @@ def decode_toiflt(dat: bytes):
     return (int.from_bytes(dat[0:2], "little") >> 14) & 1
 
 
+# The rest of MDPS12's status byte. Reading CF_Mdps_ToiFlt alone is how this tool once reported
+# 3 fault frames across 1.59M engaged ones while the two raised-ceiling routes carried 210 and 77
+# fault frames apiece -- openpilot's own fault condition is ToiUnavail OR ToiFlt
+# (hyundai/carstate.py), and "the MDPS dropped out rather than delivering" reads most naturally
+# as CF_Mdps_ToiActive falling to 0.
+MDPS_STATUS_BITS = {"def": 11, "unavail": 12, "active": 13, "flt": 14, "failstat": 15}
+
+# ToiActive is deliberately NOT here. It is a status bit set on essentially every frame while
+# openpilot steers, so counting it as a fault would report a ~100% fault rate.
+FAULT_BITS = ("def", "unavail", "flt", "failstat")
+
+
+def decode_mdps_status(dat: bytes):
+    """Every MDPS12 status bit as {name: 0|1}, or None if the frame is too short."""
+    if len(dat) < 2:
+        return None
+    word = int.from_bytes(dat[0:2], "little")
+    return {name: (word >> bit) & 1 for name, bit in MDPS_STATUS_BITS.items()}
+
+
+def eps_fault_bits(address: int, src: int, dat: bytes) -> frozenset:
+    """Which fault bits the REAL MDPS is asserting on this frame.
+
+    Same bus discrimination as is_eps_fault_frame, and for the same reason: 0x251 also arrives on
+    src 1 carrying something else entirely, and accepting it invented 599 phantom faults per
+    segment against a true count of zero.
+    """
+    if address != MDPS12 or src != POWERTRAIN_BUS:
+        return frozenset()
+    status = decode_mdps_status(dat)
+    if status is None:
+        return frozenset()
+    return frozenset(b for b in FAULT_BITS if status[b])
+
+
 def is_eps_fault_frame(address: int, src: int, dat: bytes) -> bool:
     """Is this frame the real MDPS reporting a steering fault?
 
@@ -142,6 +182,14 @@ def new_band() -> dict:
         # continuity, but toi_flt_engaged is the one that can be compared.
         "toi_flt": 0,
         "toi_flt_engaged": 0,
+        # ...except toi_flt_engaged has its own blind spot, and it is the one that matters: a
+        # fault that CAUSES a disengagement sets the bit after latActive has already gone false,
+        # so the engaged-only counter scores the very event it exists to catch as zero. Measured:
+        # routes 000000dc and 000000dd, the only two that ever commanded above 409, report
+        # toi_flt_engaged 0 while carrying 210 and 77 fault frames. Hence the third window.
+        "faults": dict.fromkeys(FAULT_BITS, 0),
+        "faults_engaged": dict.fromkeys(FAULT_BITS, 0),
+        "faults_at_disengage": dict.fromkeys(FAULT_BITS, 0),
     }
 
 
@@ -229,6 +277,7 @@ def scan_route(route: str, segs: list) -> dict:
         lat = False
         v = 0.0
         out_can = 0
+        disengage_countdown = 0
         try:
             for ev in LogReader(seg):
                 w = ev.which()
@@ -238,7 +287,12 @@ def scan_route(route: str, segs: list) -> dict:
                     out_can = int(ev.carOutput.actuatorsOutput.torqueOutputCan)
                 elif w == "carControl":
                     cc = ev.carControl
+                    was_lat = lat
                     lat = bool(cc.latActive)
+                    if was_lat and not lat:
+                        disengage_countdown = DISENGAGE_WINDOW_FRAMES
+                    elif not lat and disengage_countdown > 0:
+                        disengage_countdown -= 1
                     if not lat:
                         continue
                     band = band_of(v)
@@ -281,12 +335,24 @@ def scan_route(route: str, segs: list) -> dict:
                                 factory["frames"] += 1
                                 factory["max_abs_torque"] = max(factory["max_abs_torque"], abs(tq))
                                 factory["act_toi_frames"] += toi
-                        elif is_eps_fault_frame(c.address, c.src, bytes(c.dat)):
+                        else:
+                            bits = eps_fault_bits(c.address, c.src, bytes(c.dat))
+                            if not bits:
+                                continue
                             band = band_of(v)
-                            if band is not None:
-                                A[band]["toi_flt"] += 1
+                            if band is None:
+                                continue
+                            d = A[band]
+                            if "flt" in bits:
+                                d["toi_flt"] += 1
                                 if lat:
-                                    A[band]["toi_flt_engaged"] += 1
+                                    d["toi_flt_engaged"] += 1
+                            for b in bits:
+                                d["faults"][b] += 1
+                                if lat:
+                                    d["faults_engaged"][b] += 1
+                                elif disengage_countdown > 0:
+                                    d["faults_at_disengage"][b] += 1
         except Exception as exc:
             skipped.append({
                 "segment": os.path.basename(os.path.dirname(seg)),
@@ -394,6 +460,11 @@ def merge(reports: list, estimator: str) -> dict:
             d["max_abs"] = max(d["max_abs"], src["max_abs"])
             d["toi_flt"] += src["toi_flt"]
             d["toi_flt_engaged"] += src.get("toi_flt_engaged", 0)
+            # .get with a default so a report written by an older version of this tool -- and
+            # there are 96 of them already on the device -- merges instead of raising.
+            for window in ("faults", "faults_engaged", "faults_at_disengage"):
+                for bit, n in (src.get(window) or {}).items():
+                    d[window][bit] = d[window].get(bit, 0) + n
             for key in ("demand", "delivered"):
                 m = src.get(key + "_median")
                 if m is not None:

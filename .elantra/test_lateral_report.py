@@ -147,6 +147,36 @@ def main() -> int:
           neighbours)
     check("a short MDPS12 frame is rejected", m.decode_toiflt(b"\x00") is None)
 
+    # --- every OTHER MDPS12 status bit ------------------------------------------------
+    # Reading bit 14 alone is how this tool reported 3 fault frames in 1.59M engaged ones while
+    # the two raised-ceiling routes carried 210 and 77 fault frames each. openpilot's own fault
+    # condition is `ToiUnavail != 0 or ToiFlt != 0` (hyundai/carstate.py), and "the MDPS dropped
+    # out rather than delivering" is most naturally ToiActive falling. All of it has to be here.
+    for name, bit in (("def", 11), ("unavail", 12), ("active", 13), ("flt", 14), ("failstat", 15)):
+        got = m.decode_mdps_status((1 << bit).to_bytes(8, "little"))
+        only_this_one = got is not None and got[name] == 1 and sum(
+            got[k] for k in ("def", "unavail", "active", "flt", "failstat")) == 1
+        check(f"decode_mdps_status reads CF_Mdps_{name} at bit {bit} and nothing else",
+              only_this_one)
+    check("a short frame gives no status at all", m.decode_mdps_status(b"\x00") is None)
+
+    # ToiActive is a STATUS bit, not a fault: it is set on essentially every steering frame, so
+    # counting it would report a ~100% fault rate.
+    check("ToiActive is not counted as a fault",
+          m.eps_fault_bits(m.MDPS12, 0, (1 << 13).to_bytes(8, "little")) == frozenset())
+    check("ToiUnavail counts as a fault -- openpilot faults on it too",
+          m.eps_fault_bits(m.MDPS12, 0, (1 << 12).to_bytes(8, "little")) == frozenset({"unavail"}))
+    check("FailStat counts as a fault",
+          m.eps_fault_bits(m.MDPS12, 0, (1 << 15).to_bytes(8, "little")) == frozenset({"failstat"}))
+    check("several fault bits at once are all reported",
+          m.eps_fault_bits(m.MDPS12, 0, ((1 << 12) | (1 << 14)).to_bytes(8, "little"))
+          == frozenset({"unavail", "flt"}))
+    check("the bus filter applies to every fault bit, not just ToiFlt",
+          m.eps_fault_bits(m.MDPS12, 1, ((1 << 12) | (1 << 14)).to_bytes(8, "little"))
+          == frozenset())
+    check("a non-MDPS address yields no fault bits",
+          m.eps_fault_bits(m.LKAS11, 0, (1 << 14).to_bytes(8, "little")) == frozenset())
+
     # --- the bus filter, which is the part that was actually wrong --------------------
     check("a fault from the real MDPS on bus 0 counts",
           m.is_eps_fault_frame(m.MDPS12, 0, mdps12(1)))
@@ -180,6 +210,68 @@ def main() -> int:
     # This is the one that matters most: a drive with NNLC on is not comparable to one with it
     # off, and compare() only refuses to mix them because the tag separates them.
     check("turning NNLC on changes the tag", m.tag_of(nnlc_on) != m.tag_of(base))
+
+
+    # --- the scan loop itself, driven through a fake LogReader --------------------------
+    # The decoders above are pure and easy to test; the ACCOUNTING is where the bug lived, and
+    # it only runs inside scan_route's event loop. scan_route does its LogReader import inside
+    # the function, so a fake module in sys.modules reaches it without touching the real one.
+    import types
+
+    class _Ev:
+        def __init__(self, kind, **kw):
+            self._kind = kind
+            for k, v in kw.items():
+                setattr(self, k, v)
+
+        def which(self):
+            return self._kind
+
+    def _ns(**kw):
+        return types.SimpleNamespace(**kw)
+
+    def _cc(lat):
+        return _Ev("carControl", carControl=_ns(
+            latActive=lat, actuators=_ns(curvature=0.0, torque=0.0), currentCurvature=0.0))
+
+    def _can(*frames):
+        return _Ev("can", can=[_ns(address=a, src=s, dat=d) for a, s, d in frames])
+
+    FLT = mdps12(1)
+    UNAVAIL = (1 << 12).to_bytes(8, "little")
+
+    events = [_Ev("carState", carState=_ns(vEgo=5.0)),
+              _Ev("carOutput", carOutput=_ns(actuatorsOutput=_ns(torqueOutputCan=100)))]
+    events += [_cc(True)] * 60                       # engaged, band 3-7
+    events += [_can((m.MDPS12, 0, FLT))]             # a fault WHILE engaged
+    events += [_cc(False)]                           # the disengagement
+    events += [_can((m.MDPS12, 0, FLT))]             # ...and one immediately after it
+    events += [_cc(False)] * 198                     # window still open (200 frames)
+    events += [_can((m.MDPS12, 0, UNAVAIL))]         # ToiUnavail near the end of the window
+    events += [_cc(False)] * 5                       # window now expired
+    events += [_can((m.MDPS12, 0, FLT)),             # too late to be "at the disengagement"
+               _can((m.MDPS12, 1, FLT))]             # and a bus-1 decoy that must never count
+
+    fake = types.ModuleType("openpilot.tools.lib.logreader")
+    fake.LogReader = lambda path, **kw: iter(events)
+    for _name in ("openpilot", "openpilot.tools", "openpilot.tools.lib"):
+        sys.modules.setdefault(_name, types.ModuleType(_name))
+    sys.modules["openpilot.tools.lib.logreader"] = fake
+
+    rep = m.scan_route("test", ["seg0"])
+    band = rep["bands"]["estimator_a"]["3-7"]
+
+    check("a fault while steering lands in faults_engaged",
+          band["faults_engaged"]["flt"] == 1)
+    check("a fault just AFTER the disengagement is still counted -- the blind spot that hid " +
+          "every real event on this car", band["faults_at_disengage"]["flt"] == 1)
+    check("ToiUnavail is counted in its own right, not folded into ToiFlt",
+          band["faults_at_disengage"]["unavail"] == 1 and band["faults"]["unavail"] == 1)
+    check("a fault past the 2 s window counts overall but NOT at the disengagement",
+          band["faults"]["flt"] == 3 and band["faults_at_disengage"]["flt"] == 1)
+    check("toi_flt keeps its original meaning for continuity",
+          band["toi_flt"] == 3 and band["toi_flt_engaged"] == 1)
+    check("engaged frames are still counted normally", band["frames"] == 60)
 
     print("\n" + "-" * 58)
     if failures:
