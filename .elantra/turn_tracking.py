@@ -95,6 +95,8 @@ SAMPLE_OFFSETS = (0, 10, 25, 50, 75, 100, 150, 200)
 RAMP_SPLIT_FRAMES = 150         # 1.5 s: ramp phase vs sustained phase
 REVERSAL_FRAC = 0.15            # a retracement worth this much of the turn peak is a reversal
 LAG_SWEEP_MS = range(41)        # candidate carOutput lags, milliseconds
+LAG_GOOD_RESIDUAL = 1.0         # counts; agreement this close IS proof the join is right
+LAG_MAX_CONTRAST = 0.5          # otherwise the minimum must at least be sharp
 
 LATERAL_PARAMS = ("LateralJerkTorqueController", "NeuralNetworkLateralControl",
                   "EnforceTorqueControl", "TorqueControlTune", "LiveTorqueParamsToggle",
@@ -227,25 +229,44 @@ def learn_lag(cs_t, cs_req, co_t, co_can):
 
     controlsd and card are separate processes. A fixed index offset cannot work -- the two
     streams do not even have the same message count in ~40% of segments -- so the join is
-    nearest-neighbour in time under a swept offset, and the offset minimising the median
-    |ask - applied| is the true one.
+    nearest-neighbour in time under a swept offset, choosing the offset that minimises the
+    median |ask - applied|.
 
-    Both streams run at 100 Hz, so the lag is only identifiable to within half a sample: every
-    candidate inside a 10 ms window selects the SAME neighbour and scores identically. Taking
-    the first minimum would report the edge of that plateau and call it precision. We report
-    its centre instead. Returns (lag_ms, median_residual_counts).
+    That objective is sharp and correct WHEN THE TWO SIGNALS AGREE, and on real segments it
+    lands at 14-17 ms with a residual under half a count. It is also confounded with the very
+    thing this tool exists to measure: on a segment where the EPS received a median 82 counts
+    against an ask of 289, no offset makes them agree, the residual curve is flat from 86
+    counts down to 77 with no minimum, and an unguarded argmin slides to the edge of the sweep
+    and reports a lag with total confidence.
+
+    So the estimator also reports how sharp its minimum is. CONTRAST is the best residual over
+    the typical residual across the sweep: near 0 is a real, sharp minimum; near 1 means the
+    curve is flat and nothing was found. A lag pinned to the edge of the sweep means the same.
+    Callers must check, and this module refuses to pretend otherwise.
+
+    (Correlation was tried as the objective instead and is worse: it is flat near its peak on
+    these smooth signals and drifted to the sweep edge on 5 of 6 real segments where the
+    residual objective was landing correctly at 14-17 ms.)
+
+    Both streams run at 100 Hz, so the lag is identifiable only to within one sample: every
+    candidate inside a ~10 ms window selects the SAME neighbour and scores identically. We
+    report the centre of that plateau rather than its first edge.
+
+    Returns (lag_ms, residual_counts, contrast).
     """
     if len(cs_t) < 200 or len(co_t) < 200:
-        return 0, float("nan")
+        return 0, float("nan"), 1.0
+    ts, xs = cs_t[::7], cs_req[::7]
     scored = []
     for lag_ms in LAG_SWEEP_MS:
         off = lag_ms * 1e6  # logMonoTime is nanoseconds
-        resid = [abs(req - co_can[nearest(co_t, t + off)])
-                 for t, req in zip(cs_t[::7], cs_req[::7], strict=True)]  # every 7th frame picks a lag fine
-        scored.append((lag_ms, med(resid)))
-    best = min(r for _, r in scored)
+        scored.append((lag_ms, med([abs(q - co_can[nearest(co_t, t + off)])
+                                    for t, q in zip(ts, xs, strict=True)])))
+    resids = [r for _, r in scored]
+    best, typical = min(resids), med(resids)
     plateau = [lag for lag, r in scored if r <= best + max(1e-9, 0.001 * best)]
-    return int(round(med(plateau))), best
+    contrast = best / typical if typical > 0 else 1.0
+    return int(round(med(plateau))), best, contrast
 
 
 def nearest(sorted_t, target):
@@ -295,7 +316,8 @@ def collect_segment(segdir, rate_up=RATE_UP, rate_down=RATE_DOWN):
     """One segment -> (frames, meta). A None frame marks engaged-but-excluded or not engaged,
     so a turn event can never span a gap."""
     f = rlog_of(segdir)
-    meta = {"steer_max": None, "lag_ms": None, "lag_resid": None, "read_error": None,
+    meta = {"steer_max": None, "lag_ms": None, "lag_resid": None, "lag_contrast": None,
+            "lag_trusted": False, "read_error": None,
             "rail_up": 0.0, "rail_down": 0.0, "rail_frames": 0,
             "excluded": {"uncalibrated": 0, "big_model_failed": 0}}
     if not f:
@@ -361,8 +383,18 @@ def collect_segment(segdir, rate_up=RATE_UP, rate_down=RATE_DOWN):
         return [None] * len(cs), meta
 
     live = [r for r in cs if r is not None]
-    meta["lag_ms"], meta["lag_resid"] = learn_lag([r[0] for r in live],
-                                                  [r[4] * sm for r in live], co_t, co_can)
+    meta["lag_ms"], meta["lag_resid"], meta["lag_contrast"] = learn_lag(
+        [r[0] for r in live], [r[4] * sm for r in live], co_t, co_can)
+    # Two independent routes to trusting the join, because either alone rejects good segments.
+    # DIRECT: the two series agree to within a count at the chosen offset, which is proof by
+    # construction. INDIRECT: the residual curve has a sharp minimum, which is what has to
+    # carry a segment where the car genuinely was not given what it asked for. A quiet segment
+    # can join perfectly (0.27 counts) and still score a weak contrast, because when the signal
+    # barely moves, misalignment costs little -- contrast alone rejected those. A lag pinned to
+    # the edge of the sweep fails regardless: that is the estimator saying it found nothing.
+    meta["lag_trusted"] = ((meta["lag_resid"] <= LAG_GOOD_RESIDUAL
+                            or meta["lag_contrast"] <= LAG_MAX_CONTRAST)
+                           and min(LAG_SWEEP_MS) < meta["lag_ms"] < max(LAG_SWEEP_MS))
     off = meta["lag_ms"] * 1e6
     frames = []
     for r in cs:
@@ -519,7 +551,7 @@ def scan_route(segs, rate_up=RATE_UP, rate_down=RATE_DOWN):
     """Walk a route segment by segment. Segment-level facts are aggregated weighted by the
     frames that produced them, never averaged flat."""
     frames, agg = [], {"rail_up_n": 0.0, "rail_down_n": 0.0, "rail_frames": 0,
-                       "lags": [], "resids": [], "steer_max": set(),
+                       "lags": [], "resids": [], "contrasts": [], "untrusted": 0, "steer_max": set(),
                        "excluded": {"uncalibrated": 0, "big_model_failed": 0},
                        "read_errors": [], "band_frames": defaultdict(int)}
     for sd in segs:
@@ -537,6 +569,9 @@ def scan_route(segs, rate_up=RATE_UP, rate_down=RATE_DOWN):
             agg["steer_max"].add(meta["steer_max"])
             agg["lags"].append(meta["lag_ms"])
             agg["resids"].append(meta["lag_resid"])
+            agg["contrasts"].append(meta["lag_contrast"])
+            if not meta["lag_trusted"]:
+                agg["untrusted"] += 1
     for f in frames:
         if f is not None:
             b = band_of(f.v)
@@ -579,6 +614,8 @@ def cmd_scan(a):
                 "rate_up": a.rate_up, "rate_down": a.rate_down,
                 "lag_ms": med(agg["lags"]) if agg["lags"] else None,
                 "lag_resid": med(agg["resids"]) if agg["resids"] else None,
+                "lag_contrast": med(agg["contrasts"]) if agg["contrasts"] else None,
+                "lag_untrusted_segments": agg["untrusted"],
                 "rail_up": 100.0 * agg["rail_up_n"] / rail_n if rail_n else 0.0,
                 "rail_down": 100.0 * agg["rail_down_n"] / rail_n if rail_n else 0.0,
                 "rail_frames": rail_n,
@@ -725,7 +762,17 @@ def cmd_report(a):
         lags = [r["lag_ms"] for r in rs if r.get("lag_ms") is not None]
         resids = [r["lag_resid"] for r in rs if r.get("lag_resid") is not None]
         if lags:
-            print(f"  carOutput join: learned lag median {med(lags):.0f} ms (range {min(lags):.0f}-{max(lags):.0f}), residual median {med(resids):.2f} counts")
+            cons = [r["lag_contrast"] for r in rs if r.get("lag_contrast") is not None]
+            c = f", contrast {med(cons):.3f} (0 = sharp minimum, 1 = nothing found)" if cons else ""
+            print(f"  carOutput join: lag median {med(lags):.0f} ms (range {min(lags):.0f}-{max(lags):.0f}){c}")
+            print(f"    residual median {med(resids):.2f} counts -- a DIAGNOSTIC, not the join objective:")
+            print("    a large residual at high correlation means the car was not given what it asked for.")
+            bad = sum(r.get("lag_untrusted_segments", 0) for r in rs)
+            if bad:
+                print(f"    WARNING: {bad} segment(s) had no trustworthy join (residual above")
+                print(f"    {LAG_GOOD_RESIDUAL} count AND contrast above {LAG_MAX_CONTRAST},")
+                print("    or the lag pinned to the sweep edge). Their paired numbers are suspect;")
+                print("    the rail-occupancy figures above are unaffected -- they need no join.")
         if not evs:
             print("  no turn events in this group")
             continue

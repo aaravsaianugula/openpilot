@@ -228,18 +228,37 @@ def test_nearest_and_lag():
     cs_t = [i * 10_000_000 for i in range(n)]
     req = [((i * 37) % 400) - 200.0 for i in range(n)]
     co_t = [x + 15_000_000 for x in cs_t]
-    lag, resid = tt.learn_lag(cs_t, req, co_t, list(req))
+    lag, resid, contrast = tt.learn_lag(cs_t, req, co_t, list(req))
     check("the learned lag is within half a frame of the truth", abs(lag - 15) <= 5, True)
     check("it is the plateau centre, not its first edge", lag, 14)
     check("and the join it picks is exact", resid, 0.0)
+    check("a sharp minimum scores contrast 0", contrast, 0.0)
+    check("which the trust test accepts", contrast <= tt.LAG_MAX_CONTRAST, True)
 
     # A stream with NO lag must not be given one.
-    lag0, resid0 = tt.learn_lag(cs_t, req, list(cs_t), list(req))
+    lag0, resid0, _ = tt.learn_lag(cs_t, req, list(cs_t), list(req))
     check("a synchronous stream learns a near-zero lag", abs(lag0) <= 5, True)
     check("and joins exactly", resid0, 0.0)
 
-    short = cs_t[:50]
-    check("too little data does not guess a lag", tt.learn_lag(short, req[:50], short, req[:50])[0], 0)
+    # THE CONFOUNDED CASE, observed on a real segment: the EPS received a median 82 counts
+    # against an ask of 289, so no offset makes the two agree. The residual curve is flat and
+    # an unguarded argmin slid to the edge of the sweep and reported a lag with full
+    # confidence. What must happen instead is that the estimator says it found nothing.
+    flat = [40.0 for _ in range(n)]           # applied is unrelated to the ask
+    _, _, contrast_flat = tt.learn_lag(cs_t, req, co_t, flat)
+    check("a flat residual curve scores contrast near 1", contrast_flat > 0.9, True)
+    check("and neither route to trust accepts it",
+          contrast_flat <= tt.LAG_MAX_CONTRAST, False)
+
+    # The other direction, also from real segments: a quiet stretch joins to 0.27 counts --
+    # proof by construction -- yet scores a weak contrast, because when the signal barely
+    # moves, misaligning it costs little. Contrast alone rejected those good joins, so a
+    # sub-count residual has to be sufficient on its own.
+    ramp = [200.0 + 0.02 * i for i in range(n)]                    # barely moves frame to frame
+    noisy = [v + (0.3 if i % 2 else -0.3) for i, v in enumerate(ramp)]  # small rounding floor
+    _, resid_q, contrast_q = tt.learn_lag(cs_t, ramp, co_t, noisy)
+    check("a quiet segment still joins to well under a count", resid_q <= tt.LAG_GOOD_RESIDUAL, True)
+    check("even though its contrast is weak", contrast_q > tt.LAG_MAX_CONTRAST, True)
 
 
 def test_rail_occupancy_needs_no_pairing():
