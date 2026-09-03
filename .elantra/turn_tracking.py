@@ -93,6 +93,7 @@ KNOWN_CEILINGS = (255, 270, 384, 409)
 SNAP_TOLERANCE = 1.0            # counts; only wide enough for float noise, see steer_max_of
 SAMPLE_OFFSETS = (0, 10, 25, 50, 75, 100, 150, 200)
 RAMP_SPLIT_FRAMES = 150         # 1.5 s: ramp phase vs sustained phase
+PRE_ROLL_FRAMES = 200           # 2 s before a turn opens, for the lag metric only
 REVERSAL_FRAC = 0.15            # a retracement worth this much of the turn peak is a reversal
 LAG_SWEEP_MS = range(41)        # candidate carOutput lags, milliseconds
 LAG_GOOD_RESIDUAL = 1.0         # counts; agreement this close IS proof the join is right
@@ -435,10 +436,10 @@ def _la(fr):
     return abs(fr.cmd) * max(fr.v, 1.0) ** 2
 
 
-def turn_events(frames):
-    """Contiguous engaged runs whose commanded lateral accel opens above TURN_ON and stays
-    above TURN_OFF."""
-    evs = []
+def turn_event_spans(frames):
+    """(start, end) index pairs for each turn event: contiguous engaged runs whose commanded
+    lateral accel opens above TURN_ON and stays above TURN_OFF."""
+    spans = []
     i = 0
     n = len(frames)
     while i < n:
@@ -448,14 +449,38 @@ def turn_events(frames):
             while j < n and frames[j] is not None and _la(frames[j]) > TURN_OFF:
                 j += 1
             if j - i >= MIN_TURN_FRAMES:
-                evs.append(frames[i:j])
+                spans.append((i, j))
             i = max(j, i + 1)
         else:
             i += 1
-    return evs
+    return spans
 
 
-def decompose(ev, steer_max, rate_up=RATE_UP):
+def turn_events(frames):
+    """The turn events themselves."""
+    return [frames[i:j] for i, j in turn_event_spans(frames)]
+
+
+def approach_of(frames, start):
+    """Up to PRE_ROLL_FRAMES of engaged frames immediately before a turn opens.
+
+    A turn event opens only once commanded lateral accel is ALREADY above TURN_ON, so by frame
+    zero the controller is asking hard and the torque is part-way up. Measuring a rise time
+    inside that window reports 0.00 s for both the ask and the applied value and looks like a
+    finding -- the rate limiter costing nothing -- when it is only the window opening late.
+    The approach is where the ramp actually happens, so the lag metric gets it and nothing else
+    does. Stops at a gap, because a None frame means disengaged or excluded."""
+    lo = max(0, start - PRE_ROLL_FRAMES)
+    out = []
+    for k in range(start - 1, lo - 1, -1):
+        if frames[k] is None:
+            break
+        out.append(frames[k])
+    out.reverse()
+    return out
+
+
+def decompose(ev, steer_max, rate_up=RATE_UP, approach=()):
     """One turn event -> the numbers that say where the turn went."""
     prof = {}
     for off in SAMPLE_OFFSETS:
@@ -561,6 +586,7 @@ def decompose(ev, steer_max, rate_up=RATE_UP):
         n_sat += 1 if f.sat else 0
 
     n = len(ev)
+    seq = list(approach) + list(ev)
     ramp, sus = ev[:RAMP_SPLIT_FRAMES], ev[RAMP_SPLIT_FRAMES:]
     return {"v0": ev[0].v, "band": band_of(ev[0].v), "frames": n, "profile": prof,
             "steer_max": steer_max,
@@ -589,11 +615,15 @@ def decompose(ev, steer_max, rate_up=RATE_UP):
             "gain_vm": med(gain_vm) if gain_vm else float("nan"),
             "gain_yaw": med(gain_yaw) if gain_yaw else float("nan"),
             "reversals_per_s": reversals / (n * DT),
-            # Where the lateness is. Each is seconds to half of that signal peak in this turn.
-            "t50_cmd": t50([abs(f.cmd) * max(f.v, 1.0) ** 2 for f in ev]),
-            "t50_req": t50([abs(f.req) for f in ev]),
-            "t50_can": t50([abs(f.can) for f in ev]),
-            "t50_yaw": t50([None if f.yaw is None else abs(f.yaw) * f.v for f in ev])}
+            # Where the lateness is, measured over the APPROACH plus the turn: the ramp
+            # happens before commanded lateral accel crosses TURN_ON, so a window starting at
+            # the turn itself reports every signal as already up and every leg as zero.
+            "t50_frames": len(approach) + n,
+            "t50_pre": len(approach),
+            "t50_cmd": t50([abs(f.cmd) * max(f.v, 1.0) ** 2 for f in seq]),
+            "t50_req": t50([abs(f.req) for f in seq]),
+            "t50_can": t50([abs(f.can) for f in seq]),
+            "t50_yaw": t50([None if f.yaw is None else abs(f.yaw) * f.v for f in seq])}
 
 
 def scan_route(segs, rate_up=RATE_UP, rate_down=RATE_DOWN):
@@ -653,7 +683,8 @@ def cmd_scan(a):
             sms = sorted(agg["steer_max"])
             # A route that changed ceiling mid-drive cannot be scored against one constant.
             steer_max = sms[0] if len(sms) == 1 else None
-            evs = [decompose(e, steer_max, a.rate_up) for e in turn_events(frames)] if steer_max else []
+            evs = ([decompose(frames[i:j], steer_max, a.rate_up, approach_of(frames, i))
+                    for i, j in turn_event_spans(frames)] if steer_max else [])
             eng = sum(1 for f in frames if f is not None)
             rail_n = agg["rail_frames"]
             fh.write(json.dumps({

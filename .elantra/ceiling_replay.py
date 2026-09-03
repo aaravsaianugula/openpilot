@@ -18,6 +18,14 @@ still -- a negative result here is sound, and a positive one is only an upper bo
 panda enforces HYUNDAI_LIMITS(512, 3, 7): it caps the ceiling at 512 AND the rate at 3/7. Any
 rate above 3 in this grid is therefore a PANDA REFLASH, not just an opendbc edit, and the table
 labels it so.
+
+The 10/10 row is NOT "what carrotpilot runs", whatever this file used to say. Read from
+ajouatom/openpilot @ carrot-wip on 2026-09-03: their panda declares HYUNDAI_LIMITS(512, 10, 10),
+but their CarControllerParams commands STEER_DELTA_UP = 3 / STEER_DELTA_DOWN = 7 -- the same
+rate this car already uses -- and they keep max_rt_delta = 112, which caps any sustained ramp at
+112/25 = 4.48 counts/frame regardless. Their 10/10 is a permission their car controller never
+exercises and their own panda could not sustain. There is no ramp-rate setting to copy from
+them.
 """
 
 from __future__ import annotations
@@ -45,7 +53,7 @@ LOW_SPEED = (3.0, 14.0)
 GRID = [
     (409, 3, 7),     # today
     (409, 4, 7),     # the most rate today's max_rt_delta=112 can actually sustain
-    (409, 10, 10),   # carrotpilot's rate; needs max_rt_delta raised too
+    (409, 10, 10),   # NOT carrotpilot's rate -- see below; needs max_rt_delta raised too
     (450, 3, 7),     # ceiling only -- and the EPS has already refused this, see below
     (450, 10, 10),
     (500, 3, 7),
