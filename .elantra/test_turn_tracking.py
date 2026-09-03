@@ -422,6 +422,41 @@ def test_t50_locates_the_lateness():
     check("the legs are the differences", d["t50_yaw"] - d["t50_cmd"], 0.40, tol=1e-9)
 
 
+def test_approach_window_unsaturates_the_lag_metric():
+    print("approach_of / the lag metric can see the ramp")
+    quiet = [frame(cmd=0.0)] * 50
+    turn = [frame(cmd=1.0)] * 100
+    frames = quiet + turn + quiet
+    spans = tt.turn_event_spans(frames)
+    check("spans and events agree", [frames[i:j] for i, j in spans], tt.turn_events(frames))
+    check("the span starts where the turn opens", spans[0][0], 50)
+
+    ap = tt.approach_of(frames, 50)
+    check("the approach is the frames before the turn", len(ap), 50)
+    check("it stops at the start of the log", len(tt.approach_of(frames, 0)), 0)
+    gapped = quiet[:20] + [None] + quiet[:29] + turn
+    check("it stops at a gap", len(tt.approach_of(gapped, 50)), 29)
+    long_lead = [frame(cmd=0.0)] * 400 + turn
+    check("it is capped at PRE_ROLL_FRAMES",
+          len(tt.approach_of(long_lead, 400)), tt.PRE_ROLL_FRAMES)
+
+    # THE SATURATION THIS FIXES. A turn event opens only once the car is already steering hard,
+    # so inside it the ask and the applied value are both at their half-peak on frame one and
+    # every leg reads 0.00 s -- which looks like the rate limiter costing nothing. The ramp
+    # happened during the approach.
+    ev = [frame(v=5.0, cmd=0.30, out=1.0, can=400.0)] * 100
+    approach = [frame(v=5.0, cmd=0.02, out=k / 100.0, can=4.0 * k) for k in range(100)]
+    bare = tt.decompose(ev, 409.0)
+    check("without the approach the ask looks instant", bare["t50_req"], 0.0)
+    check("and so does the applied value", bare["t50_can"], 0.0)
+    check("so the rate-limiter leg reads as free", bare["t50_can"] - bare["t50_req"], 0.0)
+
+    withap = tt.decompose(ev, 409.0, approach=approach)
+    check("with the approach the ramp is visible", withap["t50_can"] > 0.0, True)
+    check("and the window records how much lead it had", withap["t50_pre"], 100)
+    check("and the total length", withap["t50_frames"], 200)
+
+
 def test_profile_keys_survive_json():
     print("decompose / profile keys")
     import json
@@ -441,6 +476,7 @@ def main():
                test_steer_max_recovery, test_nearest_and_lag, test_tail_statistics_do_not_hide_the_ceiling,
                test_reversals_count_retracements_not_dither, test_clip_deficit_distinguishes_zero_from_unknown,
                test_median_cell_survives_one_unmeasurable_turn, test_t50_locates_the_lateness,
+               test_approach_window_unsaturates_the_lag_metric,
                test_rail_occupancy_needs_no_pairing, test_driver_ceiling_matches_opendbc,
                test_profile_keys_survive_json):
         fn()
