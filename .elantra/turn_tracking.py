@@ -474,9 +474,13 @@ def decompose(ev, steer_max, rate_up=RATE_UP):
             up_run = 0
 
         # Where the missing counts went: the driver clamp takes its cut first, the rate limiter
-        # works on what is left. The two sum to the shortfall whenever the applied value is at or
-        # below the ask, which is the only case that matters here; both floor at zero, so a join
-        # artefact putting applied ABOVE the ask reports no deficit rather than a negative one.
+        # works on what is left. Per frame the two sum to the shortfall whenever the applied value
+        # is at or below the ask, which is the only case that matters here; both floor at zero, so
+        # a join artefact putting applied ABOVE the ask reports no deficit rather than a negative
+        # one. They are reported as MEANS, not medians: the driver clamp binds on ~42% of
+        # low-speed turn frames, so its median is 0 and a median-reported decomposition says the
+        # driver costs nothing while the medians of ask and applied sit 234 counts apart. Medians
+        # do not sum; means do, and this is a decomposition.
         ceil = driver_ceiling(steer_max, f.driver, 1.0 if f.req >= 0 else -1.0)
         if ceil < abs(f.req) - 0.5:
             n_drvlim += 1
@@ -537,7 +541,10 @@ def decompose(ev, steer_max, rate_up=RATE_UP):
             "longest_up_run_s": up_best * DT,
             "med_req": med([abs(f.req) for f in ev]),
             "med_can": med([abs(f.can) for f in ev]),
-            "deficit_driver": med(d_driver), "deficit_rate": med(d_rate),
+            "deficit_driver": sum(d_driver) / n, "deficit_rate": sum(d_rate) / n,
+            "deficit_total": (sum(d_driver) + sum(d_rate)) / n,
+            "mean_req": sum(abs(f.req) for f in ev) / n,
+            "mean_can": sum(abs(f.can) for f in ev) / n,
             "deficit_ramp": med([abs(f.req) - abs(f.can) for f in ramp]) if ramp else float("nan"),
             "deficit_sustained": med([abs(f.req) - abs(f.can) for f in sus]) if sus else float("nan"),
             # 0.0 means measured-and-none; nan means the model curvature was never usable.
@@ -648,7 +655,21 @@ def _ratio(sel, off):
 
 
 def _col(sel, key):
-    return med([e[key] for e in sel])
+    """Median across turns, dropping turns that could not measure this quantity.
+
+    med() sorts, and sorting a list containing nan gives an arbitrary order, so a single
+    unmeasurable turn can make the whole cell read nan -- which is how gain_yaw, one of the
+    load-bearing numbers, came out blank in two speed bands on a 1.37M-frame scan."""
+    vals = [e[key] for e in sel if e[key] == e[key]]
+    return med(vals) if vals else float("nan")
+
+
+def _wmean(sel, key):
+    """Frame-weighted mean across turns. The right aggregate for an additive decomposition:
+    a median over turns of a per-turn median silently drops any component that bites in a
+    minority of frames, which is exactly what the driver-torque clamp does."""
+    frames = sum(e["frames"] for e in sel)
+    return sum(e[key] * e["frames"] for e in sel) / frames if frames else float("nan")
 
 
 def pctl(xs, q):
@@ -709,7 +730,7 @@ def _table(evs, band_frames):
         print("  " + " ".join([
             f"{b:<7}", f"{len(sel):5d}", f"{_col(sel, 'longest_up_run_s'):6.2f}s",
             f"{_col(sel, 'deficit_ramp'):7.0f}", f"{_col(sel, 'deficit_sustained'):7.0f}",
-            f"{_col(sel, 'deficit_driver'):7.0f}", f"{_col(sel, 'deficit_rate'):7.0f}",
+            f"{_wmean(sel, 'deficit_driver'):7.0f}", f"{_wmean(sel, 'deficit_rate'):7.0f}",
             f"{_col(sel, 'pct_driver_limited'):6.1f}%", "|",
             f"{_col(sel, 'pct_output_pinned'):5.1f}%", f"{_col(sel, 'pct_driver_on_wheel'):5.1f}%",
             f"{_col(sel, 'pct_clipped'):5.1f}%", f"{100.0 * _col(sel, 'clip_deficit'):6.1f}%",
@@ -786,7 +807,9 @@ def cmd_report(a):
         print("         median over turns: ceiling contact happens in a few hard corners, and a")
         print("         median over turns reports 0.0% on a build that demonstrably reaches it.")
         print("  upRun  longest UNBROKEN run of STEER_DELTA_UP steps, seconds")
-        print("  defDrv counts lost to the driver-torque clamp | defRate counts lost to the rate limiter")
+        print("  defDrv/defRate MEAN counts lost to the driver clamp and to the rate limiter.")
+        print("         Means, because they are a decomposition and must sum; the clamp bites on a")
+        print("         minority of frames, so a median reports it as costing nothing.")
         print("  clip%  frames where clip_curvature reduced the model demand | clipDef by how much")
         print("  gainYaw achieved lateral accel per unit APPLIED normalised torque, from the yaw")
         print("          rate -- model-free. Compare against the single latAccelFactor in use.")

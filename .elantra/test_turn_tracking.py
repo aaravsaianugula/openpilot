@@ -154,8 +154,24 @@ def test_deficit_split_is_exhaustive():
     d = tt.decompose(ev, 409.0)
     check("driver clamp takes its cut first", d["deficit_driver"], 200.0)
     check("the rate limiter works on what is left", d["deficit_rate"], 109.0)
-    check("the two sum to the shortfall", d["deficit_driver"] + d["deficit_rate"], 309.0)
+    check("the two sum to the shortfall", d["deficit_total"], 309.0)
+    check("and the shortfall is mean ask minus mean applied", d["mean_req"] - d["mean_can"], 309.0)
     check("and the frames are flagged driver-limited", d["pct_driver_limited"], 100.0)
+
+    # THE REASON THESE ARE MEANS. The clamp bites on a minority of frames -- measured at 42% of
+    # 3-7 m/s turn frames on 2.03M engaged frames -- so a median reports the driver as costing
+    # nothing while the medians of ask and applied sit hundreds of counts apart. Medians do not
+    # sum; a decomposition must.
+    ev = ([frame(v=1.0, cmd=1.0, out=1.0, can=100.0, driver=-150.0)] * 40 +
+          [frame(v=1.0, cmd=1.0, out=1.0, can=409.0, driver=0.0)] * 60)
+    d = tt.decompose(ev, 409.0)
+    check("a minority-incidence clamp is invisible to a median",
+          tt.med([200.0] * 40 + [0.0] * 60), 0.0)
+    check("but the mean carries it", d["deficit_driver"], 80.0, tol=1e-9)
+    check("the decomposition still sums", d["deficit_total"],
+          d["deficit_driver"] + d["deficit_rate"], tol=1e-9)
+    check("and equals mean ask minus mean applied",
+          d["deficit_total"], d["mean_req"] - d["mean_can"], tol=1e-9)
 
     ev = [frame(v=1.0, cmd=1.0, out=1.0, can=100.0, driver=0.0)] * 100
     d = tt.decompose(ev, 409.0)
@@ -357,6 +373,18 @@ def test_tail_statistics_do_not_hide_the_ceiling():
                           {"frames": 100, "pct_at_ceiling": 50.0}], "pct_at_ceiling"), 5.0)
 
 
+def test_median_cell_survives_one_unmeasurable_turn():
+    print("report / a median cell drops nan instead of becoming nan")
+    nan = float("nan")
+    sel = [{"gain_yaw": 2.0, "frames": 100}, {"gain_yaw": nan, "frames": 100},
+           {"gain_yaw": 4.0, "frames": 100}]
+    got = tt._col(sel, "gain_yaw")
+    check("one unmeasurable turn does not blank the cell", got, 3.0)
+    allnan = [{"gain_yaw": nan, "frames": 10}] * 3
+    g = tt._col(allnan, "gain_yaw")
+    check("but if nothing was measurable the cell IS nan", g != g, True)
+
+
 def test_profile_keys_survive_json():
     print("decompose / profile keys")
     import json
@@ -375,6 +403,7 @@ def main():
                test_clip_curvature_detection, test_gain_is_model_free_from_yaw,
                test_steer_max_recovery, test_nearest_and_lag, test_tail_statistics_do_not_hide_the_ceiling,
                test_reversals_count_retracements_not_dither, test_clip_deficit_distinguishes_zero_from_unknown,
+               test_median_cell_survives_one_unmeasurable_turn,
                test_rail_occupancy_needs_no_pairing, test_driver_ceiling_matches_opendbc,
                test_profile_keys_survive_json):
         fn()
