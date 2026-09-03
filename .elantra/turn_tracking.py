@@ -407,6 +407,30 @@ def collect_segment(segdir, rate_up=RATE_UP, rate_down=RATE_DOWN):
     return frames, meta
 
 
+def t50(vals):
+    """Seconds until a signal first reaches half its own peak inside the turn.
+
+    Used to decompose WHERE the car is late: plan -> command -> applied -> achieved. Half-peak
+    rather than a fixed level because the four signals are in four different units, and their
+    peaks differ turn to turn; what is comparable is when each is half way to wherever it got.
+
+    A turn event opens once commanded lateral accel is already above TURN_ON, so the command is
+    part-way up at index 0 and the plan-side lead is UNDERSTATED. The command-to-applied and
+    applied-to-achieved legs, which are the actionable ones, are unaffected. Entries may be None
+    where a signal was unavailable; index alignment is preserved.
+    """
+    xs = [v for v in vals if v is not None]
+    if not xs:
+        return float("nan")
+    peak = max(xs)
+    if peak <= 0.0:
+        return float("nan")
+    for i, v in enumerate(vals):
+        if v is not None and v >= 0.5 * peak:
+            return i * DT
+    return float("nan")
+
+
 def _la(fr):
     return abs(fr.cmd) * max(fr.v, 1.0) ** 2
 
@@ -564,7 +588,12 @@ def decompose(ev, steer_max, rate_up=RATE_UP):
             "clip_deficit": (med(clip_def) if clip_def else 0.0) if n_mdl else float("nan"),
             "gain_vm": med(gain_vm) if gain_vm else float("nan"),
             "gain_yaw": med(gain_yaw) if gain_yaw else float("nan"),
-            "reversals_per_s": reversals / (n * DT)}
+            "reversals_per_s": reversals / (n * DT),
+            # Where the lateness is. Each is seconds to half of that signal peak in this turn.
+            "t50_cmd": t50([abs(f.cmd) * max(f.v, 1.0) ** 2 for f in ev]),
+            "t50_req": t50([abs(f.req) for f in ev]),
+            "t50_can": t50([abs(f.can) for f in ev]),
+            "t50_yaw": t50([None if f.yaw is None else abs(f.yaw) * f.v for f in ev])}
 
 
 def scan_route(segs, rate_up=RATE_UP, rate_down=RATE_DOWN):
@@ -832,6 +861,33 @@ def cmd_report(a):
         print("  gainYaw achieved lateral accel per unit APPLIED normalised torque, from the yaw")
         print("          rate -- model-free. Compare against the single latAccelFactor in use.")
         print("  rev/s  applied-torque direction reversals per second (stability watch)")
+        _lag_table(evs)
+
+
+def _lag_table(evs):
+    """Is the car weak, or is it late? Splits the turn-in delay into its three legs."""
+    print()
+    print("  WHERE THE LATENESS IS   seconds to half of each signal peak, and the legs between")
+    head = ["band".ljust(7), "turns".rjust(5), "t50cmd".rjust(7), "t50req".rjust(7),
+            "t50can".rjust(7), "t50yaw".rjust(7), "|", "cmd>req".rjust(8), "req>can".rjust(8),
+            "can>yaw".rjust(8), "total".rjust(7)]
+    print("  " + " ".join(head))
+    print("  " + "-" * 96)
+    for b in BAND_NAMES:
+        sel = [e for e in evs if e["band"] == b and "t50_cmd" in e]
+        if len(sel) < 3:
+            continue
+        c, r = _col(sel, "t50_cmd"), _col(sel, "t50_req")
+        a, y = _col(sel, "t50_can"), _col(sel, "t50_yaw")
+        print("  " + " ".join([
+            f"{b:<7}", f"{len(sel):5d}", f"{c:6.2f}s", f"{r:6.2f}s", f"{a:6.2f}s", f"{y:6.2f}s",
+            "|", f"{r - c:7.2f}s", f"{a - r:7.2f}s", f"{y - a:7.2f}s", f"{y - c:6.2f}s"]))
+    print()
+    print("  cmd>req controller turning the plan into a torque ask")
+    print("  req>can the rate limiter delivering that ask to the EPS")
+    print("  can>yaw the car responding to the torque it received")
+    print("  t50cmd is measured from turn onset, so the PLAN-side lead is understated; the three")
+    print("  legs are not, and they are the ones anything can be done about.")
     return 0
 
 

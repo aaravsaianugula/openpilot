@@ -395,6 +395,33 @@ def test_median_cell_survives_one_unmeasurable_turn():
     check("but if nothing was measurable the cell IS nan", g != g, True)
 
 
+def test_t50_locates_the_lateness():
+    print("t50 / turn-in lag decomposition")
+    ramp = [0.0] * 20 + [float(k) for k in range(1, 81)]      # half of peak 80 is 40, at i=59
+    check("half-peak crossing is found", tt.t50(ramp), 0.59, tol=1e-9)
+    check("an already-high signal crosses at zero", tt.t50([10.0] * 50), 0.0)
+    check("a flat zero signal is unmeasurable", tt.t50([0.0] * 50) != tt.t50([0.0] * 50), True)
+    check("an all-None signal is unmeasurable", tt.t50([None] * 50) != tt.t50([None] * 50), True)
+    # None entries must not shift the index -- the whole point is comparing crossings ACROSS
+    # signals, and a compacted list would report a lag that is really a missing sample.
+    gappy = [None] * 30 + [100.0] * 20
+    check("None entries keep their index", tt.t50(gappy), 0.30, tol=1e-9)
+
+    # End to end: command leads, applied lags it, yaw lags that again.
+    n = 120
+    ev = []
+    for i in range(n):
+        cmdc = 0.0 if i < 10 else 0.30
+        can = 0.0 if i < 30 else 400.0
+        yaw = 0.0 if i < 50 else 0.40
+        ev.append(frame(v=5.0, cmd=cmdc, out=can / 409.0, can=can, yaw=yaw))
+    d = tt.decompose(ev, 409.0)
+    check("command crosses first", d["t50_cmd"], 0.10, tol=1e-9)
+    check("applied crosses later", d["t50_can"], 0.30, tol=1e-9)
+    check("achieved yaw crosses last", d["t50_yaw"], 0.50, tol=1e-9)
+    check("the legs are the differences", d["t50_yaw"] - d["t50_cmd"], 0.40, tol=1e-9)
+
+
 def test_profile_keys_survive_json():
     print("decompose / profile keys")
     import json
@@ -413,7 +440,7 @@ def main():
                test_clip_curvature_detection, test_gain_is_model_free_from_yaw,
                test_steer_max_recovery, test_nearest_and_lag, test_tail_statistics_do_not_hide_the_ceiling,
                test_reversals_count_retracements_not_dither, test_clip_deficit_distinguishes_zero_from_unknown,
-               test_median_cell_survives_one_unmeasurable_turn,
+               test_median_cell_survives_one_unmeasurable_turn, test_t50_locates_the_lateness,
                test_rail_occupancy_needs_no_pairing, test_driver_ceiling_matches_opendbc,
                test_profile_keys_survive_json):
         fn()
