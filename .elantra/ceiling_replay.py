@@ -30,6 +30,7 @@ them.
 
 from __future__ import annotations
 
+import argparse
 import glob
 import json
 import sys
@@ -46,27 +47,44 @@ PANDA_RATE_DOWN = 7
 PANDA_MAX_RT_DELTA = 112
 RT_INTERVAL_FRAMES = 25
 
+# panda runs the SAME driver clamp shape as opendbc -- TorqueDriverLimited, allowance 50,
+# multiplier 2 (opendbc/safety/modes/hyundai.h HYUNDAI_LIMITS) -- but against max_torque 512
+# rather than opendbc's 409. Its window is therefore 103 counts wider at every driver torque,
+# and opendbc may spend that headroom without a reflash. Solving
+#   409 + (A + d)*2  <=  512 + (50 + d)*2      for all d
+# gives A <= (512 + 100 - 409)/2 = 101.5, so 101 is the largest allowance that stays strictly
+# inside what panda already enforces. Above it, opendbc would command torque panda rejects.
+PANDA_DRIVER_ALLOWANCE = 50
+PANDA_DRIVER_MULTIPLIER = 2
+MAX_ALLOWANCE_NO_REFLASH = (PANDA_CEILING + PANDA_DRIVER_ALLOWANCE * PANDA_DRIVER_MULTIPLIER
+                            - 409) // PANDA_DRIVER_MULTIPLIER
+
+# Reported per band as well as pooled: the driver clamp bites hardest below 10 m/s, where the
+# column-torque reaction is largest, and a pooled 3-14 m/s figure averages that away.
+BANDS = ((1.0, 3.0), (3.0, 5.0), (5.0, 7.0), (7.0, 10.0), (10.0, 14.0), (14.0, 18.0))
+
 # The band the shortfall actually lives in, per the flat-409 road data.
 LOW_SPEED = (3.0, 14.0)
 
-# (steer_max, rate_up, rate_down). Row 0 is what the car runs today.
+# (steer_max, rate_up, rate_down, driver_allowance). Row 0 is what the car runs today.
 GRID = [
-    (409, 3, 7),     # today
-    (409, 4, 7),     # the most rate today's max_rt_delta=112 can actually sustain
-    (409, 10, 10),   # NOT carrotpilot's rate -- see below; needs max_rt_delta raised too
-    (450, 3, 7),     # ceiling only -- and the EPS has already refused this, see below
-    (450, 10, 10),
-    (500, 3, 7),
-    (500, 10, 10),
+    (409, 3, 7, 100),   # today
+    (409, 3, 7, 50),    # what the archive was recorded under, before the allowance raise
+    (409, 3, 7, 75),    # the halfway point, kept so the curve is visible
+    (409, 3, 7, 125),   # OVER panda's window: shown to prove the guard, not as an option
+    (409, 4, 7, 50),    # the most rate today's max_rt_delta=112 can actually sustain
+    (409, 10, 10, 50),  # NOT carrotpilot's rate -- see below; needs max_rt_delta raised too
+    (450, 3, 7, 50),    # ceiling only -- and the EPS has already refused this, see below
+    (500, 3, 7, 50),
 ]
 
 
 class Limits:
-    def __init__(self, steer_max: int, rate_up: int, rate_down: int):
+    def __init__(self, steer_max: int, rate_up: int, rate_down: int, allowance: int = 50):
         self.STEER_MAX = steer_max
         self.STEER_DELTA_UP = rate_up
         self.STEER_DELTA_DOWN = rate_down
-        self.STEER_DRIVER_ALLOWANCE = 50
+        self.STEER_DRIVER_ALLOWANCE = allowance
         self.STEER_DRIVER_MULTIPLIER = 2
         self.STEER_DRIVER_FACTOR = 1
 
@@ -93,18 +111,80 @@ def assert_limiter_matches() -> None:
         raise SystemExit(f"CarControllerParams drifted from this tool's copy: {bad!r}")
     if GRID[0][0] != real.STEER_MAX:
         raise SystemExit(f"grid row 0 is {GRID[0]} but the car runs STEER_MAX={real.STEER_MAX}")
+    if GRID[0][3] != real.STEER_DRIVER_ALLOWANCE:
+        raise SystemExit(f"grid row 0 allowance {GRID[0][3]} but the car runs {real.STEER_DRIVER_ALLOWANCE}")
+
+
+def _reader():
+    """openpilot's LogReader on the device, the local schema loader off it.
+
+    Same two-backend arrangement as turn_tracking.py, so this sweep can be priced against the
+    archive on a laptop instead of only against whatever the device still holds -- the device
+    rotates oldest-first and the archive goes back much further.
+    """
+    try:
+        from openpilot.tools.lib.logreader import LogReader
+        return lambda p: LogReader(p, sort_by_time=True)
+    except ImportError:
+        import oplog
+        return oplog.events
+
+
+TRACE_MAGIC = b"CRTR0001"
+
+
+def dump_trace(trace: list, path: str) -> None:
+    """Write (vEgo, torque, driver) as three flat float32 blocks behind a small header.
+
+    Flat binary rather than pickle: this file exists only to carry numbers between two
+    processes, and a format that cannot execute anything is the right one for a file a tool
+    reads back without checking where it came from.
+
+    float32 is deliberate and sufficient: torque is a normalised float that opendbc rounds to
+    an integer count anyway, driver torque is already an integer, and vEgo only picks a speed
+    band. It keeps a 3.4M-frame archive trace around 40 MB instead of a few hundred.
+    """
+    import array
+    import struct
+
+    with open(path, "wb") as fh:
+        fh.write(TRACE_MAGIC + struct.pack("<Q", len(trace)))
+        for i in range(3):
+            col = array.array("f", [t[i] for t in trace])
+            if sys.byteorder == "big":
+                col.byteswap()
+            col.tofile(fh)
+
+
+def load_trace(path: str) -> list:
+    import array
+    import struct
+
+    with open(path, "rb") as fh:
+        head = fh.read(len(TRACE_MAGIC) + 8)
+        if head[:len(TRACE_MAGIC)] != TRACE_MAGIC:
+            raise SystemExit(f"{path} is not a ceiling_replay trace")
+        n = struct.unpack("<Q", head[len(TRACE_MAGIC):])[0]
+        cols = []
+        for _ in range(3):
+            col = array.array("f")
+            col.fromfile(fh, n)
+            if sys.byteorder == "big":
+                col.byteswap()
+            cols.append(col)
+    return list(zip(*cols, strict=True))
 
 
 def collect(segs: list) -> list:
     """(vEgo, normalised torque, driver column torque) for every engaged frame."""
-    from openpilot.tools.lib.logreader import LogReader
+    events = _reader()
 
     trace = []
     for seg in segs:
         v = 0.0
         driver = 0.0
         try:
-            for ev in LogReader(seg, sort_by_time=True):
+            for ev in events(seg):
                 w = ev.which()
                 if w == "carState":
                     v = float(ev.carState.vEgo)
@@ -118,19 +198,27 @@ def collect(segs: list) -> list:
     return trace
 
 
-def replay(trace: list, steer_max: int, rate_up: int, rate_down: int) -> dict:
+def replay(trace: list, steer_max: int, rate_up: int, rate_down: int,
+           allowance: int = 50) -> dict:
     from opendbc.car.lateral import apply_driver_steer_torque_limits
 
-    limits = Limits(steer_max, rate_up, rate_down)
+    limits = Limits(steer_max, rate_up, rate_down, allowance)
     last = 0
     lo, hi = LOW_SPEED
     applied_low = []
     asked_low = []
     at_ceiling = 0
+    per_band = {b: [0, 0.0, 0.0] for b in BANDS}  # frames, sum applied, sum asked
 
     for v, frac, driver in trace:
         want = int(round(frac * steer_max))
         last = apply_driver_steer_torque_limits(want, last, driver, limits)
+        for b in BANDS:
+            if b[0] <= v < b[1]:
+                per_band[b][0] += 1
+                per_band[b][1] += abs(last)
+                per_band[b][2] += abs(want)
+                break
         if lo <= v < hi:
             applied_low.append(abs(last))
             asked_low.append(abs(want))
@@ -142,6 +230,8 @@ def replay(trace: list, steer_max: int, rate_up: int, rate_down: int) -> dict:
         return {"frames": 0}
     return {
         "frames": n,
+        "per_band": {f"{b[0]:g}-{b[1]:g}": (c[0], round(c[1] / c[0], 1) if c[0] else None)
+                     for b, c in per_band.items()},
         # Mean applied counts is the honest summary: it is proportional to the mean torque the
         # EPS actually receives over the band, which is what "authority" means here.
         "mean_applied": round(sum(applied_low) / n, 1),
@@ -153,27 +243,48 @@ def replay(trace: list, steer_max: int, rate_up: int, rate_down: int) -> dict:
 
 
 def main() -> int:
-    routes = sys.argv[1:]
-    if not routes:
-        print("usage: ceiling_replay.py <route> [route ...]", file=sys.stderr)
-        return 2
-    assert_limiter_matches()
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("routes", nargs="*",
+                    help="route ids to replay; omit to use every route under --routes-dir")
+    ap.add_argument("--routes-dir", default="/data/media/0/realdata",
+                    help="where the segment directories live")
+    ap.add_argument("--out", default="/data/lat-tracking/ceiling_replay.json")
+    ap.add_argument("--dump-trace", metavar="FILE",
+                    help="decode only: write the trace here and exit, importing no opendbc")
+    ap.add_argument("--trace", metavar="FILE",
+                    help="replay a trace written by --dump-trace, decoding nothing")
+    a = ap.parse_args()
 
-    segs = []
-    for r in routes:
-        segs += sorted(glob.glob(f"/data/media/0/realdata/{r}--*/rlog.zst"))
-    print(f"# {len(segs)} segments; collecting engaged frames", flush=True)
-    trace = collect(segs)
-    print(f"# {len(trace)} engaged frames, " +
-          f"{sum(1 for v, _, _ in trace if LOW_SPEED[0] <= v < LOW_SPEED[1])} in " +
-          f"{LOW_SPEED[0]}-{LOW_SPEED[1]} m/s\n", flush=True)
+    if a.trace:
+        assert_limiter_matches()
+        trace = load_trace(a.trace)
+        print(f"# {len(trace)} engaged frames from {a.trace}", flush=True)
+    else:
+        if a.routes:
+            segs = []
+            for r in a.routes:
+                segs += sorted(glob.glob(f"{a.routes_dir}/{r}--*/rlog.zst"))
+        else:
+            segs = sorted(glob.glob(f"{a.routes_dir}/*--*--*/rlog.zst"))
+        print(f"# {len(segs)} segments; collecting engaged frames", flush=True)
+        trace = collect(segs)
+        if a.dump_trace:
+            dump_trace(trace, a.dump_trace)
+            print(f"# wrote {len(trace)} frames to {a.dump_trace}", flush=True)
+            return 0
+        # Deferred until after decoding: on a machine using the local backend this import is
+        # what collides with the decoder, so it must not happen while oplog is still needed.
+        assert_limiter_matches()
+    low = sum(1 for v, _, _ in trace if LOW_SPEED[0] <= v < LOW_SPEED[1])
+    print(f"# {len(trace)} engaged frames, {low} in {LOW_SPEED[0]}-{LOW_SPEED[1]} m/s\n", flush=True)
 
     base = None
     out = []
-    print(f"{'ceiling':>7} {'rate':>6} {'what it needs':>34} {'mean applied':>13} " +
-          f"{'% of ask':>9} {'% at ceil':>10} {'vs today':>9}")
-    for steer_max, ru, rd in GRID:
-        r = replay(trace, steer_max, ru, rd)
+    print(f"{'ceiling':>7} {'rate':>6} {'allow':>6} {'what it needs':>36} "
+          + f"{'mean applied':>13} {'% of ask':>9} {'% at ceil':>10} {'vs today':>9}")
+    for steer_max, ru, rd, allow in GRID:
+        r = replay(trace, steer_max, ru, rd, allow)
         if not r["frames"]:
             continue
         if base is None:
@@ -194,19 +305,38 @@ def main() -> int:
             needs.append(f"panda max_rt_delta {ru * RT_INTERVAL_FRAMES}")
         if steer_max > PANDA_CEILING:
             needs.append("OVER PANDA CEILING")
-        r.update({"steer_max": steer_max, "rate_up": ru, "rate_down": rd,
+        if allow != PANDA_DRIVER_ALLOWANCE:
+            # An allowance at or under MAX_ALLOWANCE_NO_REFLASH keeps opendbc's driver window
+            # strictly inside panda's, which is already 103 counts wider at every driver torque.
+            # Above it, opendbc would command torque panda rejects, and the row is not an option.
+            needs.append("opendbc driver clamp" if allow <= MAX_ALLOWANCE_NO_REFLASH
+                         else f"OVER PANDA WINDOW (max {MAX_ALLOWANCE_NO_REFLASH})")
+        r.update({"steer_max": steer_max, "rate_up": ru, "rate_down": rd, "allowance": allow,
                   "needs": needs or ["nothing - this is today"],
                   "gain_vs_today_pct": round((r["mean_applied"] / base - 1) * 100, 1)})
         out.append(r)
-        rate = f"{ru}/{rd}"
         why = " + ".join(r["needs"])
-        print(f"{steer_max:>7} {rate:>6} {why:>34} " +
-              f"{r['mean_applied']:>13} {r['pct_of_ask_delivered']:>9} " +
-              f"{r['pct_frames_at_ceiling']:>10} {r['gain_vs_today_pct']:>8}%")
+        print(f"{steer_max:>7} {f'{ru}/{rd}':>6} {allow:>6} {why:>36} "
+              + f"{r['mean_applied']:>13} {r['pct_of_ask_delivered']:>9} "
+              + f"{r['pct_frames_at_ceiling']:>10} {r['gain_vs_today_pct']:>8}%")
 
-    with open("/data/ceiling_replay.json", "w") as f:
-        json.dump({"routes": routes, "low_speed_band": LOW_SPEED, "results": out}, f, indent=1)
-    print("\n# wrote /data/ceiling_replay.json", flush=True)
+    # Per band, because the column-torque reaction that drives the driver clamp scales inversely
+    # with speed: a pooled 3-14 m/s mean averages the worst of it away.
+    print("\n# mean applied counts by speed band (frames in brackets)")
+    band_names = [f"{b[0]:g}-{b[1]:g}" for b in BANDS]
+    print(f"{'ceiling/rate/allow':>20} " + " ".join(f"{b:>13}" for b in band_names))
+    for r in out:
+        label = f"{r['steer_max']}/{r['rate_up']}-{r['rate_down']}/{r['allowance']}"
+        cells = []
+        for b in band_names:
+            n, mean = r["per_band"].get(b, (0, None))
+            cells.append(f"{mean:>6} ({n:>5})" if mean is not None else f"{'-':>13}")
+        print(f"{label:>20} " + " ".join(cells))
+
+    with open(a.out, "w") as f:
+        json.dump({"routes": a.routes or "all", "routes_dir": a.routes_dir,
+                   "low_speed_band": LOW_SPEED, "results": out}, f, indent=1)
+    print(f"\n# wrote {a.out}", flush=True)
     return 0
 
 

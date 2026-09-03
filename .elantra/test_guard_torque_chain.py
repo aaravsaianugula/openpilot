@@ -91,14 +91,33 @@ CASES = [
     ("the raise is moved outside the if/elif chain (precedence inverted)",
      "opendbc/car/hyundai/values.py",
      ("      if CP.flags & HyundaiFlags.RAISED_LIMITS:\n" +
-     "        self.STEER_MAX = 409\n"),
+     "        self.STEER_MAX = 409\n" +
+     "        self.STEER_DRIVER_ALLOWANCE = 100\n"),
      ("    if CP.flags & HyundaiFlags.RAISED_LIMITS:\n" +
-     "      self.STEER_MAX = 409\n")),
+     "      self.STEER_MAX = 409\n" +
+     "      self.STEER_DRIVER_ALLOWANCE = 100\n")),
 
     ("the stock ceiling under the raise is removed",
      "opendbc/car/hyundai/values.py",
      "      self.STEER_MAX = 384\n",
      "      self.STEER_MAX = 409\n"),
+
+    # The allowance is the second number in the RAISED_LIMITS branch, and every way of getting
+    # it wrong looks like a one-line tuning tweak in a diff.
+    ("the driver allowance is raised past what panda enforces",
+     "opendbc/car/hyundai/values.py",
+     "        self.STEER_DRIVER_ALLOWANCE = 100\n",
+     "        self.STEER_DRIVER_ALLOWANCE = 150\n"),
+
+    ("the driver allowance escapes the branch to every Hyundai",
+     "opendbc/car/hyundai/values.py",
+     "    self.STEER_DRIVER_ALLOWANCE = 50\n",
+     "    self.STEER_DRIVER_ALLOWANCE = 100\n"),
+
+    ("the raised allowance is dropped, leaving the ceiling raised alone",
+     "opendbc/car/hyundai/values.py",
+     "        self.STEER_MAX = 409\n        self.STEER_DRIVER_ALLOWANCE = 100\n",
+     "        self.STEER_MAX = 409\n"),
 
     ("panda ceiling lowered below what opendbc commands",
      "opendbc/safety/modes/hyundai.h",

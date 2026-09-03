@@ -398,7 +398,188 @@ stop signal.
 
 ---
 
-## After either drive — the measurement
+## Test 3 — the lateral-acceleration clamp AND the driver window, one drive
+
+**TWO CHANGES ARE ON THIS DRIVE, deliberately bundled.** They are independent, they act on
+different halves of the problem, and — the part that makes bundling survivable — they barely
+overlap in speed, so the after-scan can still tell them apart:
+
+| | what it changes | where it acts |
+|---|---|---|
+| **A. lateral-accel clamp** | how much curvature openpilot will *ask for*, in `clip_curvature` | **0.0% below 9 mph**, growing to +18.8% at 31–36 mph, **0.0% above 49 mph** |
+| **B. driver window** | how much of the 409 counts survives the column-torque sensor, `STEER_DRIVER_ALLOWANCE` 50 → 100 | +27.2% at 2–7 mph, falling to +5.0% at 31–40 mph |
+
+So: **under 9 mph, only B can be doing anything** — A's clamp provably never fires down there, so
+anything you feel at walking pace is the driver window. **At 27–36 mph A dominates** (+18.8%
+against B's +5.0%). The middle band is genuinely mixed and you should not try to attribute it.
+
+Neither touches the torque ceiling. `STEER_MAX` is still a flat 409, the rate is still 3/7, and
+panda is not reflashed — B stays strictly inside the driver window panda already enforces.
+
+### A — the lateral-acceleration clamp
+
+**A is a demand-side change, not a torque change.** What it alters is how much curvature openpilot
+is *willing to ask for* before the steering controller ever sees the number.
+
+`clip_curvature` (`selfdrive/controls/lib/drive_helpers.py`) caps the commanded curvature at a
+lateral **acceleration** of 3.0 m/s² — an ISO comfort guideline, not a limit of this car. Because
+it is an acceleration, the tightest radius it permits is `v²/3.0`: 15 m at 15 mph, 33 m at 22 mph,
+81 m at 35 mph. Real turns are 7.5–20 m. Measured over 3.41M engaged frames from the archive, that
+clamp is active on **8% of turn frames at 11–13 mph rising to 80% at 31–36 mph**, removes a median
+11–22% of what the model asked for, and accounts for **92.3%** of the frames that raise
+*"Turn Exceeds Steering Limit"* — against 0.0% of frames above 40 mph, which is why the highway
+has always been fine.
+
+The change makes the limit speed-scheduled: **4.0 m/s² below 16 m/s**, tapering to the stock 3.0
+by 22 m/s. Above 22 m/s it is arithmetically identical to today.
+
+### What should change, and what should not
+
+Priced by replaying the same recorded model demand through `clip_curvature` sequentially, with the
+jerk clamp in the loop (`.elantra/curvature_budget.py`):
+
+| where | mean commanded lateral accel | accel clamp active |
+|---|---|---|
+| 9–11 mph | +0.6% | 0.7% → 0.0% |
+| 11–13 mph | +2.4% | 2.9% → 0.1% |
+| 13–16 mph | +3.9% | 5.2% → 0.9% |
+| 16–18 mph | **+7.9%** | 12.6% → 4.1% |
+| 18–22 mph | **+8.8%** | 6.6% → 2.1% |
+| 22–27 mph | +5.0% | 7.3% → 1.9% |
+| 27–31 mph | **+9.6%** | 46.9% → 7.6% |
+| 31–36 mph | **+18.2%** | 78.6% → 30.7% |
+| 40 mph and up | **0.0%** | unchanged |
+
+**Below about 11 mph, expect nothing.** Under 3.87 m/s the flat `MAX_CURVATURE = 0.2` clamp (a 5 m
+radius, which is roughly this car's kerb radius) binds before the acceleration one, so there is
+nothing there for this change to release. That band is torque-limited and is a separate problem.
+**No change at walking pace is a predicted result, not a failed drive.**
+
+### B — the driver window
+
+`opendbc/car/hyundai/values.py`, inside the `RAISED_LIMITS` branch only:
+`STEER_DRIVER_ALLOWANCE` 50 → 100. No reflash.
+
+`CR_Mdps_StrColTq` is the **column** torque, and on this car it carries the EPS's own reaction to
+road load, not just your hands. Measured on straight-line, hands-off, engaged frames it rises with
+openpilot's own command — median 11 counts at 0–20 applied, 53 at 120–200, 83 at 200–300 — and it
+**opposes** the command on 70–83% of frames above 120 counts, the opposing magnitude falling
+monotonically with speed (114 counts at 2–3 m/s down to 26 at 18–25). That is road load.
+
+`apply_driver_steer_torque_limits` then cuts the 409 ceiling by twice the excess over the
+allowance. At 50, across 3.42M engaged frames, the effective ceiling falls **below 350 counts on
+32–46% of hands-off frames under 10 m/s**, and to ~200 at the 10th percentile. The car has been
+throttling itself back on a signal nobody generated.
+
+Replayed through opendbc's own limiter over the whole archive, mean applied counts:
+
+| band | 1–3 m/s | 3–5 | 5–7 | 7–10 | 10–14 | 14–18 |
+|---|---|---|---|---|---|---|
+| allowance 50 | 81.6 | 105.9 | 104.0 | 71.0 | 47.4 | 34.1 |
+| allowance 100 | 103.8 | 128.9 | 122.3 | 81.4 | 51.0 | 35.8 |
+| gain | **+27.2%** | **+21.7%** | **+17.6%** | **+14.6%** | +7.6% | +5.0% |
+
+**Why 100 needs no reflash.** panda runs the same clamp shape (`TorqueDriverLimited`, allowance
+50, multiplier 2) against `max_torque` 512 rather than opendbc's 409, so its window is 103 counts
+wider at every driver torque. Solving `409 + (A + d)*2 <= 512 + (50 + d)*2` for all `d` gives
+`A <= 101.5`. `.elantra/test_ceiling_replay.py` proves that bound exact against opendbc's own
+limiter and panda's own constants: **101 never exceeds panda, 102 does.** 100 leaves a count of
+margin.
+
+**WHAT IT COSTS YOU, and this is the part to be awake to.** The car yields to a real hand later.
+Full yield moves from −254.5 to −304.5 counts of driver torque — you have to push about 20% harder
+before openpilot lets go completely. `STEER_THRESHOLD` is unchanged at 150, so it still *notices*
+a held wheel at the same point; it just stops backing off so early. **Test this deliberately in
+the empty lot before taking it near traffic.**
+
+### The drive
+
+Empty lot first, and this time the lot has a job to do rather than being a formality.
+
+0. **In the lot, at walking pace, deliberately fight the wheel.** This is change B, and it is the
+   one thing on this drive that alters how the car responds to *you*. Take over mid-turn the way
+   you normally would and confirm it still gives way — it should feel like it holds on slightly
+   longer, not like it fights you. If you cannot comfortably override it, stop and revert B. That
+   is the whole abort criterion for this half.
+1. **Walking pace to 9 mph turns.** Change A provably does nothing here, so anything you feel is
+   change B. Expect the car to pull through a tight turn it used to give up on.
+2. **11–16 mph turns.** Ordinary intersection right-turns. Expect a *small* difference — a few
+   percent more curvature. If it feels dramatically different here, something is wrong: stop.
+3. **16–22 mph turns.** Bigger intersections and slip lanes. Expect +8%.
+4. **27–36 mph curves.** This is where the change actually lives, and where the alert used to
+   fire. Expect the car to hold the line noticeably better, and expect *"Turn Exceeds Steering
+   Limit"* to become rare or stop.
+5. **Highway.** Confirm nothing moved. It should be indistinguishable. Any difference at all above
+   40 mph means the schedule is not what this document says it is — stop and re-read
+   `LAT_ACCEL_LIMIT_BP` / `LAT_ACCEL_LIMIT_V`.
+
+Keep both hands ready throughout, as in Test 1. The failure mode this change could introduce is
+not weakness, it is over-eagerness.
+
+### Abort criteria — additional to Test 1's
+
+Test 1's criteria all still apply: any new EPS fault on any MDPS bit, any oscillation, anything
+abrupt below 8 m/s. In addition, stop the drive on:
+
+- **Any oscillation or weave at 27–40 mph.** This is the band with the largest authority increase
+  and it is the one place a comfort clamp was doing real work. It is the specific risk of this
+  change.
+- **Turn-in that feels snatchy rather than firmer.** More commanded curvature should read as the
+  car committing to the corner earlier, not as a jerk. The lateral-jerk clamp is deliberately
+  untouched, so if the *rate* feels different, something other than this change moved.
+- **Any difference on the highway at all.**
+- **The wheel feeling reluctant to give way.** This is change B and it is the criterion that
+  matters most: you must be able to take over at any moment without effort you would not have
+  expected. Revert B alone if so — the curvature change does not touch this.
+
+### Rollback
+
+**They roll back independently, and B is the one to drop first** if the car feels reluctant to
+give way: it is the only change that touches your authority over the wheel. Set
+`STEER_DRIVER_ALLOWANCE = 50` in `opendbc/car/hyundai/values.py`, inside the `RAISED_LIMITS`
+branch.
+
+For **A** — one constant, one file, no reflash. Set `LAT_ACCEL_LIMIT_V = [3.0, 3.0]` — or equivalently
+`[MAX_LATERAL_ACCEL_NO_ROLL, MAX_LATERAL_ACCEL_NO_ROLL]` — in
+`openpilot/selfdrive/controls/lib/drive_helpers.py` and restart:
+
+```bash
+ssh comma@192.168.12.238 'setsid nohup sh -c "sleep 2; sudo systemctl restart comma" >/dev/null 2>&1 </dev/null &'
+```
+
+That restores byte-identical stock behaviour at every speed. `.elantra/guards.py` will still pass
+with the schedule flattened, deliberately: the guard bounds the schedule, it does not require the
+change to be present.
+
+### What to measure afterwards
+
+```bash
+python .elantra/curvature_budget.py scan --routes /data/media/0/realdata --out /data/lat-tracking/curvature_after.jsonl
+python .elantra/curvature_budget.py report --out /data/lat-tracking/curvature_after.jsonl
+```
+
+Read the SELF-CHECK block first. It must say the offline replay reproduces the logged
+`desiredCurvature` on essentially every frame; if it does not, the tool and the car have diverged
+and no other number in the report means anything.
+
+Then compare against the before-scan on **the accel-clamp rate**, not on achieved lateral accel.
+The clamp rate is deterministic given the demand — it needs no cross-process join and no build
+normalisation — whereas achieved accel varies with what roads you happened to drive. The
+prediction is 78.6% → 30.7% at 31–36 mph and 46.9% → 7.6% at 27–31 mph.
+
+**What would say this change is worthless:** the clamp rate falls as predicted but the achieved
+lateral accel on those same frames does not rise. That would mean the torque chain was the binding
+constraint all along and the clamp was innocent — revert. The archive says the car has the
+headroom (on clamped frames `|output|` sits at p50 0.905 at 14–18 m/s, with only 33% of them
+pinned), but that is an inference from before the change, and the drive is what tests it.
+
+**Sample size, stated in advance.** The 14–18 m/s band holds only 1,341 turn frames in the entire
+118-route archive. One drive will not resolve it. Plan on several before/after drives, and do not
+read a single drive as a verdict.
+
+---
+
+## After any drive — the measurement
 
 A **systemd timer** (`elantra-lateral-watch.timer`, every 30 min, offroad only) scans each new
 route and writes a per-route report. It has to be a systemd timer and not a crontab entry:

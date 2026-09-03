@@ -86,7 +86,12 @@ MIN_TURN_FRAMES = 40            # 0.4 s; shorter is noise, not a turn
 # --rate-up/--rate-down and the value used is recorded in every scan record.
 RATE_UP = 3                     # STEER_DELTA_UP,   opendbc/car/hyundai/values.py
 RATE_DOWN = 7                   # STEER_DELTA_DOWN, same
-DRIVER_ALLOWANCE = 50           # STEER_DRIVER_ALLOWANCE
+# STEER_DRIVER_ALLOWANCE AS THE ARCHIVE RAN IT, not as the car runs it now. Every drive
+# this tool reads was recorded before the CN7 allowance went 50 -> 100, so 50 is what
+# reproduces those logs; using today's value would mis-model every one of them. Raise it
+# only when analysing drives recorded after that change, and never silently -- the report
+# prints this number for exactly that reason.
+DRIVER_ALLOWANCE = 50           # STEER_DRIVER_ALLOWANCE, as recorded
 DRIVER_MULTIPLIER = 2           # STEER_DRIVER_MULTIPLIER
 DRIVER_FACTOR = 1               # STEER_DRIVER_FACTOR
 KNOWN_CEILINGS = (255, 270, 384, 409)
@@ -678,6 +683,8 @@ def cmd_scan(a):
                 except Exception:
                     pass
     print(f"backend: {BACKEND}   routes: {len(names)}   already scanned: {len(done)}")
+    print(f"driver-clamp model: STEER_DRIVER_ALLOWANCE={DRIVER_ALLOWANCE}"
+          + " (the value the archive was recorded under)")
     with open(a.out, "a") as fh:
         for k, r in enumerate(names, 1):
             if r in done and not a.force:
