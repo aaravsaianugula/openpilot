@@ -157,6 +157,16 @@ def test_deficit_split_is_exhaustive():
     check("the two sum to the shortfall", d["deficit_total"], 309.0)
     check("and the shortfall is mean ask minus mean applied", d["mean_req"] - d["mean_can"], 309.0)
     check("and the frames are flagged driver-limited", d["pct_driver_limited"], 100.0)
+    # The clamp cuts from 50 counts of driver torque; steeringPressed needs 150. A 150-count
+    # push with pressed=False is the car yielding to a hand openpilot does not consider held.
+    check("a cut taken while not pressed is the actionable half", d["deficit_driver_quiet"], 200.0)
+    check("and nothing is attributed to a held wheel", d["deficit_driver_pressed"], 0.0)
+    ev2 = [frame(v=1.0, cmd=1.0, out=1.0, can=100.0, driver=-150.0, pressed=True)] * 100
+    d2 = tt.decompose(ev2, 409.0)
+    check("the same cut with the wheel held is the clamp working as designed",
+          d2["deficit_driver_pressed"], 200.0)
+    check("the split always sums back to defDrv",
+          d2["deficit_driver_pressed"] + d2["deficit_driver_quiet"], d2["deficit_driver"])
 
     # THE REASON THESE ARE MEANS. The clamp bites on a minority of frames -- measured at 42% of
     # 3-7 m/s turn frames on 2.03M engaged frames -- so a median reports the driver as costing

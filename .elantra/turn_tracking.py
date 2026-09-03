@@ -448,6 +448,7 @@ def decompose(ev, steer_max, rate_up=RATE_UP):
     n_rate = n_trunc = n_pin = n_press = n_sat = n_drvlim = n_clip = 0
     d_driver, d_rate, clip_def, gain_vm, gain_yaw = [], [], [], [], []
     n_mdl = 0
+    drv_pressed = drv_quiet = 0.0
     prev_can = ev[0].can
     up_run = up_best = reversals = 0
     peak_can = max(abs(f.can) for f in ev)
@@ -484,8 +485,19 @@ def decompose(ev, steer_max, rate_up=RATE_UP):
         ceil = driver_ceiling(steer_max, f.driver, 1.0 if f.req >= 0 else -1.0)
         if ceil < abs(f.req) - 0.5:
             n_drvlim += 1
-        d_driver.append(max(0.0, abs(f.req) - ceil))
+        dd = max(0.0, abs(f.req) - ceil)
+        d_driver.append(dd)
         d_rate.append(max(0.0, min(abs(f.req), ceil) - abs(f.can)))
+        # Split the driver cut by whether openpilot even considered the wheel held. The clamp
+        # starts cutting at STEER_DRIVER_ALLOWANCE = 50 counts of opposing torque, but
+        # steeringPressed needs STEER_THRESHOLD = 150. Between the two the car yields to a hand
+        # that is not trying to steer, and nothing in the log flags it. Counts lost while NOT
+        # pressed are the actionable half; lost while pressed is the driver taking over, which
+        # is the clamp working as designed.
+        if f.pressed:
+            drv_pressed += dd
+        else:
+            drv_quiet += dd
 
         # clip_curvature: what the model asked for versus what the controller was handed.
         if f.mdl is not None and abs(f.mdl) > 1e-4:
@@ -542,6 +554,7 @@ def decompose(ev, steer_max, rate_up=RATE_UP):
             "med_req": med([abs(f.req) for f in ev]),
             "med_can": med([abs(f.can) for f in ev]),
             "deficit_driver": sum(d_driver) / n, "deficit_rate": sum(d_rate) / n,
+            "deficit_driver_pressed": drv_pressed / n, "deficit_driver_quiet": drv_quiet / n,
             "deficit_total": (sum(d_driver) + sum(d_rate)) / n,
             "mean_req": sum(abs(f.req) for f in ev) / n,
             "mean_can": sum(abs(f.can) for f in ev) / n,
@@ -718,7 +731,8 @@ def _table(evs, band_frames):
 
     print("\n  WHERE IT WENT       deficits in CAN counts; defDrv + defRate is the whole shortfall")
     head = ["band".ljust(7), "turns".rjust(5), "upRun".rjust(7), "defRamp".rjust(7),
-            "defSust".rjust(7), "defDrv".rjust(7), "defRate".rjust(7), "drvLim%".rjust(7), "|",
+            "defSust".rjust(7), "defDrv".rjust(7), "defRate".rjust(7), "drvQuiet".rjust(8),
+            "drvLim%".rjust(7), "|",
             "pin%".rjust(6), "hand%".rjust(6), "clip%".rjust(6), "clipDef".rjust(7),
             "gainYaw".rjust(7), "rev/s".rjust(6)]
     print("  " + " ".join(head))
@@ -731,6 +745,7 @@ def _table(evs, band_frames):
             f"{b:<7}", f"{len(sel):5d}", f"{_col(sel, 'longest_up_run_s'):6.2f}s",
             f"{_col(sel, 'deficit_ramp'):7.0f}", f"{_col(sel, 'deficit_sustained'):7.0f}",
             f"{_wmean(sel, 'deficit_driver'):7.0f}", f"{_wmean(sel, 'deficit_rate'):7.0f}",
+            f"{_wmean(sel, 'deficit_driver_quiet'):8.0f}",
             f"{_col(sel, 'pct_driver_limited'):6.1f}%", "|",
             f"{_col(sel, 'pct_output_pinned'):5.1f}%", f"{_col(sel, 'pct_driver_on_wheel'):5.1f}%",
             f"{_col(sel, 'pct_clipped'):5.1f}%", f"{100.0 * _col(sel, 'clip_deficit'):6.1f}%",
@@ -807,6 +822,9 @@ def cmd_report(a):
         print("         median over turns: ceiling contact happens in a few hard corners, and a")
         print("         median over turns reports 0.0% on a build that demonstrably reaches it.")
         print("  upRun  longest UNBROKEN run of STEER_DELTA_UP steps, seconds")
+        print("  drvQuiet the part of defDrv taken while steeringPressed was FALSE -- the car")
+        print("         yielding to a hand that was not trying to steer. The clamp cuts from 50")
+        print("         counts of driver torque but steeringPressed needs 150.")
         print("  defDrv/defRate MEAN counts lost to the driver clamp and to the rate limiter.")
         print("         Means, because they are a decomposition and must sum; the clamp bites on a")
         print("         minority of frames, so a median reports it as costing nothing.")
