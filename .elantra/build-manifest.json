@@ -1,0 +1,17 @@
+{
+  "sunnypilot_upstream_sha": "f5bb855477b8d857ad5db7d307c98c0d91ce4049",
+  "sunnypilot_upstream_date": "2026-09-02",
+  "sunnypilot_upstream_subject": "Merge commit '6249f4d5b0e63c05f08bce12ca3afebda9f764a3' into sync-20260902",
+  "upstream_ci_conclusion": "success",
+  "upstream_ci_checked": 15,
+  "upstream_ci_url": "https://github.com/sunnypilot/sunnypilot/commit/f5bb855477b8d857ad5db7d307c98c0d91ce4049/checks",
+  "opendbc_sha": "bc4fd936dc769dd4a9e1c7f1f85051a953aaf9db",
+  "opendbc_repo": "aaravsaianugula/opendbc",
+  "elantra_platforms": [
+    "HYUNDAI_ELANTRA_2024",
+    "HYUNDAI_ELANTRA_HEV_2024"
+  ],
+  "previous_master_sha": "1cf4b981149363c4e68905e6702cd1c38a09b6bc",
+  "rollback_branch": "master-previous",
+  "synced_at_utc": "2026-09-03T00:08:15Z"
+}

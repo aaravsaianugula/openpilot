@@ -161,6 +161,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CustomAccShortPressIncrement", {PERSISTENT | BACKUP, INT, "1"}},
     {"DeviceBootMode", {PERSISTENT | BACKUP, INT, "0"}},
     {"DevUIInfo", {PERSISTENT | BACKUP, INT, "0"}},
+    {"ElantraBuildManifest", {CLEAR_ON_MANAGER_START, STRING}},  // .elantra/build-manifest.json of the running build
+    {"ElantraNewBuildManifest", {CLEAR_ON_MANAGER_START, STRING}},  // ...and of the build staged by updated
+    {"ElantraVerifiedUpdatesOnly", {PERSISTENT | BACKUP, BOOL, "1"}},  // only offer builds whose upstream CI passed
     {"EnableCopyparty", {PERSISTENT | BACKUP, BOOL}},
     {"EnableGithubRunner", {PERSISTENT | BACKUP, BOOL}},
     {"GreenLightAlert", {PERSISTENT | BACKUP, BOOL, "0"}},
