@@ -399,13 +399,24 @@ def test_t50_locates_the_lateness():
     print("t50 / turn-in lag decomposition")
     ramp = [0.0] * 20 + [float(k) for k in range(1, 81)]      # half of peak 80 is 40, at i=59
     check("half-peak crossing is found", tt.t50(ramp), 0.59, tol=1e-9)
-    check("an already-high signal crosses at zero", tt.t50([10.0] * 50), 0.0)
+    # An already-high signal is UNMEASURABLE here, not instant. Reporting 0.00s is how this
+    # metric twice announced that the rate limiter cost nothing.
+    flat = tt.t50([10.0] * 50)
+    check("an already-high signal is unmeasurable, not zero", flat != flat, True)
+    late = tt.t50([1.0] + [10.0] * 49)
+    check("a signal that rises inside the window is measurable", late, 0.01, tol=1e-9)
     check("a flat zero signal is unmeasurable", tt.t50([0.0] * 50) != tt.t50([0.0] * 50), True)
     check("an all-None signal is unmeasurable", tt.t50([None] * 50) != tt.t50([None] * 50), True)
     # None entries must not shift the index -- the whole point is comparing crossings ACROSS
     # signals, and a compacted list would report a lag that is really a missing sample.
-    gappy = [None] * 30 + [100.0] * 20
+    # Index preservation, without also tripping the saturation guard: the signal is present
+    # and low first, so the rise IS measurable and must land at its true index.
+    gappy = [None] * 10 + [1.0] * 20 + [100.0] * 20
     check("None entries keep their index", tt.t50(gappy), 0.30, tol=1e-9)
+    # A signal that is absent and then appears already high is unmeasurable, not instant.
+    absent = [None] * 30 + [100.0] * 20
+    g = tt.t50(absent)
+    check("absent-then-already-high is unmeasurable", g != g, True)
 
     # End to end: command leads, applied lags it, yaw lags that again.
     n = 120
@@ -447,9 +458,8 @@ def test_approach_window_unsaturates_the_lag_metric():
     ev = [frame(v=5.0, cmd=0.30, out=1.0, can=400.0)] * 100
     approach = [frame(v=5.0, cmd=0.02, out=k / 100.0, can=4.0 * k) for k in range(100)]
     bare = tt.decompose(ev, 409.0)
-    check("without the approach the ask looks instant", bare["t50_req"], 0.0)
-    check("and so does the applied value", bare["t50_can"], 0.0)
-    check("so the rate-limiter leg reads as free", bare["t50_can"] - bare["t50_req"], 0.0)
+    check("without the approach the ask is unmeasurable", bare["t50_req"] != bare["t50_req"], True)
+    check("and so is the applied value", bare["t50_can"] != bare["t50_can"], True)
 
     withap = tt.decompose(ev, 409.0, approach=approach)
     check("with the approach the ramp is visible", withap["t50_can"] > 0.0, True)

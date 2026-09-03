@@ -426,6 +426,11 @@ def t50(vals):
     peak = max(xs)
     if peak <= 0.0:
         return float("nan")
+    # If the signal is ALREADY past half its peak on the first frame we have, its rise happened
+    # before the window and the answer here would be 0.00 s -- which reads as "instant" and is
+    # how this metric twice reported the rate limiter as free. Unmeasurable is not zero.
+    if xs[0] >= 0.5 * peak:
+        return float("nan")
     for i, v in enumerate(vals):
         if v is not None and v >= 0.5 * peak:
             return i * DT
@@ -895,13 +900,22 @@ def cmd_report(a):
         _lag_table(evs)
 
 
+def _leg(sel, k1, k2):
+    """Median gap between two t50 crossings, over the turns where BOTH were measurable.
+
+    Not a difference of two independently-filtered medians: those are taken over
+    different turn sets and their difference is not a lag anyone observed."""
+    d = [e[k1] - e[k2] for e in sel if e[k1] == e[k1] and e[k2] == e[k2]]
+    return (med(d), len(d))
+
+
 def _lag_table(evs):
     """Is the car weak, or is it late? Splits the turn-in delay into its three legs."""
     print()
     print("  WHERE THE LATENESS IS   seconds to half of each signal peak, and the legs between")
     head = ["band".ljust(7), "turns".rjust(5), "t50cmd".rjust(7), "t50req".rjust(7),
-            "t50can".rjust(7), "t50yaw".rjust(7), "|", "cmd>req".rjust(8), "req>can".rjust(8),
-            "can>yaw".rjust(8), "total".rjust(7)]
+            "t50can".rjust(7), "t50yaw".rjust(7), "|", "cmd>req n".rjust(10), "req>can n".rjust(10),
+            "can>yaw".rjust(10)]
     print("  " + " ".join(head))
     print("  " + "-" * 96)
     for b in BAND_NAMES:
@@ -910,15 +924,21 @@ def _lag_table(evs):
             continue
         c, r = _col(sel, "t50_cmd"), _col(sel, "t50_req")
         a, y = _col(sel, "t50_can"), _col(sel, "t50_yaw")
+        rc, rcn = _leg(sel, "t50_req", "t50_cmd")
+        ar, arn = _leg(sel, "t50_can", "t50_req")
+        ya, yan = _leg(sel, "t50_yaw", "t50_can")
         print("  " + " ".join([
             f"{b:<7}", f"{len(sel):5d}", f"{c:6.2f}s", f"{r:6.2f}s", f"{a:6.2f}s", f"{y:6.2f}s",
-            "|", f"{r - c:7.2f}s", f"{a - r:7.2f}s", f"{y - a:7.2f}s", f"{y - c:6.2f}s"]))
+            "|", f"{rc:6.2f}s/{rcn:<3d}", f"{ar:6.2f}s/{arn:<3d}", f"{ya:6.2f}s/{yan:<3d}"]))
     print()
     print("  cmd>req controller turning the plan into a torque ask")
     print("  req>can the rate limiter delivering that ask to the EPS")
     print("  can>yaw the car responding to the torque it received")
-    print("  t50cmd is measured from turn onset, so the PLAN-side lead is understated; the three")
-    print("  legs are not, and they are the ones anything can be done about.")
+    print("  Each leg shows median/n, where n is the turns in which BOTH endpoints were")
+    print("  measurable. A signal already past half its peak on the first frame we have is")
+    print("  reported unmeasurable, not 0.00s -- twice this metric called the rate limiter free")
+    print("  because the window opened after the ramp. A small n means most turns saturated and")
+    print("  the cell should not be leaned on.")
     return 0
 
 
