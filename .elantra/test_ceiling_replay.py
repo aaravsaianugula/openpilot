@@ -48,10 +48,20 @@ def opendbc_ceiling(steer_max, allowance, driver, sign=1):
 
 
 def panda_constants():
-  """(max_torque_raised, driver_torque_allowance, driver_torque_multiplier) from hyundai.h."""
+  """(max_torque_raised, driver_torque_allowance, driver_torque_multiplier) from hyundai.h.
+
+  Returns None when the header cannot be read, rather than raising. The caller already has a
+  check whose failure message says to set OPENDBC_PATH, and that message was unreachable: open()
+  raised FileNotFoundError first, so a mis-set path took the whole run down with a traceback
+  instead of failing one named check. Same rule as guards.py -- a check may report that it could
+  not verify something; it may not abort the run it is part of.
+  """
   path = os.path.join(OPENDBC, "opendbc/safety/modes/hyundai.h")
-  with open(path, encoding="utf-8") as fh:
-    src = fh.read()
+  try:
+    with open(path, encoding="utf-8") as fh:
+      src = fh.read()
+  except OSError:
+    return None
   allow = re.search(r"\.driver_torque_allowance\s*=\s*(\d+)", src)
   mult = re.search(r"\.driver_torque_multiplier\s*=\s*(\d+)", src)
   raised = re.search(r"HYUNDAI_STEERING_LIMITS_RAISED\s*=\s*HYUNDAI_LIMITS\((\d+)", src)
