@@ -660,7 +660,9 @@ def main() -> int:
                               ("test_steer_headroom.py", []),
                               # pins the override-yield arithmetic (-242 -> -254.5 counts) that
                               # the road-test document cites as confirmed by executable test
-                              ("test_torque_projection.py", [])):
+                              ("test_torque_projection.py", []),
+                              # proves the feedforward-schedule guard can still go red
+                              ("test_guard_ff_schedule.py", ["--repo", str(repo)])):
             # Three of these import opendbc (test_scanner_decoders through ceiling_replay,
             # test_torque_projection through CarControllerParams). Point PYTHONPATH at the
             # opendbc we just BUILT rather than relying on opendbc_tests() having pip-installed
