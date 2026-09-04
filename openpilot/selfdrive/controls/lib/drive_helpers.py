@@ -13,6 +13,18 @@ MIN_STABLE_DELAY = 0.3
 MAX_LATERAL_JERK = 5.0  # m/s^3
 MAX_LATERAL_ACCEL_NO_ROLL = 3.0  # m/s^2
 
+# CN7: the ISO comfort limit is a lateral ACCELERATION, so the tightest radius it will command is
+# v^2 / limit -- 15 m at 15 mph, 33 m at 22 mph, 81 m at 35 mph, against real turn radii of 7.5-20 m.
+# Measured over 3.41M engaged frames it is active on 8% of turn frames at 11-13 mph rising to 80% at
+# 31-36 mph, removes a median 11-22% of the model's demanded curvature, and accounts for 92.3% of the
+# frames that raise "Turn Exceeds Steering Limit". The archive holds ZERO turn frames tight enough to
+# reach it above 18 m/s, so the schedule is back on the stock value before highway speed and the
+# highway is bit-identical. 4.0 is where the gain stops being realisable: the MDPS accepts 409 counts,
+# which buys about 3.65 m/s^2 at 14-18 m/s, so a higher limit would only move the failure from
+# "clamped" to "saturated". .elantra/guards.py pins both ends of this schedule.
+LAT_ACCEL_LIMIT_BP = [16.0, 22.0]                     # m/s
+LAT_ACCEL_LIMIT_V = [4.0, MAX_LATERAL_ACCEL_NO_ROLL]  # m/s^2
+
 
 def should_stop(v_ego: float, a_target: float) -> bool:
   return bool(v_ego < 0.3 and a_target < 0.1)
@@ -33,9 +45,10 @@ def clip_curvature(v_ego, prev_curvature, new_curvature, roll) -> tuple[float, b
                           prev_curvature - max_curvature_rate * DT_CTRL,
                           prev_curvature + max_curvature_rate * DT_CTRL)
 
+  max_lat_accel_no_roll = float(np.interp(v_ego, LAT_ACCEL_LIMIT_BP, LAT_ACCEL_LIMIT_V))
   roll_compensation = roll * ACCELERATION_DUE_TO_GRAVITY
-  max_lat_accel = MAX_LATERAL_ACCEL_NO_ROLL + roll_compensation
-  min_lat_accel = -MAX_LATERAL_ACCEL_NO_ROLL + roll_compensation
+  max_lat_accel = max_lat_accel_no_roll + roll_compensation
+  min_lat_accel = -max_lat_accel_no_roll + roll_compensation
   new_curvature, limited_accel = clamp(new_curvature, min_lat_accel / v_ego ** 2, max_lat_accel / v_ego ** 2)
 
   new_curvature, limited_max_curv = clamp(new_curvature, -MAX_CURVATURE, MAX_CURVATURE)

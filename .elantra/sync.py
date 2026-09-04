@@ -102,6 +102,7 @@ OVERLAY_ADDED = [
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_manifest.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/onroad/steer_headroom.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/onroad/steer_headroom_bar.py",
+    "openpilot/selfdrive/controls/tests/test_drive_helpers.py",
 ]
 
 # Upstream files we modify. Kept deliberately tiny -- this is the only conflict surface in
@@ -112,6 +113,9 @@ OVERLAY_MODIFIED = [
     "openpilot/system/updated/updated.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/onroad/hud_renderer.py",
+    # The CN7 lateral-accel schedule in clip_curvature. Paired with the test above in
+    # OVERLAY_ADDED: registering one and not the other is exactly what this list exists to stop.
+    "openpilot/selfdrive/controls/lib/drive_helpers.py",
 ]
 
 # check-run conclusions that mean "this commit is not safe to ship".

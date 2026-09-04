@@ -53,6 +53,27 @@ PANDA_RAISED_CEILING = 512
 STEER_MAX_STOCK = 384
 STEER_RATES = (3, 7)
 
+# The CN7 lateral-acceleration schedule in clip_curvature (drive_helpers.py). This is a
+# DEMAND-side limit: it caps the commanded curvature before the steering controller ever sees
+# it, so no amount of torque work can recover what it removes.
+#
+# Both ends are pinned as literals, for opposite reasons.
+#
+# The TOP end, because a limit is only useful up to what the car can actually deliver. The MDPS
+# accepts 409 counts, which buys about 3.65 m/s^2 at 14-18 m/s; a limit above that is headroom
+# the EPS cannot produce, and would only move the failure from "clamped" to "saturated".
+#
+# The BOTTOM end, because above 18 m/s the archive holds ZERO turn frames tight enough to reach
+# the clamp at all -- 3.41M engaged frames, 0.0%. Anything but the stock constant up there is an
+# unmeasured change to highway behaviour, which is the one band of this car that already works.
+#
+# And the first breakpoint, because the measured clamp rate PEAKS at 80% of turn frames in
+# 14-16 m/s. A taper starting below 16 m/s puts the worst-affected band on the ramp instead of
+# the flat, quietly undoing most of the change while every other guard stayed green.
+LAT_ACCEL_LIMIT_MAX = 4.5
+LAT_ACCEL_STOCK = 3.0
+LAT_ACCEL_TAPER_START_MIN = 14.0
+
 EXPECTED_FLAGS = {
     "HYUNDAI_ELANTRA_2024": {"CHECKSUM_CRC8", "CAMERA_SCC", "RAISED_LIMITS", "LFAHDA_MFC_8"},
     "HYUNDAI_ELANTRA_HEV_2024": {"CHECKSUM_CRC8", "CAMERA_SCC", "HYBRID", "LFAHDA_MFC_8"},
@@ -333,6 +354,119 @@ def guard_ui_headroom(repo: Path, opendbc: Path) -> None:
           re.search(r"def arc_bar_pts\([^)]*cap_radius", up, re.S) is not None)
     check("TorqueBar still takes demo, scale and always",
           re.search(r"class TorqueBar.*?def __init__\(self, demo[^)]*scale[^)]*always", up, re.S) is not None)
+
+
+def _lat_accel_limit_v(source: str, stock: object) -> list[float] | None:
+    """LAT_ACCEL_LIMIT_V, with the MAX_LATERAL_ACCEL_NO_ROLL reference resolved.
+
+    Deliberately textual: the value list mixes a float literal with a name, so
+    ast.literal_eval refuses it, and importing drive_helpers here would drag numpy and the
+    whole openpilot package onto a machine these guards are meant to run on with a bare
+    Python 3.
+    """
+    if stock is None:
+        return None
+    marker = "LAT_ACCEL_LIMIT_V"
+    for line in source.splitlines():
+        head, sep, tail = line.partition("=")
+        if sep and head.strip() == marker:
+            body = tail.split("#")[0].strip()
+            if not (body.startswith("[") and body.endswith("]")):
+                return None
+            out: list[float] = []
+            for part in body[1:-1].split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                if part == "MAX_LATERAL_ACCEL_NO_ROLL":
+                    out.append(float(stock))  # type: ignore[arg-type]
+                    continue
+                try:
+                    out.append(float(part))
+                except ValueError:
+                    return None
+            return out or None
+    return None
+
+
+def guard_lateral_accel_schedule(repo: Path) -> None:
+    """The clip_curvature lateral-accel schedule, and the overlay registration that keeps it.
+
+    Two halves, and they are a coupled edit in the same sense as the 0x485 LFAHDA_MFC pair.
+    The schedule lives in an UPSTREAM file, so it survives the weekly rebuild only while
+    drive_helpers.py is in OVERLAY_MODIFIED and its test is in OVERLAY_ADDED. Editing both and
+    registering one is exactly what that list exists to prevent, and it fails silently: the car
+    reverts to a flat 3.0 m/s^2 on the next sync with nothing to see in the diff.
+    """
+    print("")
+    print("[drive_helpers.py] CN7 lateral-accel schedule")
+    dh = repo / "openpilot/selfdrive/controls/lib/drive_helpers.py"
+    check("drive_helpers.py present", dh.is_file())
+    if not dh.is_file():
+        return
+    source = read(dh)
+    consts: dict[str, object] = {}
+    tree = _parse(source)
+    check("drive_helpers.py parses", tree is not None,
+          "the schedule cannot be read from a file that does not parse")
+    if tree is None:
+        return
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if not isinstance(target, ast.Name):
+                continue
+            try:
+                consts[target.id] = ast.literal_eval(node.value)
+            except (ValueError, TypeError, SyntaxError):
+                pass
+
+    stock = consts.get("MAX_LATERAL_ACCEL_NO_ROLL")
+    check("MAX_LATERAL_ACCEL_NO_ROLL is still the stock ISO value",
+          stock == LAT_ACCEL_STOCK,
+          "expected " + str(LAT_ACCEL_STOCK) + ", found " + repr(stock)
+          + " -- the schedule is defined against it, so moving it moves the highway too")
+
+    bp = consts.get("LAT_ACCEL_LIMIT_BP")
+    vals = _lat_accel_limit_v(source, stock)
+
+    check("LAT_ACCEL_LIMIT_BP is a 2-point increasing schedule",
+          isinstance(bp, list) and len(bp) == 2 and bp == sorted(bp),
+          "found " + repr(bp) + " -- np.interp requires increasing breakpoints")
+    check("LAT_ACCEL_LIMIT_V resolved from source", vals is not None,
+          "could not read the schedule values; a guard that cannot see the number is not a guard")
+    if not (isinstance(bp, list) and len(bp) == 2) or vals is None:
+        return
+
+    check("schedule taper starts at or above " + str(LAT_ACCEL_TAPER_START_MIN) + " m/s",
+          bp[0] >= LAT_ACCEL_TAPER_START_MIN,
+          "first breakpoint " + repr(bp[0]) + " puts 14-16 m/s, where the clamp binds on 80%"
+          + " of turn frames, on the taper instead of the flat")
+    check("schedule returns to the stock limit before highway speed",
+          vals[-1] == LAT_ACCEL_STOCK,
+          "ends at " + repr(vals[-1]) + "; above 18 m/s the clamp is measured at 0.0%, so"
+          + " there is nothing to buy up there and everything to risk")
+    check("schedule never exceeds " + str(LAT_ACCEL_LIMIT_MAX) + " m/s^2",
+          max(vals) <= LAT_ACCEL_LIMIT_MAX,
+          "peaks at " + repr(max(vals)) + "; 409 counts buys about 3.65 m/s^2, so more is"
+          + " headroom the EPS cannot deliver")
+    check("schedule is non-increasing in speed",
+          list(vals) == sorted(vals, reverse=True),
+          "found " + repr(vals) + " -- the car would be allowed to turn harder as it speeds up")
+    check("clip_curvature actually reads the schedule",
+          "np.interp(v_ego, LAT_ACCEL_LIMIT_BP, LAT_ACCEL_LIMIT_V)" in source,
+          "the constants exist but clip_curvature still uses the flat value")
+
+    sync = read(repo / ".elantra/sync.py")
+    check("drive_helpers.py is registered in OVERLAY_MODIFIED",
+          '"openpilot/selfdrive/controls/lib/drive_helpers.py"' in sync,
+          "the weekly rebuild would silently revert the schedule to a flat 3.0 m/s^2")
+    check("its test is registered in OVERLAY_ADDED",
+          '"openpilot/selfdrive/controls/tests/test_drive_helpers.py"' in sync,
+          "the test would be deleted on the next sync, leaving the schedule unguarded")
+    check("the schedule test file is present",
+          (repo / "openpilot/selfdrive/controls/tests/test_drive_helpers.py").is_file())
 
 
 def guard_superproject(repo: Path) -> None:
@@ -712,6 +846,7 @@ def main() -> int:
     guard_torque(opendbc)
     if args.repo:
         guard_superproject(args.repo.resolve())
+        guard_lateral_accel_schedule(args.repo.resolve())
         guard_ui_headroom(args.repo.resolve(), opendbc)
         guard_opendbc_pin(args.repo.resolve(), opendbc)
 
