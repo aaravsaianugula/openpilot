@@ -6,32 +6,45 @@ acceleration into a torque request. It is a single scalar, and `torqued.py` only
 samples with `vEgo > MIN_VEL` (15 m/s) AND `|lateral_acc| <= LAT_ACC_THRESHOLD` (1 m/s^2). It has
 therefore never seen a frame below 34 mph, and never a frame harder than a gentle highway curve.
 
-Measured on this car, over the 20 archived routes that ran a 409-count build (344 segments,
-1,992,979 frames), as the regression of roll-compensated yaw-rate lateral acceleration on delivered
-counts, lag-aligned by 0.2 s. F is the lateral acceleration produced at a full 409-count command:
+Measured on this car over the 20 archived routes that ran a 409-count build, as roll-compensated
+yaw-rate lateral acceleration against delivered counts. F is the lateral acceleration produced at a
+full 409-count command. Two independent passes; the second is .elantra/plant_gain.py over 289
+segments, and it is the reproducible one -- re-run it rather than trusting this table:
 
-    v (m/s)   3-4   4-5   5-6   6-8   8-10  10-13  13-16  16-22  22-32
-    F        1.08  1.57  1.90  1.99   2.20   2.40   2.81   3.08   3.04
-    F/3.157  0.34  0.50  0.60  0.63   0.70   0.76   0.89   0.98   0.96
+    v (m/s)     3-4   4-5   5-6   6-8   8-10  10-13  13-16  16-22  22-32
+    F (first)  1.08  1.57  1.90  1.99   2.20   2.40   2.81   3.08   3.04
+    F (repro)  1.17  1.30  1.74  1.84   2.11   2.44   2.67   3.26   3.33
+    g = F(v) / F(16-22), reproduced:
+               0.36  0.40  0.53  0.56   0.65   0.75   0.82   1.00   1.02
 
-At 16-22 m/s the measurement returns 3.08 against the 3.157 the learner fits from exactly that
-range -- agreement to 3%, from an independent estimator. Below 8 m/s the true gain is roughly half
-what the controller assumes, so the feedforward asks for roughly half the torque the turn needs and
-the shortfall has to be made up by the proportional term, which cannot act until the car has
-already run wide.
+Eight of nine bands reproduce within 8%. 4-5 m/s differs by 17% and is the one value here not to
+lean on. Below 8 m/s the gain is roughly half the highway's, so the feedforward asks for about half
+the torque the turn needs and the shortfall falls to the proportional term, which cannot act until
+the car has already run wide.
+
+THE DENOMINATOR IS NOT A CONSTANT, and an earlier version of this file said it was, naming 3.157 as
+a value "the learner fits". latAccelFactor is learned at runtime, and across these same 20 routes
+the value published on lateralTorqueParameters moved between 2.72 and 3.56. A schedule expressed as
+F over a fixed number is therefore exactly right only at the one runtime value it was fitted
+against, and up to 13% out at the edges. Read the table below as a ratio of gains,
+g = F(v) / F(learner band), which is invariant to that drift; that the constants happen to be
+expressed against a nominal factor is a wart, not a design.
+
+Every value below sits AT OR ABOVE the reproduced ratio in every band, so the schedule asks for less
+extra torque than the measurement says the turn needs. That conservatism is the property to preserve
+if these numbers are ever re-fitted.
 
 This schedule corrects the FEEDFORWARD ONLY. The error path keeps the unscheduled latAccelFactor,
 so the closed-loop P gain is unchanged at every speed and this introduces no new stability margin
 question. `KP_INTERP` in latcontrol_torque_v0.py is already speed-scheduled 12.7x over this range;
 the error path over-compensates and the feedforward under-compensates, and only the second is wrong.
 
-Every value is rounded so it sits AT OR ABOVE the measured ratio -- the schedule never asks for more
-torque than the measurement says the turn needs. The last breakpoint is LEARNER_MIN_VEL because that
-is where the learner's own evidence begins: at and above it the gain is exactly 1.0, and since
-x / 1.0 is bit-identical in IEEE-754, every speed at or above 15 m/s behaves exactly as it does
-today -- same feedforward, same anti-windup bound, same integrator, same commanded counts.
+The last breakpoint is LEARNER_MIN_VEL because that is where the learner's own evidence begins: at
+and above it the gain is exactly 1.0, and since x / 1.0 is bit-identical in IEEE-754, every speed at
+or above 15 m/s behaves exactly as it does today -- same feedforward, same anti-windup bound, same
+integrator, same commanded counts.
 
-The gain is capped at 1.0 and never rises above it. The measured ratio at 16-32 m/s is 0.96-0.98,
+The gain is capped at 1.0 and never rises above it. The reproduced ratio at 16-32 m/s is 1.00-1.02,
 so there is nothing to gain there, and the highway is the one band of this car that already works.
 
 .elantra/guards.py::guard_ff_lat_accel_schedule pins all of the above, including the equality with

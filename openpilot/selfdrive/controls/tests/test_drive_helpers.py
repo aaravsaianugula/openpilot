@@ -95,7 +95,7 @@ class TestClipCurvatureSchedule:
     assert drive_helpers.LAT_ACCEL_LIMIT_V[-1] == MAX_LATERAL_ACCEL_NO_ROLL
 
   def test_schedule_is_bounded(self):
-    # 409 counts is the MDPS's acceptance limit and buys ~3.65 m/s^2 at 14-18 m/s. A limit above
+    # 409 counts is the MDPS's acceptance limit and buys ~2.9 m/s^2 at 14-18 m/s. A limit above
     # that is headroom the car cannot deliver; it would only move the failure from "clamped" to
     # "saturated". This bound is what stops a future edit opening it wide.
     assert max(drive_helpers.LAT_ACCEL_LIMIT_V) <= 4.5

@@ -76,7 +76,9 @@ MAX_ALLOWANCE_INSIDE_PANDA = ((PANDA_RAISED_CEILING + DRIVER_ALLOWANCE_STOCK * D
 # Both ends are pinned as literals, for opposite reasons.
 #
 # The TOP end, because a limit is only useful up to what the car can actually deliver. The MDPS
-# accepts 409 counts, which buys about 3.65 m/s^2 at 14-18 m/s; a limit above that is headroom
+# accepts 409 counts, which buys about 2.9 m/s^2 at 14-18 m/s (measured 2.67 at 13-16 and 3.26
+# at 16-22 by .elantra/plant_gain.py; an earlier note here said 3.65 and was not reproducible).
+# A limit above what the EPS can deliver is headroom
 # the EPS cannot produce, and would only move the failure from "clamped" to "saturated".
 #
 # The BOTTOM end, because above 18 m/s the archive holds ZERO turn frames tight enough to reach
@@ -511,7 +513,7 @@ def guard_lateral_accel_schedule(repo: Path) -> None:
           + " there is nothing to buy up there and everything to risk")
     check("schedule never exceeds " + str(LAT_ACCEL_LIMIT_MAX) + " m/s^2",
           max(vals) <= LAT_ACCEL_LIMIT_MAX,
-          "peaks at " + repr(max(vals)) + "; 409 counts buys about 3.65 m/s^2, so more is"
+          "peaks at " + repr(max(vals)) + "; 409 counts buys about 2.9 m/s^2 at 14-18, so more is"
           + " headroom the EPS cannot deliver")
     check("schedule is non-increasing in speed",
           list(vals) == sorted(vals, reverse=True),
