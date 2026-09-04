@@ -84,13 +84,27 @@ def read(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
 
 
+def _parse(source: str) -> ast.Module | None:
+    """ast.parse that returns None instead of raising.
+
+    A guard is allowed to say "I could not verify this"; it is not allowed to abort the run.
+    sync.py cannot tell a crash from a real divergence, so every parse in this file goes here.
+    """
+    try:
+        return ast.parse(source)
+    except SyntaxError:
+        return None
+
+
 def _flags_in_assignment(source: str, platform: str) -> set[str] | None:
     """Pull the HyundaiFlags.* names out of a platform's flags= argument via AST.
 
     Returns None when the platform is absent entirely, so the caller can tell "not defined"
     apart from "defined with the wrong flags".
     """
-    tree = ast.parse(source)
+    tree = _parse(source)
+    if tree is None:
+        return None
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):
             continue
@@ -232,7 +246,10 @@ def guard_torque(opendbc: Path) -> None:
 def _module_ints(source: str, names: tuple[str, ...]) -> dict:
     """{name: value} for top-level `NAME = <int expr>` assignments. Missing names are absent."""
     out: dict = {}
-    for stmt in ast.parse(source).body:
+    tree = _parse(source)
+    if tree is None:
+        return {}
+    for stmt in tree.body:
         if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
                 and isinstance(stmt.targets[0], ast.Name) and stmt.targets[0].id in names:
             out[stmt.targets[0].id] = _int_expr(stmt.value)
@@ -446,7 +463,10 @@ def _enum_members(source: str, enum_name: str) -> dict:
     """{member: value} for an IntFlag class; None where a value is not an integer expression.
     Callers must assert the dict is non-empty and fully evaluated."""
     out: dict = {}
-    for node in ast.walk(ast.parse(source)):
+    tree = _parse(source)
+    if tree is None:
+        return {}
+    for node in ast.walk(tree):
         if not isinstance(node, ast.ClassDef) or node.name != enum_name:
             continue
         for stmt in node.body:
@@ -464,7 +484,9 @@ def _raised_assigned_in_else(source: str) -> bool:
     with ALT_LIMITS_2 would command 409 while panda enforced 170. Text matching cannot see the
     difference between the two placements, so this walks the tree.
     """
-    tree = ast.parse(source)
+    tree = _parse(source)
+    if tree is None:
+        return False
     for node in ast.walk(tree):
         if not (isinstance(node, ast.FunctionDef) and node.name == "__init__"):
             continue
