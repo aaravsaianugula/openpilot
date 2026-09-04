@@ -103,6 +103,12 @@ OVERLAY_ADDED = [
     "openpilot/selfdrive/ui/sunnypilot/mici/onroad/steer_headroom.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/onroad/steer_headroom_bar.py",
     "openpilot/selfdrive/controls/tests/test_drive_helpers.py",
+    # The CN7 low-speed feedforward gain schedule and its tests. The constants live here rather
+    # than in .elantra/ because .elantra is not a legal Python package name and cannot be imported
+    # at runtime; wholesale restore means they can never be half-merged. Paired with the call site
+    # in OVERLAY_MODIFIED below -- registering one without the other silently reverts the fix.
+    "openpilot/sunnypilot/selfdrive/controls/lib/lat_accel_factor_schedule.py",
+    "openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lat_accel_factor_schedule.py",
 ]
 
 # Upstream files we modify. Kept deliberately tiny -- this is the only conflict surface in
@@ -116,6 +122,14 @@ OVERLAY_MODIFIED = [
     # The CN7 lateral-accel schedule in clip_curvature. Paired with the test above in
     # OVERLAY_ADDED: registering one and not the other is exactly what this list exists to stop.
     "openpilot/selfdrive/controls/lib/drive_helpers.py",
+    # Two lines: the import, and dividing the feedforward by lat_accel_factor_gain(CS.vEgo). The
+    # schedule itself is in OVERLAY_ADDED above. Without this entry the rebuild keeps the constants
+    # and drops the only line that reads them, which looks like the fix is still installed.
+    "openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_jerk_aware.py",
+    # The low-speed KP cap. One line: the PID is built from the scaled table instead of the stock
+    # one. Unregistered, the rebuild restores the stock 25x low-speed gain and the command goes back
+    # to chattering, with the feedforward schedule still in place and apparently working.
+    "openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py",
 ]
 
 # check-run conclusions that mean "this commit is not safe to ship".
@@ -646,7 +660,9 @@ def main() -> int:
                               ("test_steer_headroom.py", []),
                               # pins the override-yield arithmetic (-242 -> -254.5 counts) that
                               # the road-test document cites as confirmed by executable test
-                              ("test_torque_projection.py", [])):
+                              ("test_torque_projection.py", []),
+                              # proves the feedforward-schedule guard can still go red
+                              ("test_guard_ff_schedule.py", ["--repo", str(repo)])):
             # Three of these import opendbc (test_scanner_decoders through ceiling_replay,
             # test_torque_projection through CarControllerParams). Point PYTHONPATH at the
             # opendbc we just BUILT rather than relying on opendbc_tests() having pip-installed
