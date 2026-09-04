@@ -132,6 +132,23 @@ OVERLAY_MODIFIED = [
     "openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py",
 ]
 
+# Paths that legitimately move between builds without being overlay files. The submodule gitlink
+# is written straight to the index further down, so it is expected to change and is not a stray.
+OVERLAY_EXEMPT = ["opendbc_repo"]
+
+
+def _overlay_covers(path: str) -> bool:
+    """True if `path` survives a rebuild -- registered, or under a registered directory.
+
+    OVERLAY_ADDED carries directory entries (".elantra"), so a prefix match is required; an exact
+    match alone would report every file under them as a stray.
+    """
+    for entry in OVERLAY_ADDED + OVERLAY_MODIFIED + OVERLAY_EXEMPT:
+        if path == entry or path.startswith(entry.rstrip("/") + "/"):
+            return True
+    return False
+
+
 # check-run conclusions that mean "this commit is not safe to ship".
 BAD_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "stale"}
 # A commit with barely any checks probably has not finished starting them.
@@ -473,6 +490,30 @@ def previous_build(repo: Path) -> tuple[str, dict]:
     return prev, json.loads(raw.stdout)
 
 
+def assert_overlay_covers_everything(repo: Path, prev_base: str, prev: str) -> list[str]:
+    """Every path the previous build changed must be carried by an overlay list, or it is lost.
+
+    The symmetric twin of the opendbc `stray` check. Until this existed the superproject had no
+    equivalent: an unregistered file is not deleted with an error, it simply never comes back
+    after the hard reset, and the only output is a restored-file count whose expected value
+    nobody knows. That is the failure mode this whole design is most exposed to, and it had no
+    detector -- guards.py only ever checked six specific paths that somebody hand-wrote.
+
+    Returns the changed paths so the caller can report the count. Raises on any stray.
+    """
+    changed = [n for n in git(["diff", "--name-only", prev_base, prev], repo).splitlines() if n]
+    stray = [n for n in changed if not _overlay_covers(n)]
+    if stray:
+        raise SyncError(
+            "the previous build changed files that no overlay list carries:\n  "
+            + "\n  ".join(sorted(stray))
+            + "\n\nThe rebuild would silently drop every one of them -- no error, no warning, and "
+            + "a tree that looks correct. Add each to OVERLAY_ADDED (files that are entirely "
+            + "ours) or OVERLAY_MODIFIED (upstream files we edit), or revert it.")
+    log(f"  overlay coverage: all {len(changed)} changed paths are registered")
+    return changed
+
+
 def build_superproject(repo: Path, target: dict, opendbc_sha: str,
                        dry_run: bool) -> tuple[str, str]:
     log("\n=== superproject ===")
@@ -489,6 +530,14 @@ def build_superproject(repo: Path, target: dict, opendbc_sha: str,
     if prev_base == target["sha"]:
         log("  upstream unchanged, but opendbc moved "
             + f"{(prev_manifest.get('opendbc_sha') or '')[:9]} -> {opendbc_sha[:9]}; rebuilding")
+
+    # Every path the previous build actually changed must be carried by one of the overlay lists,
+    # or this rebuild drops it. This is the symmetric twin of the opendbc `stray` check above, and
+    # until now the superproject had no equivalent: an unregistered file is not deleted with an
+    # error, it simply never comes back, and the only output is a restored-file count whose
+    # expected value nobody knows. That is the failure mode this design is most exposed to and it
+    # had no detector at all.
+    assert_overlay_covers_everything(repo, prev_base, prev)
 
     # The overlay diff is derived from the last build rather than stored as a static patch,
     # so hand edits to the overlay are picked up automatically and there is only ever one
@@ -662,7 +711,13 @@ def main() -> int:
                               # the road-test document cites as confirmed by executable test
                               ("test_torque_projection.py", []),
                               # proves the feedforward-schedule guard can still go red
-                              ("test_guard_ff_schedule.py", ["--repo", str(repo)])):
+                              ("test_guard_ff_schedule.py", ["--repo", str(repo)]),
+                              # proves THIS script's own overlay-coverage check still fires; it
+                              # is the only thing standing between an unregistered file and a
+                              # silent deletion, so it cannot go unexercised
+                              ("test_sync_overlay_coverage.py", []),
+                              # proves the plant-gain estimator recovers a known synthetic gain
+                              ("test_plant_gain.py", [])):
             # Three of these import opendbc (test_scanner_decoders through ceiling_replay,
             # test_torque_projection through CarControllerParams). Point PYTHONPATH at the
             # opendbc we just BUILT rather than relying on opendbc_tests() having pip-installed
