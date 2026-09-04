@@ -53,6 +53,22 @@ PANDA_RAISED_CEILING = 512
 STEER_MAX_STOCK = 384
 STEER_RATES = (3, 7)
 
+# The CN7 driver-torque window. opendbc cuts the ceiling by twice the excess over this, and
+# CR_Mdps_StrColTq on this car carries the EPS's own reaction to road load, not just the driver
+# -- so at the HKG default of 50 the car throttles itself back on a signal nobody generated.
+#
+# panda runs the same clamp against max_torque 512 rather than opendbc's 409, so its window is
+# 103 counts wider at every driver torque. Requiring opendbc inside panda for ALL driver torques:
+#     409 + (A + d)*2  <=  512 + (50 + d)*2   ->   A <= 101.5
+# Anything above that commands torque panda rejects, which is a steering dropout rather than a
+# tuning regression. The bound is DERIVED from the two ceilings rather than written down, so if
+# either moves the permitted allowance moves with it instead of going quietly stale.
+DRIVER_ALLOWANCE_STOCK = 50
+DRIVER_ALLOWANCE_RAISED = 100
+DRIVER_MULTIPLIER = 2
+MAX_ALLOWANCE_INSIDE_PANDA = ((PANDA_RAISED_CEILING + DRIVER_ALLOWANCE_STOCK * DRIVER_MULTIPLIER
+                               - STEER_MAX_RAISED) // DRIVER_MULTIPLIER)
+
 # The CN7 lateral-acceleration schedule in clip_curvature (drive_helpers.py). This is a
 # DEMAND-side limit: it caps the commanded curvature before the steering controller ever sees
 # it, so no amount of torque work can recover what it removes.
@@ -610,6 +626,29 @@ def _enum_members(source: str, enum_name: str) -> dict:
     return out
 
 
+def _allowance_raised_beside_ceiling(source: str) -> bool:
+    """STEER_DRIVER_ALLOWANCE is raised in the same RAISED_LIMITS branch as STEER_MAX.
+
+    Structural, not textual. The pair only means anything if BOTH assignments sit inside the
+    branch guarded by the flag: assigned at the top of __init__ instead, every Hyundai gets the
+    wider window and yields to its driver later than its own panda expects -- which reads
+    identically in a diff and is caught by nothing else in this file.
+    """
+    tree = _parse(source)
+    if tree is None:
+        return False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        if "RAISED_LIMITS" not in ast.dump(node.test):
+            continue
+        assigned = {t.attr for stmt in node.body if isinstance(stmt, ast.Assign)
+                    for t in stmt.targets if isinstance(t, ast.Attribute)}
+        if {"STEER_MAX", "STEER_DRIVER_ALLOWANCE"} <= assigned:
+            return True
+    return False
+
+
 def _raised_assigned_in_else(source: str) -> bool:
     """Is STEER_MAX raised inside the `else` of the chain that picks STEER_MAX?
 
@@ -760,6 +799,33 @@ def guard_raised_torque_pair(opendbc: Path) -> None:
               "someone widened the band panda does not police; the EPS faults inside it")
         check(f"steer ramp rates are unchanged at {rate_up}/{rate_down}",
               args[1:3] == [str(rate_up), str(rate_down)], "found " + str(args[1:3]))
+
+    # --- the driver window, the other half of this branch ------------------------------
+    # STEER_MAX and STEER_DRIVER_ALLOWANCE are a pair on this car: the ceiling decides what may
+    # be asked for, the allowance decides how much survives the column-torque sensor. Asserted
+    # as literals AND against panda, because the relational check alone would pass an allowance
+    # of 200 that panda silently rejects, and the literal alone goes stale if a ceiling moves.
+    check(f"opendbc raises STEER_DRIVER_ALLOWANCE to {DRIVER_ALLOWANCE_RAISED} beside the ceiling",
+          _allowance_raised_beside_ceiling(values)
+          and re.search(rf"STEER_DRIVER_ALLOWANCE\s*=\s*{DRIVER_ALLOWANCE_RAISED}\b", values)
+          is not None,
+          "it must be assigned inside the RAISED_LIMITS branch next to STEER_MAX = "
+          + f"{STEER_MAX_RAISED}; anywhere else and every Hyundai picks up the wider window")
+    check(f"the default under it is still the HKG {DRIVER_ALLOWANCE_STOCK}",
+          re.search(rf"self\.STEER_DRIVER_ALLOWANCE\s*=\s*{DRIVER_ALLOWANCE_STOCK}\b", values)
+          is not None,
+          "every other Hyundai must keep the stock driver window")
+    check(f"the raised allowance stays inside panda's window (max {MAX_ALLOWANCE_INSIDE_PANDA})",
+          DRIVER_ALLOWANCE_RAISED <= MAX_ALLOWANCE_INSIDE_PANDA,
+          f"{DRIVER_ALLOWANCE_RAISED} commands torque panda rejects -- a steering dropout, not "
+          + "a tuning regression")
+    pa = re.search(r"\.driver_torque_allowance\s*=\s*(\d+)", safety)
+    pm = re.search(r"\.driver_torque_multiplier\s*=\s*(\d+)", safety)
+    check("panda's driver window is the one that bound was derived from",
+          pa is not None and pm is not None
+          and int(pa.group(1)) == DRIVER_ALLOWANCE_STOCK
+          and int(pm.group(1)) == DRIVER_MULTIPLIER,
+          "panda's allowance or multiplier moved, so the derived bound above is now wrong")
 
     # NEITHER SIDE READS SPEED, and this is panda's half of that. If anything puts the CN7
     # back on panda's dynamic path, panda silently regains the -1 m/s shift and the +1 count of

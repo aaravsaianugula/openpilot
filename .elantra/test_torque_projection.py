@@ -170,46 +170,78 @@ class TestStep(unittest.TestCase):
                 self.assertEqual(b, a, f"seeded at {prev}, driver {driver}")
 
     def test_driver_override_ramps_the_command_down_not_off(self):
-        # driver_max_torque = STEER_MAX + (50 + driver)*2, clamped at 0, so heavy opposition
-        # sets the target to 0. It does NOT get there in one frame: STEER_DELTA_DOWN is 7, and
-        # the rate limiter floors each step at prev - 7. Asserting an instant zero here would
-        # be asserting a car that does not exist, and would hide a broken rate limiter.
-        self.assertEqual(tp.step(1.0, 409, -300.0, self.before, 409, False), 402)
-        self.assertEqual(tp.step(1.0, 10, -300.0, self.before, 409, False), 3)
-        self.assertEqual(tp.step(1.0, 3, -300.0, self.before, 409, False), 0)
+        # driver_max_torque = STEER_MAX + (A + driver)*MULT, clamped at 0, so opposition past
+        # the full-yield point sets the target to 0. It does NOT get there in one frame:
+        # STEER_DELTA_DOWN is 7 and the rate limiter floors each step at prev - 7. Asserting an
+        # instant zero here would be asserting a car that does not exist, and would hide a
+        # broken rate limiter.
+        #
+        # The opposing torque is derived, not written down. Frozen at -300 this test silently
+        # changed meaning when the allowance went 50 -> 100: full yield moved to -304.5, so -300
+        # stopped being "heavy opposition" and the assertion was measuring the driver clamp
+        # rather than the ramp.
+        heavy = self._yield_at(409) - 50.0
+        self.assertEqual(tp.step(1.0, 409, heavy, self.before, 409, False), 402)
+        self.assertEqual(tp.step(1.0, 10, heavy, self.before, 409, False), 3)
+        self.assertEqual(tp.step(1.0, 3, heavy, self.before, 409, False), 0)
+        # ...and just inside the yield point the command is reduced but NOT to zero, which is
+        # the distinction the name of this test is making.
+        just_inside = self._yield_at(409) + 5.0
+        self.assertGreater(tp.step(1.0, 409, just_inside, self.before, 409, False), 0)
+
+    @staticmethod
+    def _yield_at(steer_max):
+        """Driver torque at which the car fully yields, from the tool's own constants.
+
+        driver_max_torque = M + (A + d) * MULT reaches zero at d = -M/MULT - A. DERIVED, not
+        written down: the frozen form of this test kept passing when the allowance moved and the
+        yield arithmetic did not follow it, which is the one thing it exists to catch.
+        """
+        return -steer_max / tp.DRIVER_MULTIPLIER - tp.DRIVER_ALLOWANCE
 
     def test_full_yield_point_moves_with_the_ceiling(self):
         # The quantified cost of the raise, and the one number that actually moves.
         #
-        # Override starts REDUCING authority at driver torque < -STEER_DRIVER_ALLOWANCE (-50)
-        # for both ceilings -- that threshold does not scale. What scales is the point of FULL
-        # yield, where driver_max_torque = M + (50 + d)*2 reaches zero: d <= -M/2 - 50, i.e.
-        # -242 at 384, -254.5 at 409, and -275 at 450. The 450 row is kept as the arithmetic
-        # for a ceiling this car cannot use -- it is what the driver would have had to fight,
-        # and it stays here so the tradeoff is still legible if the question is ever reopened.
+        # Override starts REDUCING authority at driver torque < -STEER_DRIVER_ALLOWANCE, and
+        # that threshold does not scale with the ceiling. What scales is the point of FULL
+        # yield. The 450 row is kept as the arithmetic for a ceiling this car cannot use -- it
+        # is what the driver would have had to fight, and it stays so the tradeoff is legible
+        # if the question is ever reopened.
         #
         # Seeded from 0 so the rate limiter is not what is being measured; from a saturated
         # previous frame the ramp-down floor hides the effect entirely.
-        for steer_max, yield_at in ((384, -242.0), (409, -254.5), (450, -275.0)):
+        for steer_max in (384, 409, 450):
+            yield_at = self._yield_at(steer_max)
             lim = tp.Limits(steer_max)
             self.assertGreater(tp.step(1.0, 0, yield_at + 1.0, lim, steer_max, False), 0,
                                f"{steer_max}: should not have fully yielded at {yield_at + 1}")
             self.assertEqual(tp.step(1.0, 0, yield_at - 1.0, lim, steer_max, False), 0,
                              f"{steer_max}: should have fully yielded at {yield_at - 1}")
 
+    def test_the_full_yield_point_tracks_the_allowance(self):
+        # The relation itself, pinned separately: raising the allowance by one count must move
+        # full yield by exactly one count, at every ceiling. Without this, _yield_at could agree
+        # with tp.step because both were wrong in the same way.
+        for steer_max in (384, 409, 450):
+            self.assertAlmostEqual(self._yield_at(steer_max),
+                                   -steer_max / 2 - tp.DRIVER_ALLOWANCE, places=9)
+        self.assertEqual(tp.DRIVER_MULTIPLIER, 2, "the /2 above assumes the HKG multiplier")
+        self.assertEqual(tp.DRIVER_ALLOWANCE, 100,
+                         "this platform raises the window with the ceiling; see values.py")
+
     def test_the_raise_keeps_steering_where_the_stock_ceiling_had_given_up(self):
         # The same test stated as the driver would feel it: at one opposing torque between the
         # two yield points, the 384 car has stopped steering and the 409 car has not.
-        between = -243.0
+        between = (self._yield_at(384) + self._yield_at(409)) / 2
         self.assertEqual(tp.step(1.0, 0, between, tp.Limits(384), 384, False), 0)
         self.assertGreater(tp.step(1.0, 0, between, tp.Limits(409), 409, False), 0)
 
     def test_a_higher_ceiling_would_keep_steering_where_409_gives_up(self):
-        # The authority a raise would buy, kept as a measurement rather than a proposal: at
-        # -260 the 409 car has fully yielded and a 450 car has not. This is what made 450 look
-        # attractive on paper. The car then faulted its EPS at that ceiling, which is the
-        # reminder that arithmetic about counts is not a promise about torque.
-        between = -260.0
+        # The authority a raise would buy, kept as a measurement rather than a proposal: between
+        # the two yield points the 409 car has fully yielded and a 450 car has not. This is what
+        # made 450 look attractive on paper. The car then faulted its EPS at that ceiling, which
+        # is the reminder that arithmetic about counts is not a promise about torque.
+        between = (self._yield_at(409) + self._yield_at(450)) / 2
         self.assertEqual(tp.step(1.0, 0, between, tp.Limits(409), 409, False), 0)
         self.assertGreater(tp.step(1.0, 0, between, tp.Limits(450), 450, True), 0)
 

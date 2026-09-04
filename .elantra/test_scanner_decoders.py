@@ -144,10 +144,21 @@ def main() -> int:
     # If they disagree about the rate, one of the two tables in the road-test doc is wrong.
     check("demand_decomp and ceiling_replay agree on STEER_DELTA_UP",
           demand.STEER_DELTA_UP == replay.PANDA_RATE_UP == 3)
-    check("demand_decomp and ceiling_replay agree on the driver allowance",
-          demand.STEER_DRIVER_ALLOWANCE == replay.Limits(409, 3, 7).STEER_DRIVER_ALLOWANCE == 50)
-    check("ceiling_replay's grid starts at the ceiling the drives actually ran",
-          replay.GRID[0] == (409, 3, 7) and demand.STEER_MAX == 409)
+    # The two tools now model DIFFERENT configurations on purpose, and that is the thing to
+    # pin. demand_decomp reads recorded drives, every one of which ran the stock 50-count driver
+    # window, so 50 is what reproduces them. ceiling_replay prices alternatives against what the
+    # car runs TODAY, which is 100 after the CN7 allowance raise. Asserting they are equal --
+    # which this check used to do -- would force one of them to lie about its own data.
+    check("demand_decomp models the driver window the archive was recorded under",
+          demand.STEER_DRIVER_ALLOWANCE == 50)
+    check("ceiling_replay's default Limits still models that same recorded window",
+          replay.Limits(409, 3, 7).STEER_DRIVER_ALLOWANCE == 50)
+    check("ceiling_replay's grid starts at the ceiling and rates the drives actually ran",
+          replay.GRID[0][:3] == (409, 3, 7) and demand.STEER_MAX == 409)
+    check("...at the driver window the car runs today, not the one the archive ran",
+          replay.GRID[0][3] == 100)
+    check("...and the grid still carries the archive's window, so the delta stays visible",
+          any(row[3] == 50 for row in replay.GRID))
 
     # --- the fields the report lines actually read -------------------------------------
     # The summary tables in .elantra/ROAD-TEST-cn7-lateral.md are printed straight out of these
