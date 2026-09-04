@@ -9,7 +9,7 @@ driver-override arbitration. We are adjusting a request it is free to refuse.
 
 > **If you are about to drive this: go to Test 6.** It is the drive that is staged
 > now -- all three lateral changes live on one drive -- and it supersedes Tests 3, 4 and 5.
-> Findings and open questions: `D:\comma_four	uning\lat-tracking\FINDINGS-2026-09-03.md`.
+> Findings and open questions: `D:/comma_four/tuning/lat-tracking/FINDINGS-2026-09-03.md`.
 
 ---
 
