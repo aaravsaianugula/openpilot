@@ -7,6 +7,12 @@ driver-override arbitration. We are adjusting a request it is free to refuse.
 
 ---
 
+> **If you are about to drive this: go to Test 6.** It is the drive that is staged
+> now -- all three lateral changes live on one drive -- and it supersedes Tests 3, 4 and 5.
+> Findings and open questions: `D:\comma_four	uning\lat-tracking\FINDINGS-2026-09-03.md`.
+
+---
+
 ## Read this first — what is actually on the car
 
 The LKAS11 steering torque ceiling is a **flat 409 counts at every speed** on
@@ -114,6 +120,105 @@ Expect `safetyParam 3084 | RAISED_LIMITS: True | LFAHDA_MFC_8: True` and `STEER_
 **`safetyParam` does not identify a build.** Two builds with different ceilings can carry the
 same bits, and have. Identify by the opendbc gitlink; verify with the panda signature and with
 `STEER_MAX` computed from the installed source, as the block above does.
+
+---
+
+## Test 6 — all three changes, one drive — **THIS IS THE DRIVE**
+
+Supersedes Tests 3, 4 and 5, which staged these across three separate drives. The owner chose one
+drive with everything live. Those tests are kept below because their per-change detail is still the
+best description of each mechanism, and because if this drive goes wrong they are how you bisect it.
+
+### What is on the car
+
+| # | change | where | inert above |
+|---|---|---|---|
+| A | lateral-accel clamp 3.0 → **4.0 m/s²**, tapering back to 3.0 by 22 m/s | `drive_helpers.py` | 22 m/s (49 mph) |
+| B | `STEER_DRIVER_ALLOWANCE` 50 → **100**, `RAISED_LIMITS` branch only | opendbc `values.py` | — |
+| C | low-speed **feedforward schedule** + **KP cap**, `HYUNDAI_ELANTRA_2024` only | `lat_accel_factor_schedule.py` | **15 m/s (34 mph), bit-identically** |
+
+`STEER_MAX` is untouched at a flat 409. No panda reflash: opendbc's raised driver window stays
+inside panda's own (the bound is 101, derived; 100 is under it).
+
+### Expect, by speed band — this is how one drive still attributes three changes
+
+They barely overlap, which is what makes a single drive readable.
+
+| speed | what should change | which change owns it |
+|---|---|---|
+| **0–11 mph** (0–5 m/s) | more torque held through tight turns; less running wide at intersections | **B**, plus C's KP cap, which bites hardest here. A does nothing — the clamp never fires this low. |
+| **11–29 mph** (5–13 m/s) | the biggest expected improvement: turn-in arrives sooner and holds | **C** (feedforward; bounded at +5% to +14.4% delivered counts), some B |
+| **29–36 mph** (13–16 m/s) | more available curvature; fewer "Turn Exceeds Steering Limit" | **A**, with C tapering to nothing by 34 mph |
+| **36–49 mph** (16–22 m/s) | mild; A only, tapering out | **A** alone — B and C are arithmetically inert |
+| **above 49 mph** | **nothing whatsoever** | all three inert; the path is bit-identical |
+
+### What would falsify this
+
+- **Any change in behaviour above 49 mph.** All three are arithmetically inert there and the
+  feedforward path is bit-identical (`x / 1.0` in IEEE-754). If highway feel changes, something
+  other than these three changes is different — **stop and investigate before driving further.**
+- **No change at all below 30 mph.** Then the feedforward/KP half is not executing. Run
+  `verify_lat_fix.py` on the device: it checks `LateralJerkTorqueController` is on and
+  `NeuralNetworkLateralControl` is off, which is the only combination in which this fix does
+  anything at all.
+- **Improvement only above 36 mph.** That says A is doing the work and C is not — the opposite of
+  what the measurement predicts, and worth knowing.
+- **Turns that now go in too tight, or overshoot and correct.** That is the feedforward asking for
+  more than the car needs. The measurement says the shipped schedule is conservative in every band;
+  this would refute that.
+
+### Abort criteria — things you can feel, not numbers
+
+Disengage and end the drive on any of these:
+
+1. **Oscillation or hunting** at low speed — the wheel searching either side of centre. Implicates
+   the **KP cap** (C): too little proportional gain, with the feedforward not carrying enough.
+   Roll back `LOW_SPEED_KP_BLEND` first.
+2. **A turn that goes in tighter than you asked for**, or overshoots and corrects back. Implicates
+   the **feedforward** (C). Roll back `LOW_SPEED_FF_BLEND`.
+3. **Steering that fights you on a straight**, or new resistance on centre.
+4. **Any new fault, or "Turn Exceeds Steering Limit" where it did not appear before.** The clamp
+   raise should make that alert *less* frequent, not more.
+5. **Anything above 49 mph feeling different at all.**
+
+There is no scenario in which the right response is to keep driving to gather more data.
+
+### Rollback — one constant each, no rebuild, no reflash
+
+Each is a single edit plus `sudo systemctl restart comma`:
+
+```
+LOW_SPEED_KP_BLEND = 0.0     # lat_accel_factor_schedule.py -- disables the KP cap alone
+LOW_SPEED_FF_BLEND = 0.0     # lat_accel_factor_schedule.py -- disables the feedforward
+                             #   (guards then require the KP blend to be 0 too)
+LAT_ACCEL_LIMIT_V = [3.0, MAX_LATERAL_ACCEL_NO_ROLL]   # drive_helpers.py -- stock demand
+```
+
+B rolls back by pointing the `opendbc_repo` gitlink at `bc4fd936`. To revert everything at once:
+`git checkout 4338acc5d` on the device, then restart.
+
+### What was validated offline, and what could not be
+
+**Validated offline.** The feedforward's effect on delivered counts, bounded above and below by a
+replay through opendbc's own driver clamp and rate limiter over 3.42M recorded frames: +1.1% at
+3–4 m/s rising to +14.4% at 8–13 m/s, and exactly 0.0% above 16 m/s. The plant gain the schedule
+rests on, independently reproduced in 8 of 9 speed bands. And that the schedule is conservative —
+every value at or above the reproduced ratio.
+
+**Could not be, at all.** The **KP cap**. It is a closed-loop change: a gain change moves the
+trajectory, so replaying it against a recorded trajectory answers nothing. This drive is the only
+evidence there will ever be.
+
+**Could not be, and it matters.** Whether **A buys anything below 36 mph**. On the reproduced plant
+gain the EPS saturates before the stock 3.0 m/s² clamp binds at every speed below 16 m/s, which
+would mean A mostly converts "clamped" into "saturated" down there. The one band with enough
+genuinely settled frames measured 28% higher, which would reverse that. See
+`FINDINGS-2026-09-03.md` §4 — **this drive is what decides it**, which is why the band attribution
+above is worth recording carefully.
+
+**No data at all.** Below 2 m/s: the archive holds no hands-off turn frames there, so the correction
+in that regime is a bounded extrapolation rather than a measurement. Treat the first few
+walking-pace turns as the most uncertain part of the drive.
 
 ---
 
