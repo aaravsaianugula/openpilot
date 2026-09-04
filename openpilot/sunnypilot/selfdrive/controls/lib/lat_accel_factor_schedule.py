@@ -13,14 +13,17 @@ segments, and it is the reproducible one -- re-run it rather than trusting this 
 
     v (m/s)     3-4   4-5   5-6   6-8   8-10  10-13  13-16  16-22  22-32
     F (first)  1.08  1.57  1.90  1.99   2.20   2.40   2.81   3.08   3.04
-    F (repro)  1.17  1.30  1.74  1.84   2.11   2.44   2.67   3.26   3.33
+    F (repro)  1.21  1.22  1.75  1.72   2.08   2.46   2.64   3.27   3.35
+    lag trusted?  y     y     n     n      n      n      n      n      y
     g = F(v) / F(16-22), reproduced:
-               0.36  0.40  0.53  0.56   0.65   0.75   0.82   1.00   1.02
+               0.37  0.37  0.53  0.53   0.64   0.75   0.81   1.00   1.02
 
-Eight of nine bands reproduce within 8%. 4-5 m/s differs by 17% and is the one value here not to
-lean on. Below 8 m/s the gain is roughly half the highway's, so the feedforward asks for about half
-the torque the turn needs and the shortfall falls to the proportional term, which cannot act until
-the car has already run wide.
+FIVE of nine bands reproduce within 10%, and only THREE rest on a trusted lag -- in the rest the
+reproduction's correlation objective pinned to the edge of its lag sweep, so F there is a function
+of where the sweep was cut off. DO NOT TUNE ON THIS TABLE. What it supports is the SHAPE: below
+8 m/s the gain is roughly half the highway's, so the feedforward asks for about half the torque
+the turn needs and the shortfall falls to the proportional term, which cannot act until the car
+has already run wide. And it supports the conservatism check below, which holds in every band.
 
 THE DENOMINATOR IS NOT A CONSTANT, and an earlier version of this file said it was, naming 3.157 as
 a value "the learner fits". latAccelFactor is learned at runtime, and across these same 20 routes
@@ -57,9 +60,9 @@ import numpy as np
 # LateralJerkTorqueController on, so the schedule is gated on the fingerprint rather than applied to
 # the fleet. Adding a platform here is a claim that somebody measured ITS plant gain the same way.
 #
-# HYUNDAI_ELANTRA_HEV_2024 is deliberately absent even though it shares this port: the ratios below
-# are relative to a latAccelFactor of 3.157, which the ICE car inherits from HYUNDAI_ELANTRA_2021,
-# and the hybrid substitutes HYUNDAI_SONATA instead. Same body, different tune, no measurement.
+# HYUNDAI_ELANTRA_HEV_2024 is deliberately absent even though it shares this port: the ICE car
+# inherits its torque tune from HYUNDAI_ELANTRA_2021 and the hybrid substitutes HYUNDAI_SONATA
+# instead. Same body, different tune, and nobody has measured the hybrid's plant gain.
 MEASURED_PLATFORMS = ("HYUNDAI_ELANTRA_2024",)
 
 # openpilot/selfdrive/locationd/torqued.py MIN_VEL. Named here because it is the REASON the schedule

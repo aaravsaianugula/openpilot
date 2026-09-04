@@ -76,7 +76,7 @@ MAX_ALLOWANCE_INSIDE_PANDA = ((PANDA_RAISED_CEILING + DRIVER_ALLOWANCE_STOCK * D
 # Both ends are pinned as literals, for opposite reasons.
 #
 # The TOP end, because a limit is only useful up to what the car can actually deliver. The MDPS
-# accepts 409 counts, which buys about 2.9 m/s^2 at 14-18 m/s (measured 2.67 at 13-16 and 3.26
+# accepts 409 counts, which buys about 2.9 m/s^2 at 14-18 m/s (measured 2.64 at 13-16 and 3.27
 # at 16-22 by .elantra/plant_gain.py; an earlier note here said 3.65 and was not reproducible).
 # A limit above what the EPS can deliver is headroom
 # the EPS cannot produce, and would only move the failure from "clamped" to "saturated".
@@ -99,10 +99,11 @@ LAT_ACCEL_TAPER_START_MIN = 14.0
 # torqued.py fits latAccelFactor only on samples above MIN_VEL m/s and below 1 m/s^2 of lateral
 # acceleration, and emits one scalar for all speeds. Measured on the 20 archived 409-count routes
 # (1,992,979 frames; roll-compensated yaw rate regressed on delivered counts, lag-aligned), the
-# lateral acceleration this car produces at a full 409-count command is 1.08 m/s^2 at 3-4 m/s and
-# 3.08 at 16-22. At 16-22 that independent estimate lands within 3% of the 3.157 the learner fits
-# from exactly that range, which is why the schedule is trusted below it and refuses to touch
-# anything above it.
+# lateral acceleration this car produces at a full 409-count command is ~1.2 m/s^2 at 3-4 m/s and
+# ~3.3 at 16-22 (.elantra/plant_gain.py, which is the reproducible pass; re-run it rather than
+# trusting a number written down here). The learner's own latAccelFactor is NOT a constant to
+# compare against -- it moved 2.72-3.56 across those same routes -- so the schedule is trusted
+# below the learner floor as a RATIO of gains, and refuses to touch anything above it.
 #
 # The FLOOR, because 1/0.38 = 2.63x is the most feedforward this may ever add; a decimal-point slip
 # below it doubles the command, with nothing between there and the rate limiter to catch it.
@@ -610,7 +611,7 @@ def guard_ff_lat_accel_schedule(repo: Path) -> None:
     check("the schedule applies only to the platform it was measured on",
           platforms == ("HYUNDAI_ELANTRA_2024",),
           "found " + repr(platforms) + " -- latcontrol_torque_jerk_aware is fork-wide code, and"
-          + " these ratios are relative to a latAccelFactor of 3.157 that only this platform has."
+          + " these ratios were measured on this platform's plant and on no other."
           + " Widening this list is a claim that somebody measured that car's plant gain too")
     check("LOW_SPEED_FF_BLEND is in [0, 1]",
           isinstance(blend, (int, float)) and 0.0 <= blend <= 1.0,

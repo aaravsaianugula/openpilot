@@ -20,7 +20,7 @@ MAX_LATERAL_ACCEL_NO_ROLL = 3.0  # m/s^2
 # frames that raise "Turn Exceeds Steering Limit". The archive holds ZERO turn frames tight enough to
 # reach it above 18 m/s, so the schedule is back on the stock value before highway speed and the
 # highway is bit-identical. 4.0 is where the gain stops being realisable: the MDPS accepts 409 counts,
-# which buys about 2.9 m/s^2 at 14-18 m/s -- measured 2.67 at 13-16 and 3.26 at 16-22 by
+# which buys about 2.9 m/s^2 at 14-18 m/s -- measured 2.64 at 13-16 and 3.27 at 16-22 by
 # .elantra/plant_gain.py, NOT the 3.65 an earlier note claimed. On that reproduction the EPS
 # saturates before the stock 3.0 clamp binds at EVERY speed below 16 m/s, which means this
 # raise mostly moves the failure from "clamped" to "saturated" down there rather than buying

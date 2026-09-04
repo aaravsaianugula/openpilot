@@ -221,10 +221,65 @@ def test_multiple_lat_accel_factors_are_flagged():
           "g = F/latAccelFactor is meaningless if the denominator moved mid-set")
 
 
+def test_edge_pinned_lag_is_marked_untrusted():
+    """turn_tracking already documented this failure; plant_gain must not repeat it silently."""
+    print("an edge-pinned lag is marked untrusted")
+    # a plant whose lag EXCEEDS the sweep: correlation keeps improving to the last bin
+    acc = pg.new_acc()
+    pg.accumulate(synthetic(gain=2.0, lag_frames=80), acc)   # 800 ms, sweep tops out at 500
+    cell = pg.summarise(acc, {3.169}, {409.0}, 1, 1)["bands"]["5-6"]
+    check("the chosen lag lands on the sweep edge", cell["lag_ms"] == pg.LAG_SWEEP_MS[-1],
+          f"got {cell['lag_ms']}")
+    check("and the band is flagged NOT trusted", cell["lag_trusted"] is False,
+          "an edge value is a function of where the sweep was cut off, not a measured lag")
+
+    # a lag inside the sweep must stay trusted
+    acc = pg.new_acc()
+    pg.accumulate(synthetic(gain=2.0, lag_frames=20), acc)
+    cell = pg.summarise(acc, {3.169}, {409.0}, 1, 1)["bands"]["5-6"]
+    check("an interior lag is trusted", cell["lag_trusted"] is True, f"got {cell['lag_ms']} ms")
+
+
+def test_self_check_covers_the_reported_lag():
+    """A spread computed at lags other than the one reported validates nothing."""
+    print("the lag self-check includes the lag actually reported")
+    acc = pg.new_acc()
+    pg.accumulate(synthetic(gain=2.0, lag_frames=80), acc)
+    cell = pg.summarise(acc, {3.169}, {409.0}, 1, 1)["bands"]["5-6"]
+    check("the chosen lag appears in the by-lag self-check",
+          cell["lag_ms"] in cell["F_settled_by_lag"],
+          f"chosen {cell['lag_ms']} ms, checked {sorted(cell['F_settled_by_lag'])}")
+    for lag in pg.LAG_REPORT_MS:
+        check(f"the fixed {lag} ms reference is still present",
+              lag in cell["F_settled_by_lag"])
+
+
+def test_driver_is_excluded_at_both_ends_of_the_window():
+    """The chosen lags run to half a second; a hand arriving mid-window must not contaminate."""
+    print("the driver is excluded at both ends of the lag window")
+    v, sm, n = 5.0, 409.0, 3000
+    lag_frames = int(round(200 / 1000.0 / pg.DT))
+    frames = []
+    for i in range(n):
+        # clean command everywhere; the DRIVER appears only in the second half
+        driver = 0.0 if i < n // 2 else pg.MAX_DRIVER + 50.0
+        frames.append(frame(v, pg.COMMAND_SIGN * 0.5, 0.4, driver=driver))
+    acc = pg.new_acc()
+    pg.accumulate({"frames": frames, "steer_max": sm, "laf": 3.169}, acc)
+    kept = len(acc[("5-6", 200)]["ratio"])
+    # pairs are (i, i+lag); a pair is usable only if BOTH ends are driver-free
+    check("pairs straddling the driver's arrival are dropped",
+          kept <= n // 2 - lag_frames + 1,
+          f"kept {kept}; checking only the command frame would keep about {n // 2}")
+    check("clean pairs are still kept", kept > 0)
+
+
 def main():
     for fn in (test_band_of, test_settled_flags, test_stats, test_recovers_a_known_gain,
                test_sign_convention, test_finds_an_injected_lag, test_transient_understates_the_gain, test_filters,
-               test_thin_band_reports_its_real_count, test_multiple_lat_accel_factors_are_flagged):
+               test_thin_band_reports_its_real_count, test_multiple_lat_accel_factors_are_flagged,
+               test_edge_pinned_lag_is_marked_untrusted, test_self_check_covers_the_reported_lag,
+               test_driver_is_excluded_at_both_ends_of_the_window):
         fn()
     print()
     if FAILS:

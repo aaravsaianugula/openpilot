@@ -297,7 +297,10 @@ def test_p_term_cannot_rail_on_a_routine_error():
   """The whole point of the cap: P alone may reach full scale at the worst error observed, not at
   an ordinary one. Stock fails this by up to 4.8x; the capped schedule must not."""
   scaled = scaled_kp_interp(INTERP_SPEEDS, KP_INTERP, CN7)
-  lat_accel_factor = 3.157  # the live value on this car; the cap was derived against it
+  # A representative latAccelFactor. It is NOT a constant on this car -- it is learned at runtime
+  # and moved 2.72-3.56 across the archive -- but the cap was derived against a value in this
+  # range, and this test checks the cap's shape, not the exact factor.
+  lat_accel_factor = 3.169
   for speed, err_p90 in MEASURED_ERR_P90:
     stock_kp = float(np.interp(speed, INTERP_SPEEDS, KP_INTERP))
     new_kp = float(np.interp(speed, INTERP_SPEEDS, scaled))

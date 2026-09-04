@@ -210,8 +210,10 @@ B rolls back by pointing the `opendbc_repo` gitlink at `bc4fd936`. To revert eve
 **Validated offline.** The feedforward's effect on delivered counts, bounded above and below by a
 replay through opendbc's own driver clamp and rate limiter over 3.42M recorded frames: +1.1% at
 3–4 m/s rising to +14.4% at 8–13 m/s, and exactly 0.0% above 16 m/s. The plant gain the schedule
-rests on, independently reproduced in 8 of 9 speed bands. And that the schedule is conservative —
-every value at or above the reproduced ratio.
+rests on, reproduced in 5 of 9 speed bands within 10% — and only 3 of those rest on a trusted lag,
+so the reproduction supports the SHAPE, not the individual numbers. What it does establish is
+that the schedule is conservative: every value sits at or above the reproduced ratio, in every
+band, on the corrected numbers.
 
 **Could not be, at all.** The **KP cap**. It is a closed-loop change: a gain change moves the
 trajectory, so replaying it against a recorded trajectory answers nothing. This drive is the only
@@ -712,12 +714,15 @@ a full 409-count command is:
 
 | v (m/s) | 3–4 | 4–5 | 5–6 | 6–8 | 8–10 | 10–13 | 13–16 | 16–22 | 22–32 |
 |---|---|---|---|---|---|---|---|---|---|
-| **m/s² at 409 counts** | 1.08 | 1.57 | 1.90 | 1.99 | 2.20 | 2.40 | 2.81 | 3.08 | 3.04 |
-| **÷ 3.157** | 0.34 | 0.50 | 0.60 | 0.63 | 0.70 | 0.76 | 0.89 | 0.98 | 0.96 |
+| **m/s² at 409 counts, first pass** | 1.08 | 1.57 | 1.90 | 1.99 | 2.20 | 2.40 | 2.81 | 3.08 | 3.04 |
+| **reproduced** | 1.21 | 1.22 | 1.75 | 1.72 | 2.08 | 2.46 | 2.64 | 3.27 | 3.35 |
 
-The number to trust this on: at 16–22 m/s the estimate is 3.08 against the 3.157 the learner fits
-from exactly that range. Two unrelated methods agreeing to 3% where they overlap is what makes the
-2.9× divergence below 8 m/s a measurement rather than an artefact of the estimator.
+> **Superseded — see Test 6 and FINDINGS-2026-09-03.md §3.** This table originally divided by a
+> fixed 3.157 and claimed agreement to 3% at 16–22 m/s. latAccelFactor is learned at runtime and
+> moved 2.72–3.56 across these very routes, so there is no fixed number to divide by. The
+> reproduction agrees within 10% in only 5 of 9 bands, and 7 of 10 bands rest on a lag pinned at
+> the edge of the estimator's sweep. The SHAPE — roughly half the highway gain below 8 m/s — is
+> what survives, along with the check that the shipped schedule is conservative in every band.
 
 `openpilot/sunnypilot/selfdrive/controls/lib/lat_accel_factor_schedule.py` divides **the feedforward
 and only the feedforward** by that ratio. The error path keeps the unscheduled factor, so the

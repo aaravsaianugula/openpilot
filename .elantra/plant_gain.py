@@ -232,7 +232,13 @@ def accumulate(seg, acc):
             counts = norm * sm
             if v < BANDS[0][0] or abs(counts) < MIN_COUNTS:
                 continue
+            # Exclude the driver at BOTH ends of the window. The chosen lags run to half a
+            # second, so checking only the command frame lets a hand that arrives between i and
+            # i+k contaminate the yaw this pair is measuring -- and the driver grabs the wheel
+            # precisely when the car is running wide, which is the case being measured.
             if pressed or abs(driver) > MAX_DRIVER:
+                continue
+            if fy[5] or abs(fy[4]) > MAX_DRIVER:
                 continue
             b = band_of(v)
             if b is None:
@@ -276,14 +282,21 @@ def summarise(acc, laf_seen, steer_max_seen, segs, routes):
         cell = acc[(b, best)]
         enough = len(cell["ratio_settled"]) >= MIN_BAND_N
         by_lag = {}
-        for lag in LAG_REPORT_MS:
+        # The chosen lag MUST be in this set: a spread computed over lags other than the one
+        # reported validates a number nobody is reading.
+        for lag in sorted(set(LAG_REPORT_MS) | {best}):
             c2 = acc.get((b, lag))
             rs = c2["ratio_settled"] if c2 else []
             by_lag[lag] = round(med(rs), 3) if len(rs) >= MIN_BAND_N else None
         vals = [x for x in by_lag.values() if x is not None]
         spread = (max(vals) - min(vals)) / abs(med(vals)) if len(vals) > 1 and med(vals) else None
+        # turn_tracking.learn_lag already found that a correlation objective is flat near its
+        # peak on these smooth signals and drifts to the edge of the sweep. Same objective here,
+        # so the same failure: say so per band rather than presenting an edge value as measured.
+        edge = best >= LAG_SWEEP_MS[-1] or best <= LAG_SWEEP_MS[0]
         out[b] = {
             "lag_ms": best,
+            "lag_trusted": not edge,
             "corr": round(best_r, 3),
             "n": len(cell["ratio"]),
             "F_all": round(med(cell["ratio"]), 3),
@@ -317,11 +330,17 @@ def report(res):
           + f"{res['settle_frames']} frames within {res['settle_span']:g} counts.")
     print()
     print(f"{'band':>9} {'lag':>5} {'corr':>5} {'n':>8} {'F_all':>7} {'n_set':>7} "
-          + f"{'F_set':>7} {'p10':>6} {'p90':>6} {'F@0':>6} {'F@200':>6} {'F@400':>6} "
-          + f"{'spread':>7} {'g':>6}")
+          + f"{'F_set':>7} {'p10':>6} {'p90':>6} {'spread':>7} {'g':>6}  "
+          + "settled F at each assumed lag")
     ref = (res["bands"].get(LEARNER_BAND) or {}).get("F_settled")
     if ref:
         print(f"g is F(v) / F({LEARNER_BAND}) = F(v) / {ref:.2f}, the band torqued itself fits.")
+    else:
+        nset = (res["bands"].get(LEARNER_BAND) or {}).get("n_settled", 0)
+        print(f"!! g IS NOT COMPUTED. It is F(v) / F({LEARNER_BAND}), and {LEARNER_BAND} m/s has")
+        print(f"   {nset} settled frames against the {MIN_BAND_N} needed, so there is no reference")
+        print("   gain to divide by. The command never holds still up there. Every g below reads")
+        print("   '-' for that reason and NOT because the band was missing.")
     for b, c in res["bands"].items():
         if "lag_ms" not in c:
             print(f"{b:>9} {'-':>5} {'-':>5} {c.get('n', 0):>8}  (too few frames)")
@@ -331,15 +350,28 @@ def report(res):
         tail = (f"{fs:>7.2f} {c['F_settled_p10']:>6.2f} {c['F_settled_p90']:>6.2f} "
                 if fs is not None else f"{'-':>7} {'-':>6} {'-':>6} ")
         bl = c.get("F_settled_by_lag") or {}
-        cols = "".join(f"{bl.get(lag):>6.2f} " if bl.get(lag) is not None else f"{'-':>6} "
-                       for lag in LAG_REPORT_MS)
+        cols = "  ".join(f"{lag}ms={v:.2f}" for lag, v in sorted(bl.items()) if v is not None)
+        cols = ("  " + cols) if cols else "  (no settled frames)"
         sp = c.get("lag_spread")
-        print(f"{b:>9} {c['lag_ms']:>5} {c['corr']:>5.2f} {c['n']:>8} {c['F_all']:>7.2f} "
-              + f"{c['n_settled']:>7} " + tail + cols
+        mark = " " if c.get("lag_trusted", True) else "!"
+        print(f"{b:>9} {c['lag_ms']:>4}{mark} {c['corr']:>5.2f} {c['n']:>8} {c['F_all']:>7.2f} "
+              + f"{c['n_settled']:>7} " + tail
               + (f"{100 * sp:>6.1f}%" if sp is not None else f"{'-':>7}")
-              + (f" {g:>5.3f}" if g is not None else f" {'-':>5}"))
+              + (f" {g:>5.3f}" if g is not None else f" {'-':>5}") + cols)
     print()
-    print("F@0 / F@200 / F@400 are the SETTLED gain measured at three different assumed")
+    untrusted = [b for b, c in res["bands"].items() if "lag_ms" in c and not c.get("lag_trusted")]
+    if untrusted:
+        print()
+        print(f"!! LAG PINNED AT THE SWEEP EDGE in {len(untrusted)} band(s): "
+              + ", ".join(untrusted))
+        print("   The correlation objective is flat near its peak on these smooth signals and")
+        print("   runs to the edge rather than finding a maximum -- turn_tracking.learn_lag")
+        print("   documents the same failure and answers it with a residual objective and a")
+        print("   trust flag. F for those bands is therefore a function of where the sweep was")
+        print("   cut off, not a measured lag. The gain moves with the assumed lag, so treat")
+        print("   those numbers as indicative and do not tune on them.")
+    print()
+    print("F@<lag> columns are the SETTLED gain at each assumed lag, including the chosen one.")
     print("actuation lags. In genuine steady state a = F*c regardless of lag, so those three")
     print("must agree: `spread` is their range over their median and is the self-check on the")
     print("settle criterion. A spread over ~5% means the frames are not settled and the")
