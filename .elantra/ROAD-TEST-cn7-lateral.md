@@ -138,7 +138,15 @@ best description of each mechanism, and because if this drive goes wrong they ar
 | C | low-speed **feedforward schedule** + **KP cap**, `HYUNDAI_ELANTRA_2024` only | `lat_accel_factor_schedule.py` | **15 m/s (34 mph), bit-identically** |
 
 `STEER_MAX` is untouched at a flat 409. No panda reflash: opendbc's raised driver window stays
-inside panda's own (the bound is 101, derived; 100 is under it).
+inside panda's own (the bound is 101, derived; 100 is under it). Change B touches only `values.py`,
+pure Python, so it needs no rebuild on the device either.
+
+> **Correction — do not be misled by the opendbc commit message.** `f3492e02`, the commit that
+> raises the driver window, ends with "Road-tested per ROAD-TEST-cn7-lateral.md Test 3". **It has
+> not been road tested.** That line was written as an instruction and reads as a claim, and Test 3
+> is superseded by this section. **None of the three changes on this branch has ever been driven.**
+> The message was not rewritten because doing so means force-pushing a branch the device is pinned
+> to; it is corrected here, where the person about to drive will actually see it.
 
 ### Expect, by speed band — this is how one drive still attributes three changes
 
