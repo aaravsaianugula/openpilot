@@ -90,6 +90,52 @@ LAT_ACCEL_LIMIT_MAX = 4.5
 LAT_ACCEL_STOCK = 3.0
 LAT_ACCEL_TAPER_START_MIN = 14.0
 
+# The CN7 low-speed feedforward gain schedule (lat_accel_factor_schedule.py). This is a SUPPLY-side
+# correction and the mirror of the clamp above: it does not change what may be asked for, it changes
+# how much torque the controller believes a given lateral acceleration costs.
+#
+# torqued.py fits latAccelFactor only on samples above MIN_VEL m/s and below 1 m/s^2 of lateral
+# acceleration, and emits one scalar for all speeds. Measured on the 20 archived 409-count routes
+# (1,992,979 frames; roll-compensated yaw rate regressed on delivered counts, lag-aligned), the
+# lateral acceleration this car produces at a full 409-count command is 1.08 m/s^2 at 3-4 m/s and
+# 3.08 at 16-22. At 16-22 that independent estimate lands within 3% of the 3.157 the learner fits
+# from exactly that range, which is why the schedule is trusted below it and refuses to touch
+# anything above it.
+#
+# The FLOOR, because 1/0.38 = 2.63x is the most feedforward this may ever add; a decimal-point slip
+# below it doubles the command, with nothing between there and the rate limiter to catch it.
+#
+# The CEILING, exactly 1.0, because x / 1.0 is bit-identical in IEEE-754 and that is what makes
+# "the highway is untouched" a proof rather than a hope. The measured ratio above 16 m/s is
+# 0.96-0.98, so a gain over 1.0 would also be an unmeasured change to the one band that works.
+#
+# And the last BREAKPOINT must equal torqued.py MIN_VEL, read out of that file rather than copied,
+# because the schedule's whole justification is "the learner has no evidence below here". If
+# upstream moves MIN_VEL, the justification moves with it.
+FF_GAIN_FLOOR = 0.38
+FF_GAIN_CEILING = 1.0
+
+# The low-speed KP cap, the second half of the same correction. The feedforward schedule above says
+# how much torque a given lateral acceleration costs; this says how hard the loop may push when it
+# is wrong. They are coupled and the coupling is the safety-relevant part: cutting the gain WITHOUT
+# the feedforward that replaces it simply removes authority, so the guard refuses that combination.
+#
+# Measured on the same archive: below 13 mph the controller requests full torque on 71% of hands-off
+# turn frames but the EPS receives >=405 counts on only 29%, because the request holds for a median
+# of 0.34 s against a rate limiter that needs 1.36 s to ramp 0 -> 409. The command chatters, and it
+# chatters because KP_INTERP rises 25x from highway to 3.5 m/s while the plant weakens only 2.8x --
+# a loop gain ~9x the highway's, which a routine 0.17 m/s^2 error saturates.
+#
+# The FLOOR is 0.26, the deepest cut the measurement supports (the 2-3 m/s band). Below 2.5 m/s the
+# archive holds no hands-off turn frames at all, so np.interp's clamp makes that an extrapolation --
+# bounded deliberately, because a constant-loop-gain target would have implied 25x there.
+#
+# The CEILING is exactly 1.0: this may only ever reduce the stock gain. And the last breakpoint is
+# where the cap stops binding at all (the stock schedule is already under it from ~8 m/s), which is
+# what keeps every speed at or above 20 mph on the stock gain untouched.
+KP_SCALE_FLOOR = 0.26
+KP_SCALE_CEILING = 1.0
+
 EXPECTED_FLAGS = {
     "HYUNDAI_ELANTRA_2024": {"CHECKSUM_CRC8", "CAMERA_SCC", "RAISED_LIMITS", "LFAHDA_MFC_8"},
     "HYUNDAI_ELANTRA_HEV_2024": {"CHECKSUM_CRC8", "CAMERA_SCC", "HYBRID", "LFAHDA_MFC_8"},
@@ -483,6 +529,203 @@ def guard_lateral_accel_schedule(repo: Path) -> None:
           "the test would be deleted on the next sync, leaving the schedule unguarded")
     check("the schedule test file is present",
           (repo / "openpilot/selfdrive/controls/tests/test_drive_helpers.py").is_file())
+
+
+def _ff_schedule_consts(source: str) -> dict:
+    tree = _parse(source)
+    if tree is None:
+        return {}
+    out: dict = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                try:
+                    out[target.id] = ast.literal_eval(node.value)
+                except (ValueError, TypeError, SyntaxError):
+                    pass
+    return out
+
+
+def guard_ff_lat_accel_schedule(repo: Path) -> None:
+    """The low-speed feedforward gain schedule, its call site, and its overlay registration.
+
+    Three things can each break this silently, and none of them shows up in a diff of the schedule
+    itself: the constants can drift off the learner's floor, the single line that reads them can be
+    dropped or duplicated, and either half can fall out of the overlay lists. The last is the worst
+    -- the weekly rebuild would keep the numbers and delete the only line that uses them, which
+    reads exactly like the fix is still installed.
+    """
+    print("")
+    print("[lat_accel_factor_schedule.py] CN7 low-speed feedforward gain")
+    sched_path = repo / "openpilot/sunnypilot/selfdrive/controls/lib/lat_accel_factor_schedule.py"
+    jerk_path = repo / "openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_jerk_aware.py"
+    v0_path = repo / "openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py"
+    torqued_path = repo / "openpilot/selfdrive/locationd/torqued.py"
+
+    check("lat_accel_factor_schedule.py present", sched_path.is_file())
+    check("latcontrol_torque_jerk_aware.py present", jerk_path.is_file())
+    if not (sched_path.is_file() and jerk_path.is_file()):
+        return
+
+    consts = _ff_schedule_consts(read(sched_path))
+    check("lat_accel_factor_schedule.py parses", bool(consts),
+          "a schedule that cannot be read is a schedule nothing is checking")
+    if not consts:
+        return
+
+    bp = consts.get("FF_LAT_ACCEL_GAIN_BP")
+    vals = consts.get("FF_LAT_ACCEL_GAIN_V")
+    blend = consts.get("LOW_SPEED_FF_BLEND")
+    floor_vel = consts.get("LEARNER_MIN_VEL")
+
+    ok_shape = isinstance(bp, list) and isinstance(vals, list) and len(bp) == len(vals) >= 2
+    check("FF_LAT_ACCEL_GAIN_BP and _V are same-length lists of at least two points",
+          ok_shape, "found bp=" + repr(bp) + " v=" + repr(vals))
+    if not ok_shape:
+        return
+
+    check("FF_LAT_ACCEL_GAIN_BP is strictly increasing",
+          bp == sorted(bp) and len(set(bp)) == len(bp),
+          "found " + repr(bp) + " -- np.interp requires increasing breakpoints")
+    check("FF_LAT_ACCEL_GAIN_V is non-decreasing in speed",
+          vals == sorted(vals),
+          "found " + repr(vals) + " -- the car would feedforward harder as it slows down")
+    check("the schedule ends at exactly " + str(FF_GAIN_CEILING),
+          vals[-1] == FF_GAIN_CEILING,
+          "ends at " + repr(vals[-1]) + " -- x/1.0 is bit-identical and x/0.999 is not, so"
+          + " anything else forfeits the proof that the highway is unchanged")
+    check("the schedule never exceeds " + str(FF_GAIN_CEILING),
+          max(vals) == FF_GAIN_CEILING,
+          "peaks at " + repr(max(vals)) + " -- above the learner floor the measured ratio is"
+          + " 0.96-0.98, so a gain over 1.0 is an unmeasured change to the band that works")
+    check("the schedule never falls below " + str(FF_GAIN_FLOOR),
+          min(vals) >= FF_GAIN_FLOOR,
+          "floors at " + repr(min(vals)) + " -- 1/" + str(FF_GAIN_FLOOR)
+          + " is the most feedforward this may add")
+    platforms = consts.get("MEASURED_PLATFORMS")
+    check("the schedule applies only to the platform it was measured on",
+          platforms == ("HYUNDAI_ELANTRA_2024",),
+          "found " + repr(platforms) + " -- latcontrol_torque_jerk_aware is fork-wide code, and"
+          + " these ratios are relative to a latAccelFactor of 3.157 that only this platform has."
+          + " Widening this list is a claim that somebody measured that car's plant gain too")
+    check("LOW_SPEED_FF_BLEND is in [0, 1]",
+          isinstance(blend, (int, float)) and 0.0 <= blend <= 1.0,
+          "found " + repr(blend) + " -- outside that range it is no longer a blend")
+
+    # The pair check. Line-anchored on purpose: an unanchored match takes the first hit anywhere in
+    # the file, including a stale number inside a comment, and then fails open.
+    match = re.search(r"^MIN_VEL\s*=\s*([0-9.]+)", read(torqued_path), re.M)
+    check("torqued.py MIN_VEL is readable", match is not None,
+          "the schedule justification is 'the learner has no evidence below here'; without MIN_VEL"
+          + " there is nothing to justify it against")
+    if match is not None:
+        check("the schedule ends exactly at torqued.py MIN_VEL",
+              float(match.group(1)) == floor_vel == bp[-1],
+              "MIN_VEL=" + match.group(1) + " LEARNER_MIN_VEL=" + repr(floor_vel)
+              + " last breakpoint=" + repr(bp[-1]))
+
+    # The call site.
+    jerk = read(jerk_path)
+    uses = jerk.count("lat_accel_factor_gain(CS.vEgo)")
+    check("the feedforward reads the schedule exactly once", uses == 1,
+          "found " + str(uses) + " uses -- zero means the constants exist but nothing reads them,"
+          + " more than one means it is applied twice")
+    divides = jerk.count("/ ff_gain")
+    check("the feedforward is actually divided by the gain", divides == 1,
+          "found " + str(divides) + " divisions -- computing the gain and then not applying it"
+          + " leaves every guard green and the car on the old feedforward")
+    check("the fingerprint gate is computed",
+          "ff_gain_applies(CP.carFingerprint)" in jerk,
+          "latcontrol_torque_jerk_aware runs on every sunnypilot car; this correction was measured"
+          + " on the CN7 and on nothing else")
+    # Computing the gate and then not consuming it is the failure this pair exists to catch: the
+    # __init__ line survives, the call site reads the schedule unconditionally, and every other
+    # check here stays green while the CN7 correction goes out to the whole fleet.
+    check("the fingerprint gate is applied at the call site",
+          "lat_accel_factor_gain(CS.vEgo) if self._low_speed_ff_gain else 1.0" in jerk,
+          "the gate is computed in __init__ but the feedforward does not consult it")
+    check("the error path still uses the unscheduled latAccelFactor",
+          "self._pid_log.error = float(torque_from_setpoint - torque_from_measurement)" in jerk,
+          "a scheduled error term changes the closed-loop P gain, which this change explicitly"
+          + " does not do")
+    for line in jerk.splitlines():
+        stripped = line.strip()
+        scheduled = "lat_accel_factor_gain" in line or "ff_gain" in line
+        if "gravity_adjusted=False" in line:
+            check("the error conversion is not scheduled", not scheduled,
+                  "found the schedule on an error-path conversion: " + stripped)
+        if "get_friction_in_torque_space(" in line and "def " not in line:
+            check("the friction term is not scheduled", not scheduled,
+                  "torque_params.friction is already in torque space and is never divided by"
+                  + " latAccelFactor, so scheduling it is a different change")
+    v0 = read(v0_path)
+    check("the feedforward correction is not duplicated into the v0 path",
+          "lat_accel_factor_gain" not in v0,
+          "the v0 feedforward is in lat-accel space and needs a different expression; a half-edit"
+          + " there is a second, unreviewed formula for the same correction. (v0 legitimately"
+          + " imports scaled_kp_interp -- that is the KP half, which does apply to both paths.)")
+
+    # ---- the KP cap, the coupled half ----
+    kp_bp = consts.get("KP_SCALE_BP")
+    kp_v = consts.get("KP_SCALE_V")
+    kp_blend = consts.get("LOW_SPEED_KP_BLEND")
+    kp_shape = isinstance(kp_bp, list) and isinstance(kp_v, list) and len(kp_bp) == len(kp_v) >= 2
+    check("KP_SCALE_BP and _V are same-length lists of at least two points", kp_shape,
+          "found bp=" + repr(kp_bp) + " v=" + repr(kp_v))
+    if kp_shape:
+        check("KP_SCALE_BP is strictly increasing",
+              kp_bp == sorted(kp_bp) and len(set(kp_bp)) == len(kp_bp),
+              "found " + repr(kp_bp) + " -- np.interp requires increasing breakpoints")
+        check("KP_SCALE_V is non-decreasing in speed", kp_v == sorted(kp_v),
+              "found " + repr(kp_v) + " -- the gain would be cut harder as the car speeds up")
+        check("the KP cap ends at exactly " + str(KP_SCALE_CEILING), kp_v[-1] == KP_SCALE_CEILING,
+              "ends at " + repr(kp_v[-1]) + " -- above the band where the cap binds the stock gain"
+              + " must be arithmetically untouched")
+        check("the KP cap never raises the stock gain", max(kp_v) == KP_SCALE_CEILING,
+              "peaks at " + repr(max(kp_v)) + " -- this may only ever reduce KP; raising it is an"
+              + " unmeasured change to the closed loop")
+        check("the KP cap never falls below " + str(KP_SCALE_FLOOR), min(kp_v) >= KP_SCALE_FLOOR,
+              "floors at " + repr(min(kp_v)) + " -- 3.8x is the deepest cut the measurement supports,"
+              + " and below 2.5 m/s there is no measurement at all")
+    check("LOW_SPEED_KP_BLEND is in [0, 1]",
+          isinstance(kp_blend, (int, float)) and 0.0 <= kp_blend <= 1.0,
+          "found " + repr(kp_blend))
+
+    # THE coupling. Cutting the proportional gain is only safe because the feedforward now carries
+    # the demand; without it this is a pure authority reduction and the car steers less than today.
+    check("the KP cap is not applied without the feedforward that replaces it",
+          not (isinstance(kp_blend, (int, float)) and kp_blend > 0.0
+               and isinstance(blend, (int, float)) and blend == 0.0),
+          "LOW_SPEED_KP_BLEND=" + repr(kp_blend) + " with LOW_SPEED_FF_BLEND=" + repr(blend)
+          + " -- that removes low-speed gain and puts nothing back, which steers LESS than stock")
+
+    check("the v0 controller builds its PID from the scaled table",
+          "scaled_kp_interp(INTERP_SPEEDS, KP_INTERP, CP.carFingerprint)" in v0,
+          "the KP cap exists but the controller still constructs its PID from the stock schedule")
+    check("the KP cap is gated on the fingerprint",
+          "if not ff_gain_applies(car_fingerprint):" in read(sched_path),
+          "scaled_kp_interp must return the stock table for every platform this was not measured on")
+
+    # Overlay registration.
+    sync = read(repo / ".elantra/sync.py")
+    check("the v0 controller is registered in OVERLAY_MODIFIED",
+          '"openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py"' in sync,
+          "the rebuild would restore the stock 25x low-speed gain while the feedforward schedule"
+          + " stayed in place, which looks like the fix is installed and is half of it")
+    check("the call site is registered in OVERLAY_MODIFIED",
+          '"openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_jerk_aware.py"' in sync,
+          "the weekly rebuild would keep the constants and delete the only line that reads them")
+    check("the schedule module is registered in OVERLAY_ADDED",
+          '"openpilot/sunnypilot/selfdrive/controls/lib/lat_accel_factor_schedule.py"' in sync,
+          "the module would be deleted on the next sync and the call site would ImportError"
+          + " on the car")
+    check("its test is registered in OVERLAY_ADDED",
+          '"openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lat_accel_factor_schedule.py"' in sync,
+          "the test would be deleted on the next sync, leaving the schedule unguarded")
+    check("the schedule test file is present",
+          (repo / "openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lat_accel_factor_schedule.py").is_file())
 
 
 def guard_superproject(repo: Path) -> None:
@@ -913,6 +1156,7 @@ def main() -> int:
     if args.repo:
         guard_superproject(args.repo.resolve())
         guard_lateral_accel_schedule(args.repo.resolve())
+        guard_ff_lat_accel_schedule(args.repo.resolve())
         guard_ui_headroom(args.repo.resolve(), opendbc)
         guard_opendbc_pin(args.repo.resolve(), opendbc)
 
