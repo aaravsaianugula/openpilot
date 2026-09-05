@@ -1209,6 +1209,73 @@ def guard_big_model(repo: Path) -> None:
           + " a checkout of this pointer fails under filter.lfs.required")
 
 
+# The catalog merge that puts our own models in sunnypilot's picker. Two halves that are only
+# useful together: the module that does the merging, and the one line in sunnypilot's fetcher
+# that calls it. Registering one without the other is the exact failure this file exists to
+# catch -- the module survives the rebuild, nothing calls it, and the picker silently goes back
+# to sunnypilot's list with no error anywhere.
+CATALOG_MODULE = "openpilot/sunnypilot/models/elantra_catalog.py"
+CATALOG_CALLER = "openpilot/sunnypilot/models/fetcher.py"
+
+
+def guard_model_catalog(repo: Path) -> None:
+    """Our models still reach the Models screen, and cannot take sunnypilot's list down with them.
+
+    sunnypilot's catalog is the only route into the picker: two hardcoded URLs, no local source,
+    no sideload path, and validate_active_bundles clears any active bundle missing from the
+    fetched list. So a model carried ahead of them lives or dies on this merge.
+
+    The fail-open checks are not defensive padding. This code runs inside the fetch that
+    populates the cache every reader uses -- the manager downloads from it and the UI lists from
+    it -- so an exception escaping here does not degrade our model, it empties the picker for
+    every model and invalidates whatever the driver had selected.
+    """
+    print("\n[model catalog] our bundles still reach sunnypilot's picker")
+
+    module = repo / CATALOG_MODULE
+    check("the catalog merge module is present", module.is_file(),
+          CATALOG_MODULE + " is missing -- nothing would add our models to the list")
+    if not module.is_file():
+        return
+    source = read(module)
+
+    check("a chestnut source is declared over https",
+          re.search(r'"chestnut"\s*:\s*"https://', source) is not None,
+          "the big model is chestnut-only and the catalog must be fetched over https")
+    check("no qcom source is declared",
+          re.search(r'"qcom"\s*:\s*"http', source) is None,
+          "offering a big model in the qcom list gives the driver something undownloadable")
+
+    # Fail-open, checked structurally: the fetch swallows everything and the merge refuses to
+    # invent a document it would then hand back to be cached.
+    check("the catalog fetch swallows every error",
+          "except Exception:" in source and "return None" in source,
+          "an exception here propagates into _fetch_and_cache_models and empties the picker")
+    check("the merge defers to sunnypilot on a ref collision",
+          "known_refs" in source,
+          "without it the driver sees two entries for one model, on different hosts")
+
+    caller = read(repo / CATALOG_CALLER)
+    check("sunnypilot's fetcher imports the merge",
+          "from openpilot.sunnypilot.models.elantra_catalog import merge_for_source" in caller,
+          "the module is present but nothing imports it")
+    check("the merge is on the fetch path, wrapping the parsed document",
+          re.search(r"json_data\s*=\s*merge_for_source\(source,\s*response\.json\(\)\)", caller)
+          is not None,
+          "it must wrap response.json() before the cache is written -- that cache is the single"
+          + " point the manager and the UI both read")
+
+    sync = read(repo / ".elantra/sync.py")
+    check("the merge module is registered in OVERLAY_ADDED",
+          '"' + CATALOG_MODULE + '"' in sync,
+          "the rebuild would delete it and leave fetcher.py importing a module that is gone,"
+          + " which breaks the fetch outright rather than quietly")
+    check("sunnypilot's fetcher is registered in OVERLAY_MODIFIED",
+          '"' + CATALOG_CALLER + '"' in sync,
+          "the rebuild would restore the stock fetcher and our models would vanish from the"
+          + " picker with no error")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1242,6 +1309,7 @@ def main() -> int:
         guard_ui_headroom(args.repo.resolve(), opendbc)
         guard_opendbc_pin(args.repo.resolve(), opendbc)
         guard_big_model(args.repo.resolve())
+        guard_model_catalog(args.repo.resolve())
 
     print("\n" + "-" * 60)
     if _failures:
