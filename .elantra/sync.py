@@ -102,6 +102,10 @@ OVERLAY_ADDED = [
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_manifest.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/onroad/steer_headroom.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/onroad/steer_headroom_bar.py",
+    # The merge that puts models we host into sunnypilot's picker. Paired with fetcher.py
+    # in OVERLAY_MODIFIED below: registering this without the call site leaves a module
+    # nothing imports, and registering the call site without this breaks the fetch outright.
+    "openpilot/sunnypilot/models/elantra_catalog.py",
 ]
 
 # Upstream files we modify. Kept deliberately tiny -- this is the only conflict surface in
@@ -120,6 +124,10 @@ OVERLAY_MODIFIED = [
     # store instead. This branch has no overlay-coverage detector, so dropping this entry
     # reverts the model with no error and no warning at all -- guard_big_model is the check.
     "openpilot/selfdrive/modeld/models/big_driving_supercombo.onnx",
+    # One line: merge_for_source() around response.json(), so models we host ourselves land
+    # in the cache every reader uses. Unregistered, the rebuild restores the stock fetcher
+    # and our models disappear from the Models screen with no error at all.
+    "openpilot/sunnypilot/models/fetcher.py",
 ]
 
 # check-run conclusions that mean "this commit is not safe to ship".
@@ -659,7 +667,14 @@ def main() -> int:
                               # proves the big-model guard still goes red when the pointer
                               # reverts. That revert is otherwise completely silent: same
                               # path, same size, still a valid pointer, just the old model
-                              ("test_guard_big_model.py", [])):
+                              ("test_guard_big_model.py", []),
+                              # proves the catalog merge still fails open. It runs inside
+                              # the fetch that fills the cache the manager and the UI both
+                              # read, so a raise here empties the picker for every model
+                              ("test_elantra_catalog.py", []),
+                              # proves the catalog generator still refuses to publish a
+                              # promise it has not checked against the bytes on disk
+                              ("test_make_model_catalog.py", [])):
             # Three of these import opendbc (test_scanner_decoders through ceiling_replay,
             # test_torque_projection through CarControllerParams). Point PYTHONPATH at the
             # opendbc we just BUILT rather than relying on opendbc_tests() having pip-installed
