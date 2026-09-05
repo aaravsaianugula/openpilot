@@ -662,6 +662,85 @@ def guard_raised_torque_pair(opendbc: Path) -> None:
           "heavier car, no fleet data, and it borrows HYUNDAI_SONATA torque params")
 
 
+# The cinque terre big driving model, carried from commaai/openpilot#38771 ahead of sunnypilot.
+# The oid is pinned as a literal on purpose. The failure this guards is the pointer quietly going
+# back to whatever upstream ships -- and a reverted pointer is a perfectly valid pointer. Nothing
+# downstream can tell the two apart: same path, same size, same 134 bytes, and modeld loads
+# whichever one is there without comment. Comparing against a literal is the only check that
+# fails when the rebuild drops the overlay entry.
+BIG_MODEL_PATH = "openpilot/selfdrive/modeld/models/big_driving_supercombo.onnx"
+BIG_MODEL_OID = "e8d821733be15ebe9e27498bc27ad8bbbd741980ece37d77f377294010b8ff28"
+BIG_MODEL_SIZE = 765950064
+# The model this replaced. Named only so the failure message can say which way it drifted.
+PREV_BIG_MODEL_OID = "1791d5940b2c048d0639813426dd2cf1d6f2a6727ed51e17c8bcea8bbe754123"
+
+_POINTER_OID_RE = re.compile(r"^oid sha256:([0-9a-f]{64})$", re.M)
+_POINTER_SIZE_RE = re.compile(r"^size (\d+)$", re.M)
+
+
+def guard_big_model(repo: Path) -> None:
+    """The tracked pointer still names the cinque terre model, and can still be resolved.
+
+    Two independent ways this reverts with no visible symptom:
+
+      * the weekly rebuild hard-resets to upstream, and an unregistered path never comes back.
+        The tree looks correct, the file is present, and the car runs the old model;
+      * the oid is fine but nothing can fetch it. sunnypilot's LFS store does not have this
+        object and we cannot push to it, so without .elantra/fetch_lfs_object.py seeding
+        .git/lfs/objects there is no path to the bytes at all -- and under
+        filter.lfs.required=true that does not degrade, it aborts the updater's checkout.
+
+    Reads the committed blob rather than the worktree: on the device the worktree file has been
+    smudged to 766 MB of ONNX, which is not a pointer and cannot be parsed as one.
+    """
+    print("\n[big model] the cinque terre pointer survived the rebuild")
+
+    tracked = _git(repo, "show", "HEAD:" + BIG_MODEL_PATH)
+    check("the big model blob is tracked and readable", tracked is not None,
+          "git show HEAD:" + BIG_MODEL_PATH + " produced nothing")
+    if tracked is None:
+        return
+
+    check("it is a git-LFS pointer, not the object itself",
+          "git-lfs.github.com/spec/v1" in tracked,
+          "766 MB cannot be committed outside LFS -- GitHub caps a single file at 100 MB")
+
+    oid_m = _POINTER_OID_RE.search(tracked)
+    check("the pointer carries a sha256 oid", oid_m is not None,
+          "pointer body was " + repr(tracked[:80]))
+    if oid_m is not None:
+        oid = oid_m.group(1)
+        detail = ("pointer names " + oid[:12] + ", expected " + BIG_MODEL_OID[:12])
+        if oid == PREV_BIG_MODEL_OID:
+            detail = ("reverted to the pre-cinque-terre model (" + PREV_BIG_MODEL_OID[:12]
+                      + ") -- the rebuild dropped the overlay entry and nothing else said so")
+        check("the pointer names the cinque terre model", oid == BIG_MODEL_OID, detail)
+
+    size_m = _POINTER_SIZE_RE.search(tracked)
+    check("the pointer carries a size", size_m is not None)
+    if size_m is not None:
+        check("the size matches the published object",
+              int(size_m.group(1)) == BIG_MODEL_SIZE,
+              "pointer says " + size_m.group(1) + ", the LFS batch API reports "
+              + str(BIG_MODEL_SIZE) + " -- a size mismatch makes the object unresolvable")
+
+    attrs = read(repo / ".gitattributes")
+    check(".onnx is still routed through git-LFS",
+          re.search(r"^\*\.onnx filter=lfs", attrs, re.M) is not None,
+          "without the filter the next commit would try to put 766 MB into git itself")
+
+    sync = read(repo / ".elantra/sync.py")
+    check("the model is registered in OVERLAY_MODIFIED",
+          '"' + BIG_MODEL_PATH + '"' in sync,
+          "the weekly rebuild would silently restore upstream's model, with no error and no"
+          + " warning -- master's sync.py has no coverage detector to catch it either")
+
+    check("the LFS seeder that can resolve this oid is present",
+          (repo / ".elantra/fetch_lfs_object.py").is_file(),
+          "sunnypilot's LFS store 404s on this oid and we cannot push to it; without the seeder"
+          + " a checkout of this pointer fails under filter.lfs.required")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -692,6 +771,7 @@ def main() -> int:
         guard_superproject(args.repo.resolve())
         guard_ui_headroom(args.repo.resolve(), opendbc)
         guard_opendbc_pin(args.repo.resolve(), opendbc)
+        guard_big_model(args.repo.resolve())
 
     print("\n" + "-" * 60)
     if _failures:
