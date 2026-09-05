@@ -130,6 +130,13 @@ OVERLAY_MODIFIED = [
     # one. Unregistered, the rebuild restores the stock 25x low-speed gain and the command goes back
     # to chattering, with the feedforward schedule still in place and apparently working.
     "openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py",
+    # The cinque terre big model (commaai/openpilot#38771), carried ahead of sunnypilot.
+    # This is a git-LFS pointer, so the diff is three lines of text and the rebuild replays
+    # it like any other file -- no 766 MB object ever moves through CI, which checks out
+    # with lfs: false. The object is NOT in sunnypilot's LFS store and cannot be pushed
+    # there; .elantra/fetch_lfs_object.py seeds it into .git/lfs/objects from comma's public
+    # store instead. Unregistered, the rebuild silently reverts the car to the old model.
+    "openpilot/selfdrive/modeld/models/big_driving_supercombo.onnx",
 ]
 
 # Paths that legitimately move between builds without being overlay files. The submodule gitlink
@@ -717,7 +724,16 @@ def main() -> int:
                               # silent deletion, so it cannot go unexercised
                               ("test_sync_overlay_coverage.py", []),
                               # proves the plant-gain estimator recovers a known synthetic gain
-                              ("test_plant_gain.py", [])):
+                              ("test_plant_gain.py", []),
+                              # proves the LFS seeder still refuses a corrupt or truncated object.
+                              # It is the only route to the cinque terre blob -- sunnypilot's store
+                              # 404s on it -- so a seeder that silently installs the wrong bytes
+                              # breaks the updater rather than the model
+                              ("test_fetch_lfs_object.py", []),
+                              # proves the big-model guard still goes red when the pointer reverts.
+                              # That revert is otherwise completely silent: same path, same size,
+                              # still a valid pointer, just the previous model
+                              ("test_guard_big_model.py", [])):
             # Three of these import opendbc (test_scanner_decoders through ceiling_replay,
             # test_torque_projection through CarControllerParams). Point PYTHONPATH at the
             # opendbc we just BUILT rather than relying on opendbc_tests() having pip-installed
