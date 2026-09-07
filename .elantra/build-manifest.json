@@ -1,0 +1,17 @@
+{
+  "sunnypilot_upstream_sha": "6135084c941d4d947dd90c78326a557c3c857f89",
+  "sunnypilot_upstream_date": "2026-09-06",
+  "sunnypilot_upstream_subject": "modeld_v2: realize frames on npy -> amd (#1993)",
+  "upstream_ci_conclusion": "success",
+  "upstream_ci_checked": 42,
+  "upstream_ci_url": "https://github.com/sunnypilot/sunnypilot/commit/6135084c941d4d947dd90c78326a557c3c857f89/checks",
+  "opendbc_sha": "b45eb78def29582bcce43c68cfb1d55f19224d1a",
+  "opendbc_repo": "aaravsaianugula/opendbc",
+  "elantra_platforms": [
+    "HYUNDAI_ELANTRA_2024",
+    "HYUNDAI_ELANTRA_HEV_2024"
+  ],
+  "previous_master_sha": "652d7b98d1798b6891a27e65d18e5b39ebd0d0db",
+  "rollback_branch": "master-previous",
+  "synced_at_utc": "2026-09-07T14:39:21Z"
+}
