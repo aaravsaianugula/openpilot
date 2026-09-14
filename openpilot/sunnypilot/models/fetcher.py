@@ -13,6 +13,7 @@ from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.hardware.hw import Paths
 from openpilot.sunnypilot.models.helpers import is_bundle_version_compatible
+from openpilot.sunnypilot.models.elantra_catalog import merge_for_source
 from openpilot.cereal import custom
 
 
@@ -179,7 +180,10 @@ class ModelFetcher:
       # Raise for any other 4xx/5xx
       response.raise_for_status()
 
-      json_data = response.json()
+      # Add the models this port hosts itself. sunnypilot's catalog is the only route into
+      # the picker, so a model carried ahead of them has to be merged in here. Fails open:
+      # if ours is unreachable or unpublished, their document passes through untouched.
+      json_data = merge_for_source(source, response.json())
       parsed = self.model_parser.parse_models(json_data)
       if parsed:
         self.model_caches[source].set(json_data)

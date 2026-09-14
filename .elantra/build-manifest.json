@@ -1,0 +1,17 @@
+{
+  "sunnypilot_upstream_sha": "63a2a3868e0ed194ec5fedd628f711eab0411423",
+  "sunnypilot_upstream_date": "2026-09-13",
+  "sunnypilot_upstream_subject": "models: don't freeze the ui on an unset LagdToggleDelay (#2026)",
+  "upstream_ci_conclusion": "success",
+  "upstream_ci_checked": 39,
+  "upstream_ci_url": "https://github.com/sunnypilot/sunnypilot/commit/63a2a3868e0ed194ec5fedd628f711eab0411423/checks",
+  "opendbc_sha": "b45eb78def29582bcce43c68cfb1d55f19224d1a",
+  "opendbc_repo": "aaravsaianugula/opendbc",
+  "elantra_platforms": [
+    "HYUNDAI_ELANTRA_2024",
+    "HYUNDAI_ELANTRA_HEV_2024"
+  ],
+  "previous_master_sha": "7832258715499c2385bacd69ca6a8b873e5bc162",
+  "rollback_branch": "master-previous",
+  "synced_at_utc": "2026-09-14T15:32:18Z"
+}

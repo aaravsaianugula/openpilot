@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import json
 import os
 import re
 import datetime
@@ -304,6 +305,22 @@ class Updater:
     self.params.put("UpdaterNewDescription", get_description(FINALIZED), block=True)
     self.params.put("UpdaterNewReleaseNotes", parse_release_notes(FINALIZED), block=True)
     self.params.put_bool("UpdateAvailable", self.update_ready, block=True)
+
+    # Elantra 2024-25 port: surface the build manifest the sync job commits, so the car can
+    # show which sunnypilot commit this build came from and whether its upstream CI passed.
+    # Read-only -- deliberately no branching on this in the update or finalize path.
+    def get_elantra_manifest(basedir: str) -> str:
+      path = os.path.join(basedir, ".elantra", "build-manifest.json")
+      try:
+        with open(path) as f:
+          return json.dumps(json.load(f))
+      except FileNotFoundError:
+        return ""  # not an Elantra port build
+      except Exception:
+        cloudlog.exception("updater.get_elantra_manifest")
+        return ""
+    self.params.put("ElantraBuildManifest", get_elantra_manifest(BASEDIR), block=True)
+    self.params.put("ElantraNewBuildManifest", get_elantra_manifest(FINALIZED), block=True)
 
     # Handle user prompt
     for alert in ("Offroad_UpdateFailed", "Offroad_ConnectivityNeeded", "Offroad_ConnectivityNeededPrompt"):
