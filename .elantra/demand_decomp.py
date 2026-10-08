@@ -45,6 +45,9 @@ STEER_MAX = 409          # the flat ceiling these routes ran
 # opendbc/car/hyundai/values.py, and panda enforces the same 3/7 via HYUNDAI_LIMITS(512, 3, 7),
 # so neither can be moved without reflashing the other.
 STEER_DELTA_UP = 3
+# The driver window AS THE ARCHIVE RAN IT. This tool measures recorded drives, all of which
+# predate the CN7 raise to 100, so 50 is what reproduces them; today's value would
+# mis-model every one. Raise it only for drives recorded after that change.
 STEER_DRIVER_ALLOWANCE = 50
 PINNED_EPS = 0.995       # |actuators.torque| at or above this is "asking for everything"
 GAIN_MIN_TORQUE = 0.15   # below this the ratio is dominated by noise and roll

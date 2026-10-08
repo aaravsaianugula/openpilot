@@ -102,6 +102,13 @@ OVERLAY_ADDED = [
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_manifest.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/onroad/steer_headroom.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/onroad/steer_headroom_bar.py",
+    "openpilot/selfdrive/controls/tests/test_drive_helpers.py",
+    # The CN7 low-speed feedforward gain schedule and its tests. The constants live here rather
+    # than in .elantra/ because .elantra is not a legal Python package name and cannot be imported
+    # at runtime; wholesale restore means they can never be half-merged. Paired with the call site
+    # in OVERLAY_MODIFIED below -- registering one without the other silently reverts the fix.
+    "openpilot/sunnypilot/selfdrive/controls/lib/lat_accel_factor_schedule.py",
+    "openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lat_accel_factor_schedule.py",
     # The merge that puts models we host into sunnypilot's picker. Paired with fetcher.py
     # in OVERLAY_MODIFIED below: registering this without the call site leaves a module
     # nothing imports, and registering the call site without this breaks the fetch outright.
@@ -116,19 +123,46 @@ OVERLAY_MODIFIED = [
     "openpilot/system/updated/updated.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/onroad/hud_renderer.py",
+    # The CN7 lateral-accel schedule in clip_curvature. Paired with the test above in
+    # OVERLAY_ADDED: registering one and not the other is exactly what this list exists to stop.
+    "openpilot/selfdrive/controls/lib/drive_helpers.py",
+    # Two lines: the import, and dividing the feedforward by lat_accel_factor_gain(CS.vEgo). The
+    # schedule itself is in OVERLAY_ADDED above. Without this entry the rebuild keeps the constants
+    # and drops the only line that reads them, which looks like the fix is still installed.
+    "openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_jerk_aware.py",
+    # The low-speed KP cap. One line: the PID is built from the scaled table instead of the stock
+    # one. Unregistered, the rebuild restores the stock 25x low-speed gain and the command goes back
+    # to chattering, with the feedforward schedule still in place and apparently working.
+    "openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py",
     # The cinque terre big model (commaai/openpilot#38771), carried ahead of sunnypilot.
     # This is a git-LFS pointer, so the diff is three lines of text and the rebuild replays
     # it like any other file -- no 766 MB object ever moves through CI, which checks out
     # with lfs: false. The object is NOT in sunnypilot's LFS store and cannot be pushed
     # there; .elantra/fetch_lfs_object.py seeds it into .git/lfs/objects from comma's public
-    # store instead. This branch has no overlay-coverage detector, so dropping this entry
-    # reverts the model with no error and no warning at all -- guard_big_model is the check.
+    # store instead. Unregistered, the rebuild silently reverts the car to the old model.
     "openpilot/selfdrive/modeld/models/big_driving_supercombo.onnx",
     # One line: merge_for_source() around response.json(), so models we host ourselves land
     # in the cache every reader uses. Unregistered, the rebuild restores the stock fetcher
     # and our models disappear from the Models screen with no error at all.
     "openpilot/sunnypilot/models/fetcher.py",
 ]
+
+# Paths that legitimately move between builds without being overlay files. The submodule gitlink
+# is written straight to the index further down, so it is expected to change and is not a stray.
+OVERLAY_EXEMPT = ["opendbc_repo"]
+
+
+def _overlay_covers(path: str) -> bool:
+    """True if `path` survives a rebuild -- registered, or under a registered directory.
+
+    OVERLAY_ADDED carries directory entries (".elantra"), so a prefix match is required; an exact
+    match alone would report every file under them as a stray.
+    """
+    for entry in OVERLAY_ADDED + OVERLAY_MODIFIED + OVERLAY_EXEMPT:
+        if path == entry or path.startswith(entry.rstrip("/") + "/"):
+            return True
+    return False
+
 
 # check-run conclusions that mean "this commit is not safe to ship".
 BAD_CONCLUSIONS = {"failure", "timed_out", "cancelled", "action_required", "stale"}
@@ -471,6 +505,30 @@ def previous_build(repo: Path) -> tuple[str, dict]:
     return prev, json.loads(raw.stdout)
 
 
+def assert_overlay_covers_everything(repo: Path, prev_base: str, prev: str) -> list[str]:
+    """Every path the previous build changed must be carried by an overlay list, or it is lost.
+
+    The symmetric twin of the opendbc `stray` check. Until this existed the superproject had no
+    equivalent: an unregistered file is not deleted with an error, it simply never comes back
+    after the hard reset, and the only output is a restored-file count whose expected value
+    nobody knows. That is the failure mode this whole design is most exposed to, and it had no
+    detector -- guards.py only ever checked six specific paths that somebody hand-wrote.
+
+    Returns the changed paths so the caller can report the count. Raises on any stray.
+    """
+    changed = [n for n in git(["diff", "--name-only", prev_base, prev], repo).splitlines() if n]
+    stray = [n for n in changed if not _overlay_covers(n)]
+    if stray:
+        raise SyncError(
+            "the previous build changed files that no overlay list carries:\n  "
+            + "\n  ".join(sorted(stray))
+            + "\n\nThe rebuild would silently drop every one of them -- no error, no warning, and "
+            + "a tree that looks correct. Add each to OVERLAY_ADDED (files that are entirely "
+            + "ours) or OVERLAY_MODIFIED (upstream files we edit), or revert it.")
+    log(f"  overlay coverage: all {len(changed)} changed paths are registered")
+    return changed
+
+
 def build_superproject(repo: Path, target: dict, opendbc_sha: str,
                        dry_run: bool) -> tuple[str, str]:
     log("\n=== superproject ===")
@@ -487,6 +545,14 @@ def build_superproject(repo: Path, target: dict, opendbc_sha: str,
     if prev_base == target["sha"]:
         log("  upstream unchanged, but opendbc moved "
             + f"{(prev_manifest.get('opendbc_sha') or '')[:9]} -> {opendbc_sha[:9]}; rebuilding")
+
+    # Every path the previous build actually changed must be carried by one of the overlay lists,
+    # or this rebuild drops it. This is the symmetric twin of the opendbc `stray` check above, and
+    # until now the superproject had no equivalent: an unregistered file is not deleted with an
+    # error, it simply never comes back, and the only output is a restored-file count whose
+    # expected value nobody knows. That is the failure mode this design is most exposed to and it
+    # had no detector at all.
+    assert_overlay_covers_everything(repo, prev_base, prev)
 
     # The overlay diff is derived from the last build rather than stored as a static patch,
     # so hand edits to the overlay are picked up automatically and there is only ever one
@@ -659,14 +725,22 @@ def main() -> int:
                               # pins the override-yield arithmetic (-242 -> -254.5 counts) that
                               # the road-test document cites as confirmed by executable test
                               ("test_torque_projection.py", []),
-                              # proves the LFS seeder still refuses a corrupt or truncated
-                              # object. It is the only route to the cinque terre blob --
-                              # sunnypilot's store 404s on it -- so a seeder that silently
-                              # installs the wrong bytes breaks the updater, not the model
+                              # proves the feedforward-schedule guard can still go red
+                              ("test_guard_ff_schedule.py", ["--repo", str(repo)]),
+                              # proves THIS script's own overlay-coverage check still fires; it
+                              # is the only thing standing between an unregistered file and a
+                              # silent deletion, so it cannot go unexercised
+                              ("test_sync_overlay_coverage.py", []),
+                              # proves the plant-gain estimator recovers a known synthetic gain
+                              ("test_plant_gain.py", []),
+                              # proves the LFS seeder still refuses a corrupt or truncated object.
+                              # It is the only route to the cinque terre blob -- sunnypilot's store
+                              # 404s on it -- so a seeder that silently installs the wrong bytes
+                              # breaks the updater rather than the model
                               ("test_fetch_lfs_object.py", []),
-                              # proves the big-model guard still goes red when the pointer
-                              # reverts. That revert is otherwise completely silent: same
-                              # path, same size, still a valid pointer, just the old model
+                              # proves the big-model guard still goes red when the pointer reverts.
+                              # That revert is otherwise completely silent: same path, same size,
+                              # still a valid pointer, just the previous model
                               ("test_guard_big_model.py", []),
                               # proves the catalog merge still fails open. It runs inside
                               # the fetch that fills the cache the manager and the UI both

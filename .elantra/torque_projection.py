@@ -77,7 +77,9 @@ BAND_NAMES = [f"{lo:g}-{hi:g}" if hi < 1e9 else f"{lo:g}+" for lo, hi in SPEED_B
 # does. assert_params_match() refuses to run if the real ones have drifted from these.
 RATE_UP = 3
 RATE_DOWN = 7
-DRIVER_ALLOWANCE = 50
+# 100 on this platform, raised with the ceiling inside the RAISED_LIMITS branch. This tool
+# projects FORWARD, so it must model what the car will do rather than what the archive did.
+DRIVER_ALLOWANCE = 100
 DRIVER_MULTIPLIER = 2
 DRIVER_FACTOR = 1
 
@@ -123,13 +125,21 @@ def assert_params_match() -> None:
     class _Probe:
         # CarControllerParams reads exactly these two. Building a real CarParams here would
         # couple the check to the struct backend for no gain.
+        # RAISED_LIMITS MUST be here. Without it CarControllerParams falls through to the
+        # 384 HKG default branch, and every comparison below is made against a configuration
+        # this car has never run -- which is why this check stayed green through a change to
+        # the raised branch. This is the CarParams.flags bit (2**27), not the safetyParam bit.
         carFingerprint = "HYUNDAI_ELANTRA_2024"
-        flags = int(HyundaiFlags.CHECKSUM_CRC8 | HyundaiFlags.CAMERA_SCC)
+        flags = int(HyundaiFlags.CHECKSUM_CRC8 | HyundaiFlags.CAMERA_SCC
+                    | HyundaiFlags.RAISED_LIMITS)
 
     real = CarControllerParams(_Probe())
     mismatched = {
         name: (mine, getattr(real, name))
         for name, mine in (
+            # STEER_MAX is in this list because the probe above now takes the raised branch;
+            # before, it could not have been checked at all.
+            ("STEER_MAX", BEFORE_FLAT),
             ("STEER_DELTA_UP", RATE_UP),
             ("STEER_DELTA_DOWN", RATE_DOWN),
             ("STEER_DRIVER_ALLOWANCE", DRIVER_ALLOWANCE),
