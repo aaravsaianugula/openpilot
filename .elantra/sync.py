@@ -309,7 +309,10 @@ def opendbc_tests(repo: Path) -> None:
                         + "delta. Nothing published.")
 
     log("  pytest: car list / docs consistency")
+    # test_car_list byte-compares car_list.json against its generator: the regeneration in
+    # replay_opendbc_delta() is what it checks.
     docs = run([sys.executable, "-m", "pytest", "opendbc/car/tests/test_docs.py",
+                "opendbc/sunnypilot/car/tests/test_car_list.py",
                 "-q", "--no-header", "-p", "no:cacheprovider"], cwd=repo, check=False)
     log((docs.stdout or "")[-3000:])
     if docs.returncode != 0:
@@ -453,7 +456,6 @@ def build_opendbc(workdir: Path, dry_run: bool) -> tuple[str, str]:
     prev_sha = git(["rev-parse", f"refs/remotes/fork/{OPENDBC_BRANCH}"], repo)
     local_extras = Path(__file__).resolve().parent / "local-extras.patch"
     names, diff = replay_opendbc_delta(repo, master_sha, prev_sha, local_extras)
-
 
     git(["add", "-A"], repo)
     # Pin the commit timestamp to opendbc master's so the result is reproducible: same inputs
