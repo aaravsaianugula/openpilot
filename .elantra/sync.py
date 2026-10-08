@@ -146,13 +146,6 @@ OVERLAY_MODIFIED = [
     # one. Unregistered, the rebuild restores the stock 25x low-speed gain and the command goes back
     # to chattering, with the feedforward schedule still in place and apparently working.
     "openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py",
-    # The cinque terre big model (commaai/openpilot#38771), carried ahead of sunnypilot.
-    # This is a git-LFS pointer, so the diff is three lines of text and the rebuild replays
-    # it like any other file -- no 766 MB object ever moves through CI, which checks out
-    # with lfs: false. The object is NOT in sunnypilot's LFS store and cannot be pushed
-    # there; .elantra/fetch_lfs_object.py seeds it into .git/lfs/objects from comma's public
-    # store instead. Unregistered, the rebuild silently reverts the car to the old model.
-    "openpilot/selfdrive/modeld/models/big_driving_supercombo.onnx",
     # One line: merge_for_source() around response.json(), so models we host ourselves land
     # in the cache every reader uses. Unregistered, the rebuild restores the stock fetcher
     # and our models disappear from the Models screen with no error at all.
@@ -794,15 +787,9 @@ def main() -> int:
                               ("test_sync_overlay_coverage.py", []),
                               # proves the plant-gain estimator recovers a known synthetic gain
                               ("test_plant_gain.py", []),
-                              # proves the LFS seeder still refuses a corrupt or truncated object.
-                              # It is the only route to the cinque terre blob -- sunnypilot's store
-                              # 404s on it -- so a seeder that silently installs the wrong bytes
-                              # breaks the updater rather than the model
+                              # proves the LFS seeder still refuses a corrupt or truncated object;
+                              # a seeder that silently installs the wrong bytes breaks the updater
                               ("test_fetch_lfs_object.py", []),
-                              # proves the big-model guard still goes red when the pointer reverts.
-                              # That revert is otherwise completely silent: same path, same size,
-                              # still a valid pointer, just the previous model
-                              ("test_guard_big_model.py", []),
                               # proves the catalog merge still fails open. It runs inside
                               # the fetch that fills the cache the manager and the UI both
                               # read, so a raise here empties the picker for every model

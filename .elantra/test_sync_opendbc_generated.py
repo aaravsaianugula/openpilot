@@ -75,7 +75,7 @@ OURS_VALUES = ("# car list\nCAR HYUNDAI_SONATA\n" + FILLER
                + "CAR HYUNDAI_ELANTRA_2024\nCAR HYUNDAI_ELANTRA_HEV_2024\n# end\n")
 # Carries the rest of REQUIRED_IN_DELTA so the delta passes the token gate on its own merits.
 OURS_SAFETY = ("#define HYUNDAI_PARAM_RAISED_LIMITS 1024\n// RAISED_LIMITS\n"
-               "// LFAHDA_MFC_8 hyundai_can_cn7\n")
+               + "// LFAHDA_MFC_8 hyundai_can_cn7\n")
 
 
 def check(label, cond, detail=""):
