@@ -57,11 +57,9 @@ OPENDBC_BRANCH = MAIN_BRANCH
 OPENDBC_ROLLBACK = ROLLBACK_BRANCH
 
 # Every path our opendbc delta is allowed to touch. Anything outside it aborts BY NAME rather
-# than turning up as an unexplained three-way conflict weeks later. The fork's own scheduled
-# "Update CARS.md" job is the concrete case this exists for: it commits straight to the default
-# branch, which is now the delta source.
+# than turning up as an unexplained three-way conflict weeks later. Generated files are not
+# listed: they never travel in the delta at all -- see OPENDBC_GENERATED below.
 OPENDBC_DELTA_PATHS = (
-    "docs/CARS.md",
     "opendbc/car/hyundai/fingerprints.py",
     "opendbc/car/hyundai/hyundaican.py",
     "opendbc/car/hyundai/interface.py",
@@ -76,8 +74,22 @@ OPENDBC_DELTA_PATHS = (
     "opendbc/safety/modes/hyundai_common.h",
     "opendbc/safety/tests/common.py",
     "opendbc/safety/tests/test_hyundai.py",
-    "opendbc/sunnypilot/car/car_list.json",
 )
+
+# Files opendbc GENERATES from its own tree, mapped to the generator that writes them. They are
+# never replayed as part of the delta: CARS.md's first line counts every supported car, so any
+# week upstream adds a car and we carry ours, both sides rewrite the same lines and a three-way
+# apply cannot merge two regenerations of one table -- the 2026-10-05 scheduled sync died on
+# exactly "U docs/CARS.md", and a hand resolution only moves the conflict to the next car upstream
+# adds. Worse, when the hunks happen NOT to overlap the apply "succeeds" with a stale count. So the
+# delta skips these, and they are rebuilt from the merged tree with opendbc's own generator.
+# car_list.json is the same kind of file -- sunnypilot's platform_list.py writes it, and
+# test_car_list.py fails the moment it differs from the generator -- it has simply not collided
+# yet. Each generator writes its file in place, at the path named here.
+OPENDBC_GENERATED = {
+    "docs/CARS.md": "opendbc/car/docs.py",
+    "opendbc/sunnypilot/car/car_list.json": "opendbc/sunnypilot/car/platform_list.py",
+}
 
 # Tokens that must survive INTO the recomputed delta. An empty delta is only the loudest way
 # to lose Elantra support; one reduced to a docs refresh would sail past an emptiness check.
@@ -312,6 +324,113 @@ def opendbc_tests(repo: Path) -> None:
                         + "inconsistent with opendbc's own metadata rules. Nothing published.")
 
 
+def replay_opendbc_delta(repo: Path, master_sha: str, prev_sha: str,
+                         local_extras: Path | None = None) -> tuple[list[str], str]:
+    """Check out upstream opendbc master and replay our recomputed delta onto it.
+
+    Returns (replayed paths, replayed diff). Leaves the result staged-for-add in the worktree;
+    the caller commits it.
+    """
+    base = git(["merge-base", master_sha, prev_sha], repo)
+    log(f"  upstream {master_sha[:9]}  ours {prev_sha[:9]}  base {base[:9]}")
+
+    # (1) Our master must descend from an upstream commit and carry something of its own.
+    if base == prev_sha:
+        raise SyncError(
+            f"{FORK_OPENDBC}:{OPENDBC_BRANCH} is an ancestor of "
+            + f"{UPSTREAM_OPENDBC}:{MAIN_BRANCH} -- it carries no Elantra delta at all. Either "
+            + "it was force-mirrored to upstream, or the port was merged upstream. Refusing to "
+            + f"publish an opendbc with no Elantra support. Recover from {OPENDBC_ROLLBACK}.")
+
+    # Generated files are left out of the delta entirely -- see OPENDBC_GENERATED. Our master may
+    # carry its own regeneration (the last sync wrote one, and so does the fork's scheduled docs
+    # job), and that is neither a stray nor something to merge.
+    skip = [f":(exclude){path}" for path in OPENDBC_GENERATED]
+    names = [n for n in git(["diff", "--name-only", base, prev_sha, "--", ".", *skip],
+                            repo).splitlines() if n]
+    # (2) A delta that vanished entirely.
+    if not names:
+        raise SyncError(
+            f"{FORK_OPENDBC}:{OPENDBC_BRANCH} carries no delta over "
+            + f"{UPSTREAM_OPENDBC}:{MAIN_BRANCH}. Refusing to publish an opendbc with no "
+            + "Elantra support.")
+
+    # (3) A delta that grew paths the port has no business touching. This names it rather than
+    #     letting it ride along or surface as an unexplained three-way conflict weeks later.
+    stray = [n for n in names if n not in OPENDBC_DELTA_PATHS]
+    if stray:
+        raise SyncError(
+            f"{FORK_OPENDBC}:{OPENDBC_BRANCH} carries changes outside the Elantra port: "
+            + f"{stray}. Disable the scheduled workflows on the opendbc fork, or add the path "
+            + "to OPENDBC_DELTA_PATHS on purpose.")
+
+    diff = run(["git", "diff", "--binary", base, prev_sha, "--", ".", *skip], cwd=repo).stdout
+    # (4) A delta that still exists but no longer contains the port.
+    missing = [t for t in REQUIRED_IN_DELTA if t not in diff]
+    if missing:
+        raise SyncError(
+            f"the recomputed Elantra delta no longer mentions {missing}. The raised ceiling, "
+            + "the 0x485 split or the platforms themselves are gone from "
+            + f"{FORK_OPENDBC}:{OPENDBC_BRANCH}. Refusing to publish.")
+
+    patch = repo.parent / "elantra-delta.patch"
+    patch.write_text(diff, encoding="utf-8", newline="\n")
+    log(f"  recomputed delta: {len(names)} files, {len(diff.splitlines())} lines")
+
+    git(["checkout", "-q", "-B", OPENDBC_BRANCH, master_sha], repo)
+    apply = run(["git", "apply", "-3", str(patch)], cwd=repo, check=False)
+    if apply.returncode != 0:
+        raise SyncError(
+            "the Elantra opendbc delta no longer applies to opendbc master:\n"
+            + (apply.stderr or "").strip()
+            + "\n\nRefusing to publish. Resolve it by hand and commit the fix to "
+            + f"{FORK_OPENDBC}:{OPENDBC_BRANCH}; next week's delta is recomputed from there, "
+            + "so the resolution is not carried forward.")
+
+    # Only treat it as a patch if it actually contains a diff -- a file of nothing but
+    # comments is how someone leaves themselves a note, not a reason to abort the sync.
+    if (local_extras is not None and local_extras.is_file()
+            and "diff --git" in local_extras.read_text(encoding="utf-8")):
+        log("  applying local-extras.patch (your car's firmware, tuning)")
+        extra = run(["git", "apply", "-3", str(local_extras)], cwd=repo, check=False)
+        if extra.returncode != 0:
+            raise SyncError("local-extras.patch no longer applies:\n"
+                            + (extra.stderr or "").strip())
+
+    regenerate_opendbc_docs(repo)
+    return names, diff
+
+
+def regenerate_opendbc_docs(repo: Path) -> None:
+    """Rebuild every OPENDBC_GENERATED file from the merged tree with opendbc's own generator.
+
+    Runs after the delta and local-extras are both in, so each file describes the tree that is
+    actually committed. The old copy is deleted first and must be written again: a generator
+    that fails, or exits 0 without writing, aborts the run rather than shipping a stale table --
+    upstream's copy lacks our platforms and ours lacks upstream's.
+
+    Both generators open their output in text mode with the locale's encoding. PYTHONUTF8 pins
+    the encoding (cp1252 mangles "Skoda" with its caron on Windows), and the result is rewritten
+    with LF, so a local rehearsal commits exactly the bytes CI does from the same inputs.
+    """
+    env = dict(os.environ, PYTHONUTF8="1")
+    env["PYTHONPATH"] = str(repo) + os.pathsep + env.get("PYTHONPATH", "")
+    for path, generator in OPENDBC_GENERATED.items():
+        target = repo / path
+        target.unlink(missing_ok=True)
+        proc = subprocess.run([sys.executable, generator], cwd=repo, env=env,
+                              capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if proc.returncode != 0 or not target.is_file():
+            raise SyncError(
+                f"could not regenerate {path} with {generator} (exit {proc.returncode}):\n"
+                + ((proc.stderr or "") + (proc.stdout or "")).strip()[-2000:]
+                + f"\n\n{path} is generated from the tree, never merged, so there is no stale "
+                + "copy to fall back on. Nothing published.")
+        text = target.read_text(encoding="utf-8")
+        target.write_text(text, encoding="utf-8", newline="\n")
+        log(f"  regenerated {path} with {generator}")
+
+
 def build_opendbc(workdir: Path, dry_run: bool) -> tuple[str, str]:
     """Rebuild our opendbc as upstream master + our own recomputed Elantra delta.
 
@@ -339,67 +458,9 @@ def build_opendbc(workdir: Path, dry_run: bool) -> tuple[str, str]:
 
     master_sha = git(["rev-parse", f"refs/remotes/upstream/{MAIN_BRANCH}"], repo)
     prev_sha = git(["rev-parse", f"refs/remotes/fork/{OPENDBC_BRANCH}"], repo)
-    base = git(["merge-base", master_sha, prev_sha], repo)
-    log(f"  upstream {master_sha[:9]}  ours {prev_sha[:9]}  base {base[:9]}")
-
-    # (1) Our master must descend from an upstream commit and carry something of its own.
-    if base == prev_sha:
-        raise SyncError(
-            f"{FORK_OPENDBC}:{OPENDBC_BRANCH} is an ancestor of "
-            + f"{UPSTREAM_OPENDBC}:{MAIN_BRANCH} -- it carries no Elantra delta at all. Either "
-            + "it was force-mirrored to upstream, or the port was merged upstream. Refusing to "
-            + f"publish an opendbc with no Elantra support. Recover from {OPENDBC_ROLLBACK}.")
-
-    names = [n for n in git(["diff", "--name-only", base, prev_sha], repo).splitlines() if n]
-    # (2) A delta that vanished entirely.
-    if not names:
-        raise SyncError(
-            f"{FORK_OPENDBC}:{OPENDBC_BRANCH} carries no delta over "
-            + f"{UPSTREAM_OPENDBC}:{MAIN_BRANCH}. Refusing to publish an opendbc with no "
-            + "Elantra support.")
-
-    # (3) A delta that grew paths the port has no business touching. The fork's own scheduled
-    #     CARS.md job commits straight to this branch; this names it rather than letting it
-    #     ride along or surface as an unexplained three-way conflict weeks later.
-    stray = [n for n in names if n not in OPENDBC_DELTA_PATHS]
-    if stray:
-        raise SyncError(
-            f"{FORK_OPENDBC}:{OPENDBC_BRANCH} carries changes outside the Elantra port: "
-            + f"{stray}. Disable the scheduled workflows on the opendbc fork, or add the path "
-            + "to OPENDBC_DELTA_PATHS on purpose.")
-
-    diff = run(["git", "diff", "--binary", base, prev_sha], cwd=repo).stdout
-    # (4) A delta that still exists but no longer contains the port.
-    missing = [t for t in REQUIRED_IN_DELTA if t not in diff]
-    if missing:
-        raise SyncError(
-            f"the recomputed Elantra delta no longer mentions {missing}. The raised ceiling, "
-            + "the 0x485 split or the platforms themselves are gone from "
-            + f"{FORK_OPENDBC}:{OPENDBC_BRANCH}. Refusing to publish.")
-
-    patch = repo.parent / "elantra-delta.patch"
-    patch.write_text(diff, encoding="utf-8", newline="\n")
-    log(f"  recomputed delta: {len(names)} files, {len(diff.splitlines())} lines")
-
-    git(["checkout", "-q", "-B", OPENDBC_BRANCH, master_sha], repo)
-    apply = run(["git", "apply", "-3", str(patch)], cwd=repo, check=False)
-    if apply.returncode != 0:
-        raise SyncError(
-            "the Elantra opendbc delta no longer applies to opendbc master:\n"
-            + (apply.stderr or "").strip()
-            + "\n\nRefusing to publish. Resolve it by hand and commit the fix to "
-            + f"{FORK_OPENDBC}:{OPENDBC_BRANCH}; next week's delta is recomputed from there, "
-            + "so the resolution is not carried forward.")
-
     local_extras = Path(__file__).resolve().parent / "local-extras.patch"
-    # Only treat it as a patch if it actually contains a diff -- a file of nothing but
-    # comments is how someone leaves themselves a note, not a reason to abort the sync.
-    if local_extras.is_file() and "diff --git" in local_extras.read_text(encoding="utf-8"):
-        log("  applying local-extras.patch (your car's firmware, tuning)")
-        extra = run(["git", "apply", "-3", str(local_extras)], cwd=repo, check=False)
-        if extra.returncode != 0:
-            raise SyncError("local-extras.patch no longer applies:\n"
-                            + (extra.stderr or "").strip())
+    names, diff = replay_opendbc_delta(repo, master_sha, prev_sha, local_extras)
+
 
     git(["add", "-A"], repo)
     # Pin the commit timestamp to opendbc master's so the result is reproducible: same inputs
@@ -748,7 +809,11 @@ def main() -> int:
                               ("test_elantra_catalog.py", []),
                               # proves the catalog generator still refuses to publish a
                               # promise it has not checked against the bytes on disk
-                              ("test_make_model_catalog.py", [])):
+                              ("test_make_model_catalog.py", []),
+                              # proves generated opendbc files are regenerated from the merged
+                              # tree, never three-way merged -- the 2026-10-05 sync died on a
+                              # CARS.md conflict -- and that a failing generator still aborts
+                              ("test_sync_opendbc_generated.py", [])):
             # Three of these import opendbc (test_scanner_decoders through ceiling_replay,
             # test_torque_projection through CarControllerParams). Point PYTHONPATH at the
             # opendbc we just BUILT rather than relying on opendbc_tests() having pip-installed

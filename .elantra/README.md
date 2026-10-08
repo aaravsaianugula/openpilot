@@ -41,7 +41,7 @@ Almost nothing lives in this repo. The entire Elantra port is 16 files in **open
 | `car/hyundai/tests/test_hyundai.py` | The ceiling reaching the wire, the flag chain, the 0x485 split |
 | `safety/tests/test_hyundai.py` | `TestHyundaiSafetyRaisedLimits`, and the fix for four classes pytest silently skipped |
 | `safety/tests/common.py` | The standstill probe in m/s, and 0x485 out of the cross-mode TX probe |
-| `docs/CARS.md` | Generated; the three new rows |
+| `docs/CARS.md`, `sunnypilot/car/car_list.json` | Generated. Never replayed: sync.py rebuilds both from the merged tree with opendbc's own generators |
 
 **The steering torque ceiling is a flat 409 counts at every speed** for `HYUNDAI_ELANTRA_2024`
 only, against the 384-count HKG default. It is not a speed schedule; there is no lookup table
