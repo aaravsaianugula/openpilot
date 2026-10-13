@@ -355,7 +355,7 @@ def evaluate_joint(window, report, long_proof, envelope, model, long_runtime, la
   trace["path"] = np.full((len(t), 2), np.nan)
   trace["future_action_t"] = np.full((len(t), 2), np.nan)
   trace["steer_request"] = np.zeros(len(t), bool)
-  completed, reason, censor = 0, None, None
+  completed, supported, reason, censor = 0, 0, None, None
   heading, position = 0., np.zeros(2)
   commands, speeds = [], []
   prior = envelope["initialization"]["last_transmitted_counts"]/409.
@@ -415,7 +415,8 @@ def evaluate_joint(window, report, long_proof, envelope, model, long_runtime, la
         break
       state = _state(next_state)
       commands, speeds = [], []
-  nodes = np.arange(0, completed, MICRO_NODES)
+      supported = completed
+  nodes = np.arange(0, supported, MICRO_NODES)
   metrics = turns.window_metrics(reference["curvature"][nodes], (trace["v"]*trace["yaw"])[nodes],
                                 (reference["curvature"]*trace["v"]**2)[nodes], trace["can_torque"][nodes],
                                 dt_s=MACRO_DT, measured_yaw=trace["yaw"][nodes]) if len(nodes) else None
@@ -430,7 +431,8 @@ def evaluate_joint(window, report, long_proof, envelope, model, long_runtime, la
     rejections.append("incomplete_joint_supported_horizon")
   return {"window_id": window["id"], "parameters": parameters, "trace": trace, "long_result": result, "long_cache": receipt,
           "status": "complete" if completed == len(t) and reason is None else "censored" if censor is not None else "unsupported",
-          "reason": reason, "censor_t": censor, "used_steps": completed, "attempted_steps": len(t), "macro_indices": nodes.tolist(),
+          "reason": reason, "censor_t": censor, "used_steps": completed, "supported_steps": supported,
+          "attempted_steps": len(t), "macro_indices": nodes.tolist(),
           "turns": metrics, "fixed_reference_sha256": reference["sha256"], "source_binding": deepcopy(proof),
           "selection_rejections": sorted(set(rejections)), "selection_eligible": False, "complete_controller_candidate": None,
           "contract": dict(CONTRACT), "production_enabled": False}
@@ -439,8 +441,8 @@ def evaluate_joint(window, report, long_proof, envelope, model, long_runtime, la
 def summarize(results, common):
   """Fixed declared population; a failed/missing window never improves coverage."""
   missing = [key for key in common if key not in results or results[key].get("status") != "complete"]
-  turn_summary = turns.summarize({key: results[key].get("turns") for key in common if key in results}, common)
-  long_rows = {key: long._window_score(results[key]["long_result"]) for key in common if key in results and "long_result" in results[key]}
+  turn_summary = turns.summarize({key: results[key].get("turns") for key in common if key not in missing}, common)
+  long_rows = {key: long._window_score(results[key]["long_result"]) for key in common if key not in missing and "long_result" in results[key]}
   metrics = long.summarize(long_rows, common) if not missing and all(long_rows.get(k) is not None for k in common) and common else None
   speed, path = [], []
   for key in common:

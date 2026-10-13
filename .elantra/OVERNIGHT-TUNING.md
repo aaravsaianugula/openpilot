@@ -852,3 +852,32 @@ Final proof is `native-posix-api-v1/phase3-api-v3.windows-postproof.json`; nativ
 source, recorded data, device Params/services and production controllers are unchanged.
 Fresh right-turn inference still requires connectivity to the comma. No road test,
 deployment, vehicle actuation or panda flash occurred.
+
+### Supported-macro scoring and longitudinal payload observations
+
+The moving scorer now excludes failed/partial macros and failed windows from
+turn evidence on the fixed population. A cached native error no longer crashes
+the grid summary. Final Joint 41 host checks, two affected Stop summary cases and
+Ruff passed. One affected actual moving native case passed; its native execution
+function and test AST match final source. The final summary-only filter has its
+own regression. The unchanged actual Stop case was not repeated.
+
+One reviewed, exclusive derivation processed the six existing TRAIN Motion tapes
+without re-extracting logs or fitting a model. Requested acceleration, independent
+post-CarController reported acceleration and actual canValid retain original
+publication clocks and invalid rows. Counts are 35,451/35,437/35,439; usable-row
+counts are 35,409/35,407/35,411 respectively. These are stream quality counts,
+not plant admission. Original hashes are unchanged, and an explicit NPZ open
+allowlist excluded all reserved arrays. Twenty-five real-capnp fixtures and Ruff
+passed before the actual 4.676s worker exit 0. The caller checks helper hashes
+before imports, authenticates the recorded schema and writes additive outputs
+only. Reviewed failure/timeout bounds and exact receipts remain in the tuning tree.
+
+The next algorithm boundary is a genuine five-state two-way empirical response,
+not another unchanged lateral or longitudinal fit. Native LongControl and lateral
+control must share simulated speed/acceleration/rack/yaw/rate and advance together
+after successful complete macros. Candidate reported acceleration requires exact
+native request-to-report processing; recorded output cannot become candidate
+feedback. Existing source/policy/roll/low-speed/ZOH gates remain unchanged.
+Right-turn inference remains pending saved-device connectivity. No accepted full
+tune, new inference, deployment, road test or actuation occurred in this checkpoint.

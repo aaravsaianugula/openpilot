@@ -316,3 +316,35 @@ Final source/binary/snapshot checks, exact commands/exits and the two non-skippe
 JUnit cases live under `native-posix-api-v1/phase3-api-v3` in the tuning artifact tree.
 These synthetic CPU checks do not run RDF inference, identify a real plant or
 validate 100Hz feedback, contact, frozen vision/adaptation or road performance.
+
+The moving joint scorer now distinguishes attempted commands from successfully
+supported complete macros. Failed/partial terminal macros contribute no turn
+metrics, and failed windows cannot contribute turn or longitudinal scores to the
+fixed common population. Cached native exceptions remain named rejected trials
+without aborting the search. Final 41 host checks passed; two affected shared
+stop/hold summary cases passed. The affected actual moving native case passed
+once against the macro fix. The later final delta is one summary-only filter,
+verified separately by regression and exact source/AST comparison.
+
+`controller_motion_longitudinal.py` derives additive observations from retained
+full payloads: requested CarControl acceleration, independently published
+CarOutput acceleration report and actual CarState.canValid. It preserves raw
+uint64 clocks, invalid/duplicate rows and original quality. Missing actuator
+pointers remain unknown; real scalar zero remains zero. Twenty-five real-capnp
+fixture cases passed. A single exclusive six-TRAIN-tape derivation completed in
+4.676 seconds: 35,451 requested and 35,437 reported samples, with 42 and 30 invalid
+rows respectively retained. All original hashes remained unchanged; the NPZ
+allowlist recorded zero reserved-array opens. Neither channel proves delivered
+force or sensor acquisition timing, and source eligibility remains false.
+
+The current native joint runner is still explicitly one-way: its independent
+longitudinal trajectory supplies speed to lateral control. Genuine two-way
+response requires one empirical next-state update for speed, acceleration,
+rack angle, calibrated yaw and unsigned vendor rate after each supported macro.
+Both native controllers must consume that simulated state; long-only trajectory
+caching cannot survive lateral parameter changes. Candidate post-controller
+acceleration must come from pinned native processing or a validated causal
+request-to-report model, never recorded CarOutput or assumed request equality.
+No new fit, inference, physical acceptance or complete candidate follows from
+these additive columns. Exact scoped evidence is in
+`validation-joint-correctness-motion-view-checkpoint.json` under the tuning tree.

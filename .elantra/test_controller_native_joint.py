@@ -171,10 +171,12 @@ def test_request_false_and_unsupported_macro_retain_partial_trace(monkeypatch):
   result = evaluate(args)
   assert result["reason"] == "active_steer_request_false" and result["used_steps"] == 3
   assert not args[-1] and np.isnan(result["trace"]["can_torque"][3:]).all()
+  assert result["supported_steps"] == 0 and result["macro_indices"] == [] and result["turns"] is None
   monkeypatch.setattr(args[5], "create", original)
   monkeypatch.setattr(joint.plant, "predict_macro", lambda *a: joint.plant.Unsupported("outside_support"))
   result = evaluate(args)
   assert result["reason"] == "macro_unsupported:outside_support" and result["used_steps"] == 5
+  assert result["supported_steps"] == 0 and result["macro_indices"] == [] and result["turns"] is None
 
 
 def test_brake_censor_prevents_future_native_calls_and_macro_completion(monkeypatch):
@@ -182,8 +184,45 @@ def test_brake_censor_prevents_future_native_calls_and_macro_completion(monkeypa
   args[0]["tape"]["brake_pressed"][7] = True
   result = evaluate(args)
   assert result["used_steps"] == 7 and result["censor_t"] == args[0]["tape"]["t"][7]
-  assert len(args[-1]) == 1 and result["macro_indices"] == [0, 5]
+  assert len(args[-1]) == 1 and result["supported_steps"] == 5 and result["macro_indices"] == [0]
+  assert len(result["turns"]["reference_direction"]) == 1
   assert np.isnan(result["trace"]["angle"][7:]).all()
+
+
+def test_unsupported_second_macro_preserves_used_commands_without_scoring_failed_transition(monkeypatch):
+  args = example(monkeypatch)
+  predict, calls = joint.plant.predict_macro, []
+  def fail_second(*values):
+    calls.append(1)
+    return joint.plant.Unsupported("second_macro") if len(calls) == 2 else predict(*values)
+  monkeypatch.setattr(joint.plant, "predict_macro", fail_second)
+  result = evaluate(args)
+  assert result["used_steps"] == 10 and result["supported_steps"] == 5
+  assert result["macro_indices"] == [0] and len(result["turns"]["reference_direction"]) == 1
+  assert result["status"] == "unsupported" and result["reason"] == "macro_unsupported:second_macro" and result["censor_t"] is None
+  assert np.isfinite(result["trace"]["can_torque"][:10]).all() and np.isnan(result["trace"]["can_torque"][10:]).all()
+
+
+@pytest.mark.parametrize("failure", ["unsupported", "censored"])
+def test_summary_excludes_failed_window_turn_points_on_fixed_common_population(monkeypatch, failure):
+  args = example(monkeypatch)
+  complete = evaluate(args)
+  if failure == "censored":
+    args[0]["tape"]["brake_pressed"][7] = True
+  else:
+    predict, calls = joint.plant.predict_macro, []
+    def fail_second(*values):
+      calls.append(1)
+      return joint.plant.Unsupported("second_macro") if len(calls) == 2 else predict(*values)
+    monkeypatch.setattr(joint.plant, "predict_macro", fail_second)
+  failed = evaluate(args)
+  assert failed["status"] == failure and failed["turns"] is not None
+  metrics = joint.summarize({"complete": complete, "failed": failed}, ["complete", "failed"])
+  assert metrics["missing_windows"] == metrics["turns"]["missing_windows"] == ["failed"]
+  assert metrics["turns"]["common_window_ids"] == ["complete", "failed"]
+  right = metrics["turns"]["tracking"]["right"]
+  assert right["windows"] == 1 and right["points"] == len(complete["turns"]["reference_direction"])
+  assert all(name == "complete" for name, _ in right["point_ids"])
 
 
 @pytest.mark.parametrize("fault", ["test", "source", "model_source", "cp", "lp_future", "hash", "zero_speed"])
@@ -241,6 +280,29 @@ def test_cached_long_result_is_reused_and_mutation_cannot_poison_it(monkeypatch)
   second = evaluate(args, cache=cache, parameters={"long": None, "lateral": {"factor": 3., "friction": .1}})
   assert len(calls) == 1 and np.all(second["trace"]["v"] > 0)
   assert first["long_cache"]["result_sha256"] == second["long_cache"]["result_sha256"]
+
+
+def test_cached_long_native_failure_keeps_every_moving_grid_row_and_common_id(monkeypatch):
+  args = example(monkeypatch)
+  window, report, env, model, lr, lat, _ = args
+  lp = long_proof(window, report, lr)
+  bound = joint.bind_proof(window, report, lp, env, model, lr, lat)
+  calls = []
+  def fail(*a, **k):
+    calls.append(1)
+    raise RuntimeError("retained native long failure")
+  monkeypatch.setattr(joint.long, "evaluate_trial", fail)
+  grid = [{"long": None, "lateral": {"factor": factor, "friction": .1}} for factor in (2., 3.)]
+  result = joint.validation_search([window], report, {window["id"]: lp}, {window["id"]: env}, model, lr, lat,
+                                   {window["id"]: bound}, grid=grid, lateral_grid=GRID)
+  assert calls == [1] and len(result["rows"]) == 2
+  for row in [result["baseline"], *result["rows"]]:
+    assert row["common_window_ids"] == [window["id"]] and row["coverage"] == 0
+    assert row["metrics"]["missing_windows"] == row["metrics"]["turns"]["missing_windows"] == [window["id"]]
+    assert row["metrics"]["long"] is None and row["failures"][0]["status"] == "rejected"
+    cached = row["results"][window["id"]]["long_result"]
+    assert cached["error_type"] == "RuntimeError" and "retained native long failure" in cached["traceback"] and "trace" not in cached
+  assert result["selection"] is None and result["complete_controller_candidate"] is None
 
 
 def test_joint_summary_rejects_missing_window_instead_of_improving_coverage(monkeypatch):
