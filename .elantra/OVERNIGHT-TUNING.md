@@ -768,3 +768,26 @@ hold plant. Raw-plan availability and undefined zero-speed curvature are differe
 contracts; no curvature, rack state, contact response or model-stop ground truth
 may be invented. Current source, roll uncertainty, policy and low-speed evidence
 remain insufficient. No road test, deployment, actuation or flash occurred.
+
+### Separate low-speed and hold response: source checks
+
+The new empirical stop/hold model preserves exact five-node active/request patterns
+and allows measured inactive angle/yaw/rate changes instead of freezing them.
+Source/static/typed-policy timing, zero driver input, raw validity, independent
+output/echo clocks, support and no-extrapolation gates remain explicit. It keeps
+contact, nonreversing and100Hz feedback validation false, with no selectable tune.
+The final35-case host suite and Ruff passed. Independent review reproduced a real
+prefix bug: a phased car-state predecessor consumed at start-minus20ms could sit
+outside the15ms quality span. Every consumed as-of row is now checked; three first-red
+failures and nine affected passing cases are retained with original source snapshots.
+
+No data fit was repeated. The new native approach/stop/hold runner remains under
+implementation/review, and device connectivity still blocks actual native evidence.
+The Elantra overlay guard command passed all115 checks without modifying controllers.
+
+Root also traced the missing calibrated roll uncertainty to the committed location
+publisher: both recorded-base e748 and current-base13a blobs explicitly initialize
+that std vector with NaNs. Calibrated angular velocity receives computed covariance.
+The blobs are identical and source-bound in validation-llk-roll-uncertainty-source-v1.
+This explains a publisher limitation, not the dirty runtime or a valid uncertainty
+substitute. Existing selection/source/uncertainty gates have not been relaxed.

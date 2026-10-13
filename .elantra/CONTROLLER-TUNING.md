@@ -256,3 +256,21 @@ moving joint diagnostics; inactive lateral response, low-speed transition/hold,
 Stop/hold work must retain the continuous native handle and require its own
 empirical request-false/mixed-pattern response, without inventing zero curvature
 or a frozen rack state at standstill.
+
+`controller_multirate_stop_hold.py` adds that separate empirical response hypothesis.
+Its24 features retain initial angle/yaw/unsigned rate, physical roll, five speeds,
+five unshifted returned-CAN commands and exact effective-active/request patterns.
+Inactive zero torque is legitimate; active request-false and unsupported patterns
+are refused. Contact, nonreversing hold and100Hz feedback validation remain false.
+Full static identity,16 typed Params, causal anchors and every consumed raw row
+must pass before support is counted. Thirty-five synthetic checks and Ruff passed.
+Independent review found a phased prefix predecessor outside the original quality
+span; first-red regressions and the corrected as-of quality checks are preserved.
+No actual hold fit or native stop/hold execution has run.
+
+The committed location publisher at both recorded base `e748a4d` and current base
+`13aedc5` explicitly writes NaNs for calibrated orientation standard deviation.
+Finite roll remains present, but its calibrated uncertainty is unknown by publisher
+design. This is not evidence of damaged logs, nor proof of the dirty runtime source.
+No uncalibrated covariance or zero uncertainty is substituted. The source receipt
+`validation-llk-roll-uncertainty-source-v1.json` preserves both exact Git blob hashes.
