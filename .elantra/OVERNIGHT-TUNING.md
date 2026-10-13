@@ -426,7 +426,7 @@ is unchanged. See `recent-clips/storage-guard-livecheck.json`.
 log/camera proof and per-frame source/local-index mapping. Thirty-six tests and
 Ruff passed; actual read-only two-log preflight confirmed276 causal inputs and
 identical FULL CP/SP snapshots, including fields omitted from old sidecars. Its
-real-camera path remains unexercised because selected footage is unavailable.
+real-camera path was unexercised at that checkpoint because b1 footage was unavailable.
 Single-source consumers must explicitly bind both sources or reject the packet.
 
 The new `videos/rdf-v2-real-recent-turning-native.mp4` overlays actual native
@@ -459,9 +459,32 @@ See `recent-seam-code-validation.json`, `recent-seam-repair-v1/manifest.json` an
 `recent-seam-stops-amendment-v1.json`.
 
 The frozen replacement stopping diagnostic spans b7--25/26 with320 exact pairs,
-132 genuine history and188 subsequent outputs. Cameras for25 are newly requested;
-26 is already verified locally and its selected indices0..153 do not overlap the
+132 genuine history and188 subsequent inputs. The two25 cameras were subsequently
+downloaded and all four source files verified; only74,943,401bytes were newly
+transferred. Segment26's selected indices0..153 do not overlap the
 earlier replay. Only37 scored exposures precede the exact raw brake event; output
 availability must also precede that censor. Subsequent footage is takeover-only
 display, excluded from controlled scoring. Preparation and inference receipts,
 not this selection, establish whether that diagnostic actually ran.
+
+The first real two-source packet build exited0 in55.319s, with320 exact IDs,
+continuous history across the50.000682ms segment boundary and no raw host files.
+Both compressed camera streams were separately decompressed in bounded RAM and
+verified against their777,256,960byte native hashes. Full source/static contracts,
+calibration, action timing and input files stayed unchanged. See
+`recent-clips/build-stopping-intervention-v1-receipt.json`; packet preparation
+does not establish inference completion or controlled stopping performance.
+
+`controller_longitudinal_comparison.py` pins the exact historical selected.4/.4
+candidate, search trace and identified plant. Its predeclared mixed-direction
+validation window was chosen by target-direction support, not candidate error.
+It generates deterministic paired baseline/candidate traces without refitting,
+searching or opening test data. Both simulated paths explicitly use recorded
+future yaw for illustration; this is not a lateral response prediction.
+Nineteen scoped tests and Ruff passed. The actual30-frame
+`videos/historical-selected-longitudinal.mp4` render exited0, with calibrated
+camera overlay, conditional BEV and measured/simulated command, acceleration and
+speed traces. A still and seven-frame sequence were inspected. This3s window's
+target-acceleration MAE is0.071452 baseline versus0.051931 selected, descriptive
+only. Exact phase receipts preserve commands, exits, stdout/stderr and failures.
+Earlier simulation videos used different gains and do not represent this result.
