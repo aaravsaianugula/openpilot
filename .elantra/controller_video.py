@@ -263,13 +263,19 @@ def compose(frame, data, replay, timestamp, origin, segment, intrinsics, project
     text(draw, (26, 116), "Recorded model trajectory unavailable", 15, MODEL)
   draw.rounded_rectangle((1072, 112, 1584, 700), radius=12, fill=PANEL)
   text(draw, (1092, 128), "BEV / measured ego frame", 22)
-  text(draw, (1092, 158), "+x forward • +y right • metres", 15, MUTED)
-  x0, y0, scale_x, scale_y = 1328, 654, 13., 6.5
-  for x in range(0, 71, 10):
+  extent = max((float(np.max(path[:, 0])) for path in all_paths if len(path)), default=0.)
+  forward_range = max(6., min(70., math.ceil((extent + 1.) / 5) * 5.))
+  lateral_range = max(3., min(15., forward_range * .22))
+  text(draw, (1092, 158), f"+x forward • +y right • metres | view {forward_range:g} m", 15, MUTED)
+  x0, y0, scale_x, scale_y = 1328, 654, 220. / lateral_range, 462. / forward_range
+  forward_tick = 1 if forward_range <= 10 else (5 if forward_range <= 35 else 10)
+  for x in range(0, int(forward_range) + 1, forward_tick):
     py = y0 - x * scale_y
     draw.line((1095, py, 1562, py), fill="#344454")
     text(draw, (1096, py - 19), str(x), 13, MUTED)
-  for y in (-15, -10, -5, 0, 5, 10, 15):
+  lateral_tick = 1 if lateral_range <= 5 else 5
+  lateral_bound = int(lateral_range / lateral_tick) * lateral_tick
+  for y in range(-lateral_bound, lateral_bound + 1, lateral_tick):
     px = x0 + y * scale_x
     draw.line((px, 192, px, y0), fill="#344454")
     text(draw, (px - 9, 662), str(y), 12, MUTED)
@@ -496,6 +502,7 @@ def render(args):
              "analysis_calibration_max_age_s": .5, "held_calibration_rows": int(np.count_nonzero(data["calibration_held"])),
              "forecast_semantics": "offline simulation; frozen recorded targets; tuned controller not driven; no model feedback",
              "recorded_model_path_alignment": "exact EncodeIdx capture origin, compensated by measured past motion at displayed timestamp",
+             "bev_scale": "adaptive 6-70m forward extent from available paths; per-frame axes and view range labelled in metres",
              "trace_semantics": {"green": "recorded measured torque, acceleration, speed, yaw",
                                  "baseline_torque_tuned_torque": "controller commands",
                                  "baseline_accel_tuned_accel": "acceleration commands, not plant/measured acceleration",

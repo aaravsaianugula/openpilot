@@ -176,10 +176,48 @@ driver-free quantitative evaluation admits only 15 of 108 one-second windows,
 and zero two/three-second windows because of driver interventions. Do not turn
 those exclusions into a controller-performance claim.
 
-A second packet is being built from `0000000c--6c5e8ce437--21`, start32s/duration24s,
-480 fresh pairs, covering one uninterrupted comma-controlled stop. Its historical
-source gitlink is unknown and remains separate from the current replay checkout.
-The packet builder owns one transfer; the benchmark owner owns one GPU process.
+The second STOP replay **completed**, exit 0, from `0000000c--6c5e8ce437--21`,
+start32s/duration24s, 480 fresh pairs, covering an uninterrupted comma-controlled
+stop. Its historical source gitlink is unknown and remains separate from the
+current replay checkout. All 348 post-history frames are deadline-admissible:
+full compute median37.70ms/p9542.18ms/max49.97ms. Preloop warmup changed image queues;
+the canonical queue/cache reset restored all 14 temporal arrays before real input,
+and the full warmup/verification cost6.35s is recorded. Battery65->65%, max45.3C.
+`rdf-v2/rdf-stop-0c-24s.{json,npz,log}` and transfer/executed-source receipts retain
+these facts. No production changes or actuation occurred.
+
+`videos/rdf-v2-real-stop-0c.mp4` has 240 calibrated frames and measured GT; 173 show
+post-history fresh RDF. Approach, near-stop and a six-frame stopping sequence were
+inspected. The BEV now uses explicitly labelled 6-70m forward scales so the last
+metres of a stop remain visible. Quantitative capture-aligned comparison on this
+single historical route admits 287 overlapping three-second frame windows:
+fresh RDF mean endpoint error .480m versus logged model1.106m. These are correlated
+prediction labels on one clip, not independent trials or a tuned-controller result.
+At standstill raw RDF acceleration may be slightly positive while `shouldStop` is
+true. A native controller replay must preserve that stop flag and the LongControl
+state machine; acceleration sign alone must never infer a restart.
+
+## New data acquisition for stronger plant identification
+
+`device-recent-inventory.json` found397 device segments/42 routes, of which395
+segments/41 routes are missing from both desktop raw archives. Missing rlogs total
+3.906GiB;394 of those segments also have both cameras on the device. Latest device
+route is `000001d8--f62ae0bcb9` (35 segments). The desktop archive reaches route10a,
+so earlier rough references to ee as its latest route were incomplete.
+
+The archive worker is authorized to pull **only** those395 missing rlogs first,
+using one persistent documented rsync transport, source/target hashes, partial
+staging, atomic no-overwrite completion, PID/progress receipts and sync.log.
+Destination is authoritative `D:\comma_four\routes\<flat-segment>\rlog.zst`.
+Do not fetch all26GiB of cameras indiscriminately; select footage after analysis.
+Check existing worker/process/receipts before any restart to avoid duplicate pulls.
+
+The existing extractor accepts logs without local cameras and explicitly records
+missing videos in its manifest. Once the pull is verified, extract only the new
+root into `dataset-recent`, with the same schema snapshot and six workers. Do not
+rerun or overwrite the original1426-record dataset. A successful log extraction
+does not mean footage/RDF readiness. Check recent whole-route IDs against existing
+immutable held-out routes before training, and keep actual provenance cohorts.
 
 `controller_search.py` searches the finite grid 0, .025, .05, .1, .2, .4, with
 separate acceleration/braking gains, target tracking selection, identical supported
