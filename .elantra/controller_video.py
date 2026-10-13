@@ -488,11 +488,13 @@ def render(args):
     raise RenderError(f"decoded source has {count} frames but EncodeIdx maps {len(mapping[0])}; refusing ambiguous mapping")
   intrinsics, projection_label = projection_config(data, metadata, (width, height))
   args.out.parent.mkdir(parents=True, exist_ok=True)
-  decode_cmd = ["ffmpeg", "-v", "error", "-i", str(source), "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
+  decode_cmd = ["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-threads", "2", "-filter_threads", "1",
+                "-i", str(source), "-fps_mode", "passthrough", "-threads:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
   output_size = "1600x1200" if native is not None else "1600x1000"
-  encode_cmd = ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", output_size,
+  encode_cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-threads", "2", "-filter_threads", "1",
+                "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", output_size,
                 "-r", str(args.fps), "-i", "pipe:0", "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "20",
-                "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(args.out)]
+                "-threads:v", "2", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(args.out)]
   receipt_frames, horizons, calibrated_frames, fresh_available = [], [], 0, 0
   native_available, native_uncertain = 0, 0
   with subprocess.Popen(decode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as decoder, \

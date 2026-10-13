@@ -361,3 +361,22 @@ named partial files and receipts. Thirty-seven owned packet tests and Ruff passe
 see `recent-clips/compressed-builder-validation.json` and v5 per-build receipts.
 The device owner serializes staging, expansion verification, monitored inference
 and new comparison videos. These packets are preparation proof, not model results.
+
+Both new RDF jobs subsequently completed, with exact 640 consecutive camera pairs
+each and 132 genuine history frames excluded per job. All 508 scored outputs in
+each clip met conservative serial availability. Scored compute median/p95/max was
+38.214/42.501/68.939ms for acceleration and 38.043/41.789/72.508ms for turning.
+Startup outliers remain recorded separately; these short runs do not establish
+sustained road acceptance. Both stayed offroad with battery65%; peak monitored
+temperatures were45.9C and47.6C. No services, params or vehicle state were changed.
+
+`videos/rdf-v2-real-recent-acceleration.mp4` and
+`videos/rdf-v2-real-recent-turning.mp4` each contain320 distinct calibrated frames,
+including253 fresh-RDF-visible frames, with real measured motion and hardware
+traces. Per-video livecheck receipts record actual commands/exits/source hashes,
+inspected stills and six-frame sequences. These are fixed-image prediction
+comparisons, not optimized controller outcomes. There is no accepted current/RDF
+full controller tune. The newer extraction has390 decoded logs across40 decoded
+routes;41 raw routes were transferred. The dirty f9 source's empty recorded GitDiff
+does not establish its actual opendbc pin; the source-provenance audit preserves
+that missing evidence rather than substituting the base commit's gitlink.
