@@ -419,3 +419,30 @@ checkpoint. Unknown recorded source/policy/roll uncertainty, cold prefix,100Hz Z
 joint median coherence, actuator-history sufficiency and low-speed/contact evidence
 still prevent selection. Production remains false. Exact evidence is in
 `validation-native-three-adapter-checkpoint.json` under the tuning tree.
+
+`controller_multirate_joint_stop_hold.py` adds a separate pure five-state
+low-speed/hold hypothesis. Its31 features preserve initial state, roll, published
+requested acceleration, independent held reports, CAN counts and exact consumed
+effective-active/request patterns. Initial and next hardware standstill are
+independent categorical observations. Conflicting next categories are unsupported;
+there is no speed-derived default, contact clamp, rack freeze or invented restart.
+Explicit compute/consume/apply/echo witnesses must match source, original/view
+hashes and latest causal CC/CS snapshots, including invalid interpositions. These
+witnesses are caller-authenticated observations, not proof of delivered actuation.
+
+Thirty-five synthetic host cases/Ruff and bounded independent clock/standstill/
+admission review passed. Real-data fit and native recurrence integration remain
+unperformed. The existing older stop runner still caches its longitudinal
+trajectory; it cannot supply genuine two-way stopping. This new predictor must be
+connected to the shared event recurrence without that cache before a native joint
+stopping algorithm can be claimed. Source/contact/ZOH/history/uncertainty gates
+continue to disable candidate selection and production.
+
+The new24s right-turn RDF replay and video are complete:480 synchronized pairs,
+132 genuine history frames and348 timing-admissible later outputs. Together the
+six completed clips contain2,800 pairs/2,008 timely outputs. The right video has240
+calibrated flat-ground display frames and173 fresh RDF overlays, plus measured/
+command hardware traces. Source/model/runtime/reset/transfer/phase-storage proofs
+and actual still/sequence inspection are saved in
+`validation-right-rdf-video-checkpoint.json`. It freezes recorded images and motion;
+no optimized current tune or physical improvement is shown.

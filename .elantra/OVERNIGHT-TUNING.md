@@ -940,3 +940,31 @@ Preparation/proof-only path and symlink-stat failures are preserved without anot
 native run. The full tuning goal remains incomplete: real source/policy, roll
 uncertainty, latency history, ZOH and low-speed/contact support still forbid a
 current full candidate. No deployment, road test, actuation or panda flash occurred.
+
+### Right-turn replay and shared low-speed component
+
+The owner explicitly approved removing exactly10 verified replay-input copies.
+One bounded cleanup removed5,442,267,182 bytes, preserving original footage,
+models/results and all14 protected files/three source hashes. Native storage
+guards then passed each new right-packet phase. Transfer, two streaming expansions,
+one exact RDF inference and result pull all exited0. No old inference was repeated.
+
+The right clip adds480 real narrow/wide pairs with132 genuine history/348 later
+outputs; all348 meet the replay deadline. Median/p95 compute is38.7/45.8ms with
+startup/warmup separate. One new video render exited0 in27.985s:240 distinct
+calibrated frames/173 fresh RDF overlays. Actual peak and eight-frame sequence
+inspection confirms right-turn camera/BEV/trajectory/hardware traces and explicit
+fixed-image/unvalidated labels. No continuous playback or physical tuning gain is
+claimed. Six verified clips now total2,800 pairs/2,008 timely outputs. Packet and
+results remain retained; every future allocation needs a fresh storage guard.
+
+A new pure five-state low-speed/hold predictor passed35 synthetic host cases,
+Ruff and bounded independent review. Exact queued compute/CC-consume/CS/apply/echo
+clocks, initial standstill and next categorical standstill remain separate from
+speed. Ambiguous categories and unsupported active/request patterns are refused.
+Original unknown source eligibility cannot be promoted. First-red unimplemented
+API, duplicate-declaration and malformed-metadata failures are retained.
+No real fit or native hook ran. Next integration must extend the shared native
+event recurrence through approach/stop/hold without the old LongCache, preserving
+shouldStop, continuous handles, causal flags, censoring and fixed geometry prefixes.
+Full candidate selection and production remain disabled.
