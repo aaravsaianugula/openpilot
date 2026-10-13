@@ -428,3 +428,14 @@ Ruff passed; actual read-only two-log preflight confirmed276 causal inputs and
 identical FULL CP/SP snapshots, including fields omitted from old sidecars. Its
 real-camera path remains unexercised because selected footage is unavailable.
 Single-source consumers must explicitly bind both sources or reject the packet.
+
+The new `videos/rdf-v2-real-recent-turning-native.mp4` overlays actual native
+lateral requests and native driver/rate-limited CAN-equivalent counts against
+recorded hardware. It has320 calibrated frames,253 fresh RDF paths and252
+admitted native samples; first-availability phase differences are not backfilled.
+Every native sample remains initialization-uncertain. The helper binds source/
+RDF/output/adapter hashes and recomputes native driver/rate/angle enforcement;
+clipped curvature is displayed, not independently replayed. Twenty-one helper
+tests and32 affected renderer tests passed; the actual render exited0, with a
+peak-curve still and six-frame sequence inspected. No model/controller inference
+was repeated. Exact receipts sit beside the new video; originals are preserved.

@@ -20,6 +20,7 @@ from controller_model_overlay import (
   RenderError, causal_index, contiguous_path, capture_path, measured_forecasts, model_path, native_index, rdf_path,
   validate_native_output, validate_rdf_output,
 )
+from controller_lateral_overlay import lateral_index, validate_lateral_output
 
 GT = "#77edac"
 BASELINE = "#67b7ff"
@@ -224,8 +225,8 @@ def calibration_at(data, timestamp, assumed_height):
   return np.zeros(3), assumed_height, False
 
 
-def compose(frame, data, replay, timestamp, origin, segment, intrinsics, projection_label, ground_height, rdf=None, native=None):
-  canvas = Image.new("RGB", (1600, 1200 if native is not None else 1000), BG)
+def compose(frame, data, replay, timestamp, origin, segment, intrinsics, projection_label, ground_height, rdf=None, native=None, native_lateral=None):
+  canvas = Image.new("RGB", (1600, 1200 if native is not None or native_lateral is not None else 1000), BG)
   draw = ImageDraw.Draw(canvas)
   text(draw, (24, 10), "CN7 / comma 4    CONTROLLER EXPERIMENT", 24)
   subtitle = ("FRESH RDF v2 / dual-camera replay — fixed recorded images; controller not deployed" if rdf is not None else
@@ -245,6 +246,13 @@ def compose(frame, data, replay, timestamp, origin, segment, intrinsics, project
                         + f"RDF raw {native['rdf_accel_target'][ni]:+.3f} | native command {native['native_accel'][ni]:+.3f} m/s² | "
                         + f"initialization {initialization}")
     text(draw, (24, 94), "Native LongControl 100 Hz diagnostic | " + native_caption + " | tune unvalidated", 14, TUNED)
+  if native_lateral is not None:
+    ni = lateral_index(native_lateral, timestamp)
+    caption = "unavailable; no admitted sample/backfill"
+    if ni is not None:
+      caption = (f"raw request {native_lateral['native_torque'][ni]:+.3f} | CAN-equivalent {native_lateral['native_can_torque'][ni]:+.0f} | " +
+                 f"request {int(native_lateral['steer_request'][ni])} / TX fault {int(native_lateral['torque_fault'][ni])} | cold initialization UNCERTAIN")
+    text(draw, (24, 94), "Current-master native lateral 100 Hz diagnostic | " + caption, 14, TUNED)
   source_width, source_height = frame.size
   frame = frame.resize((1040, 588))
   canvas.paste(frame, (16, 112))
@@ -307,7 +315,7 @@ def compose(frame, data, replay, timestamp, origin, segment, intrinsics, project
     caption += " | tuned unavailable"
   text(draw, (1092, 682), caption, 14, MUTED)
   legend = ((24, "Measured future GT", GT), (350, "Logged model path", BASELINE),
-            (690, "Native cmd / state" if native is not None else "Tune not validated", TUNED),
+            (690, "Native lateral cmd" if native_lateral is not None else ("Native cmd / state" if native is not None else "Tune not validated"), TUNED),
             (1020, "Fresh RDF v2 path", MODEL)) if rdf is not None else (
               (24, "Measured future GT", GT), (350, "Baseline simulation", BASELINE),
               (690, "Tuned simulation", TUNED), (1020, "Recorded model path", MODEL))
@@ -336,6 +344,8 @@ def compose(frame, data, replay, timestamp, origin, segment, intrinsics, project
   if native is not None:
     trace_caption = ("Green measured • Blue logged • Purple RDF raw targets • Orange native LongControl commands; "
                      + "recorded motion held fixed, no plant simulation.")
+  if native_lateral is not None:
+    trace_caption = "Native lateral commands on fixed recorded motion/feedback; cold initialization uncertain; tune unvalidated; no actuation."
   text(draw, (24, 767), trace_caption,
        11, MUTED)
   measured_torque = data["can_torque"] if "can_torque" in data else data["torque"]
@@ -369,6 +379,18 @@ def compose(frame, data, replay, timestamp, origin, segment, intrinsics, project
       stops = np.where(native["admitted"], native["should_stop"].astype(float), np.nan)
       plot_trace(draw, (16, 1000, 1584, 1184), "Native state: orange 0 off / 1 pid / 2 stopping; purple RDF shouldStop 0 / 1",
                  [(native["t"], states, TUNED), (native["t"], stops, MODEL)], timestamp, (0, 2.2))
+    if native_lateral is not None:
+      nl = native_lateral
+      plot_trace(draw, (16, 1000, 792, 1184), "Native steering: orange raw×409 / cyan applied / green actual",
+                 [(nl["t"], nl["native_torque"] * 409, TUNED), (nl["t"], nl["native_can_torque"], "#70d5ff"),
+                  (data["t"], measured_torque, GT)], timestamp, (-450, 450), 409)
+      plot_trace(draw, (808, 1000, 1188, 1184), "Curvature: clipped / VM / RDF",
+                 [(nl["t"], nl["desired_curvature"], TUNED), (nl["t"], nl["measured_curvature"], GT),
+                  (rdf["output_ready_t"], fresh_curvature, MODEL)], timestamp, (-.04, .04))
+      flags = [(nl["t"], np.where(nl["admitted"], nl[key].astype(float), np.nan), color)
+               for key, color in (("steer_request", "#70d5ff"), ("torque_fault", TUNED), ("steer_limited_feedback", MODEL))]
+      plot_trace(draw, (1204, 1000, 1584, 1184), "Request / TX fault / feedback", flags, timestamp, (0, 1.1))
+      text(draw, (24, 1187), "BEV remains a fresh prediction on recorded motion. No tuned physical trajectory or driving-improvement claim.", 11, MUTED)
     return canvas, horizon, calibrated
   for j, (title, measured, baseline, tuned, limits, rail) in enumerate(traces):
     left = 16 + 396 * j
@@ -449,15 +471,22 @@ def render(args):
       raise RenderError(f"{executable} is not installed")
   rdf_file = getattr(args, "rdf_output", None)
   native_file = getattr(args, "native_output", None)
+  lateral_file = getattr(args, "native_lateral_output", None)
+  if native_file is not None and lateral_file is not None:
+    raise RenderError("simultaneous native longitudinal/lateral panels are not supported")
   extra_sources = [] if rdf_file is None else [rdf_file, rdf_file.with_suffix(".json")]
   source_log = None
-  if native_file is not None:
+  if native_file is not None or lateral_file is not None:
     if rdf_file is None:
-      raise RenderError("--native-output requires the exact --rdf-output")
+      raise RenderError("native output requires the exact --rdf-output")
     source_log = next((args.segment / name for name in ("rlog.zst", "rlog.bz2", "rlog") if (args.segment / name).is_file()), None)
     if source_log is None:
       raise RenderError("native evidence binding requires the raw source rlog")
-    extra_sources.extend((native_file, native_file.with_suffix(".json"), source_log))
+    evidence_file = native_file if native_file is not None else lateral_file
+    extra_sources.extend((evidence_file, evidence_file.with_suffix(".json"), source_log))
+    if lateral_file is not None:
+      extra_sources.extend((Path(__file__).with_name("controller_native_lateral.py"),
+                            Path(__file__).resolve().parent.parent / "opendbc_repo/opendbc/car/lateral.py"))
   validate_output_path(args.out, args.segment, args.data, args.replay, extra_sources)
   metadata_file = args.data.with_suffix(".json")
   metadata = json.loads(metadata_file.read_text(encoding="utf-8")) if metadata_file.exists() else {}
@@ -474,6 +503,12 @@ def render(args):
     native = dict(np.load(native_file, allow_pickle=False))
     native_receipt = json.loads(native_file.with_suffix(".json").read_text(encoding="utf-8"))
     validate_native_output(native, native_receipt, rdf, sha256(rdf_file), sha256(source_log), sha256(native_file))
+  native_lateral, lateral_receipt = None, None
+  if lateral_file is not None:
+    native_lateral = dict(np.load(lateral_file, allow_pickle=False))
+    lateral_receipt = json.loads(lateral_file.with_suffix(".json").read_text(encoding="utf-8"))
+    validate_lateral_output(native_lateral, lateral_receipt, rdf, sha256(rdf_file), sha256(source_log), sha256(lateral_file),
+                            sha256(Path(__file__).with_name("controller_native_lateral.py")))
   source = args.segment / "fcamera.hevc"
   if not source.is_file():
     raise RenderError(f"missing narrow camera footage: {source}")
@@ -490,13 +525,14 @@ def render(args):
   args.out.parent.mkdir(parents=True, exist_ok=True)
   decode_cmd = ["ffmpeg", "-nostdin", "-v", "error", "-xerror", "-threads", "2", "-filter_threads", "1",
                 "-i", str(source), "-fps_mode", "passthrough", "-threads:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
-  output_size = "1600x1200" if native is not None else "1600x1000"
+  output_size = "1600x1200" if native is not None or native_lateral is not None else "1600x1000"
   encode_cmd = ["ffmpeg", "-nostdin", "-y", "-v", "error", "-threads", "2", "-filter_threads", "1",
                 "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", output_size,
                 "-r", str(args.fps), "-i", "pipe:0", "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "20",
                 "-threads:v", "2", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(args.out)]
   receipt_frames, horizons, calibrated_frames, fresh_available = [], [], 0, 0
   native_available, native_uncertain = 0, 0
+  lateral_available = 0
   with subprocess.Popen(decode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as decoder, \
        subprocess.Popen(encode_cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE) as encoder:
     try:
@@ -511,7 +547,7 @@ def render(args):
           frame = Image.frombytes("RGB", (width, height), raw)
         source_t = float(mapping[1][wanted])
         canvas, horizon, calibrated = compose(frame, data, replay, source_t, origin, args.segment.name,
-                                              intrinsics, projection_label, args.ground_height, rdf, native)
+                                              intrinsics, projection_label, args.ground_height, rdf, native, native_lateral)
         if rdf is not None:
           fresh_available += rdf_path(rdf, data, source_t)[1] is not None
         encoder.stdin.write(canvas.tobytes())
@@ -529,6 +565,16 @@ def render(args):
             "command": float(native["native_accel"][ni]), "state": int(native["native_state"][ni]),
             "should_stop": bool(native["should_stop"][ni]), "raw_rdf_accel": float(native["rdf_accel_target"][ni]),
             "initialization_uncertain": bool(native["initialization_uncertain"][ni])}
+        if native_lateral is not None:
+          ni = lateral_index(native_lateral, source_t)
+          lateral_available += ni is not None
+          receipt_frames[-1]["native_lateral"] = None if ni is None else {
+            "sample_t": float(native_lateral["t"][ni]), "sample_age_ms": float((source_t - native_lateral["t"][ni]) * 1000),
+            "raw_torque": float(native_lateral["native_torque"][ni]), "applied_can_equivalent": float(native_lateral["native_can_torque"][ni]),
+            "clipped_curvature": float(native_lateral["desired_curvature"][ni]),
+            "raw_rdf_curvature": float(rdf["desired_curvature"][native_lateral["rdf_index"][ni]]),
+            "steer_request": bool(native_lateral["steer_request"][ni]), "torque_fault": bool(native_lateral["torque_fault"][ni]),
+            "initialization_uncertain": bool(native_lateral["initialization_uncertain"][ni])}
       encoder.stdin.close()
       if encoder.wait() != 0:
         raise RenderError("ffmpeg encoder failed: " + encoder.stderr.read().decode(errors="replace"))
@@ -577,6 +623,15 @@ def render(args):
                    native_semantics="current-master 100 Hz native LongControl diagnostic on fixed recorded motion; tune unvalidated; no plant response",
                    native_initialization=native_receipt["initialization"])
     receipt["trace_semantics"]["orange"] = "native LongControl command/state; admitted samples only, no backfill"
+  if native_lateral is not None:
+    receipt.update(native_lateral_output=str(lateral_file.resolve()), native_lateral_output_sha256=sha256(lateral_file),
+                   native_lateral_receipt_sha256=sha256(lateral_file.with_suffix(".json")), native_lateral_available_frames=int(lateral_available),
+                   native_lateral_adapter_sha256=lateral_receipt["run_adapter_sha256"],
+                   native_lateral_semantics=("Current-master100Hz native command on frozen measured motion/feedback; " +
+                                             "all initialization uncertain; no actuation."),
+                   native_lateral_validation=("Hash/clock/RDF-index/admission plus exact native driver/rate/angle enforcement. " +
+                                              "Clipped curvature not independently replayed."))
+    receipt["trace_semantics"]["orange"] = "native raw torque request and clipped curvature; cyan post-driver/rate CAN-equivalent counts; no physical response"
   receipt_path = args.out.with_suffix(".json")
   receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
   print(json.dumps({"video": str(args.out), "receipt": str(receipt_path), "frames": len(times),
@@ -590,6 +645,7 @@ def main():
   parser.add_argument("--replay", type=Path, required=True)
   parser.add_argument("--rdf-output", type=Path, help="Fresh rdf_bench output; show model evidence with no candidate-performance claim")
   parser.add_argument("--native-output", type=Path, help="Hash-bound native LongControl NPZ and JSON; diagnostic commands/state with no tune claim")
+  parser.add_argument("--native-lateral-output", type=Path, help="Hash-bound current-master lateral commands/limiter diagnostic; recorded motion remains fixed")
   parser.add_argument("--out", type=Path, required=True)
   parser.add_argument("--start", type=float, default=0.)
   parser.add_argument("--seconds", type=float, default=30.)
