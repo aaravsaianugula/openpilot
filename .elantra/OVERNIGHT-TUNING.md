@@ -536,3 +536,27 @@ sequence were inspected, including the explicitly missing telemetry/calibration
 frame. The artifact distinguishes availability from outcomes and labels driver
 takeover; it computes no controlled improvement score. Exact sources, commands,
 exits, preserved files and test receipts are in the adjacent `livecheck.json`.
+
+The new `controller_native_route.py` subsequently prepared both actual raw logs
+and ran the unchanged current-master LongControl on the real two-source B7 tape.
+Nineteen actual POSIX tests passed; the actual replay exited 0 and all ten pulled
+files were hash-verified. Of 1,600 synthetic 100Hz ticks, 936 were admitted:
+178 pre-brake active PID commands and 758 post-censor off-state diagnostics.
+Every admitted tick remains initialization-uncertain. No admitted RDF target has
+`shouldStop=true` in this clip; it contains no native stopping-state completion.
+The positive-target/true-stop behavior is covered by a separate actual-native
+regression fixture and is not attributed to this footage.
+
+The recorded CP has KiV `[0.0]`, and the verified native constructor fixes Kp at
+zero. Under this conditional replay the approach command therefore follows
+acceleration feedforward without integral acceleration-error correction. Changing
+`stopAccel` alone cannot change this approach while `shouldStop` remains false.
+This narrows the tuning problem; it does not establish an optimal replacement
+gain or prove the historical dirty controller matched current master.
+
+Exact sources, commands, exits, process groups, monitoring and results are in
+`rdf-v2/stopping-intervention-native-long-v1/transfer-receipt.json`. Both owned
+process groups exited, with offroad state, battery65% and maximum temperature38.1C
+recorded across seven monitor snapshots. Device allocation guards passed before
+the small source/input upload and execution. Params, services, safety, vehicle
+state and the existing native adapter were preserved; no model inference repeated.
