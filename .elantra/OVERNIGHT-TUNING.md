@@ -881,3 +881,30 @@ native request-to-report processing; recorded output cannot become candidate
 feedback. Existing source/policy/roll/low-speed/ZOH gates remain unchanged.
 Right-turn inference remains pending saved-device connectivity. No accepted full
 tune, new inference, deployment, road test or actuation occurred in this checkpoint.
+
+### Five-state response and native acceleration-report boundary
+
+The pure two-way model now advances speed/acceleration/rack/yaw/vendor-rate
+together from21 features: initial state, physical LLK roll and five requested
+accels, independent published accel reports and CAN counts. Thirty-seven host
+checks/Ruff passed, including source/split-before-array-access, invalid consumed
+prefixes, malformed model and steering-dependent simulated speed/acceleration.
+No actual fit or held-out access occurred. Original source ineligibility cannot
+be repaired by additive metadata. Kinematic consistency, joint median coherence,
+100Hz ZOH and low-speed response still block selection.
+
+A separate pinned Hyundai native software-output adapter preserves prior-report
+publication, actual apply phase and skipped applies. Its first actual POSIX case
+failed at cold enum representation; the native constructor uses ordinal0 while
+the initial adapter expected a name. That run, cleanup and source/Params proof
+are retained. A narrow schema-bound correction passed53 host cases with one
+opt-in native skip, rejecting invalid enum types/ordinals and retaining native
+state/phase fences. The corrected actual API case passed once in5.03s with
+synthetic inputs on isolated pinned x86 POSIX. This is API evidence only.
+
+The shared runner remains unfinished. Actual card source consumes the prior CC
+before CO/CS publication, then applies that snapshot. Native lateral calculation
+and steering hardware apply must be separated so skipped applies and later CC
+arrivals cannot advance the rack command or limiter early. Fixed physical targets,
+left/right phase populations and successful-macro coverage remain mandatory.
+No new real fit, comma inference, accepted tune or physical improvement is claimed.

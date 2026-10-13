@@ -348,3 +348,40 @@ request-to-report model, never recorded CarOutput or assumed request equality.
 No new fit, inference, physical acceptance or complete candidate follows from
 these additive columns. Exact scoped evidence is in
 `validation-joint-correctness-motion-view-checkpoint.json` under the tuning tree.
+
+`controller_multirate_joint.py` adds a pure five-state response hypothesis for
+speed, acceleration, rack angle, calibrated yaw and unsigned vendor rate. Its
+21 features include physical LLK roll and five independent requested-acceleration,
+published-acceleration-report and CAN-command nodes. One supported nominal50ms
+macro advances all five states together. Actual recorded48–52ms transitions are
+retained; no independent long trajectory or measured future state supplies feedback.
+Original source/policy/lineage, immutable TRAIN split, consumed-prefix quality and
+at least100 samples/two independent routes per cell are required. Unknown original
+pins cannot be enriched into known identities. Unsupported predictions, including
+negative speed/rate and entry into low speed, are rejected without extrapolation.
+Thirty-seven host tests and Ruff passed. No real-data fit ran for this component;
+100Hz ZOH, speed/acceleration consistency and median joint-state coherence remain
+unvalidated, so selection and production are disabled.
+
+`controller_native_longitudinal_output.py` isolates the pinned Hyundai native
+request-to-software-report processing. It preserves publication of the previous
+held report before optional apply, native update on every fifth actual apply,
+skipped-apply holds and a cold independent handle per trial. Full native state,
+configuration, source/bootstrap paths and adapter-owned phase/output are fenced.
+Reported acceleration remains distinct from delivered force. The first actual
+API case exposed an integer-versus-name enum mismatch in cold initialization;
+the failure and post-run preservation proof remain saved. Strict schema-bound
+integer/name/reader handling fixes the mismatch without accepting bool, unknown
+ordinals or impostors. The corrected host suite passed53 cases with one opt-in
+POSIX skip. The corrected actual case passed once in5.03s on the pinned isolated
+x86 POSIX runtime. It exercises native apply/hold/flags/stopping with synthetic
+inputs; it establishes API behavior, not car performance or a supported plant.
+
+The two-way native runner is a separate unfinished integration. Both native
+controllers and native report processing must consume the same simulated state.
+Card consumes CarControl before publishing CarOutput/CarState and later applies
+that consumed snapshot; a newer command arriving before apply is not substituted.
+Steering hardware limits belong to apply, independently of native control compute.
+No queued speculative CAN count, recorded output seed or assumed zero latency
+can establish candidate feedback. Physical targets and left/right phase populations
+must stay candidate-independent. No accepted full tune follows from these modules.
