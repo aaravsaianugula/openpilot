@@ -439,3 +439,29 @@ clipped curvature is displayed, not independently replayed. Twenty-one helper
 tests and32 affected renderer tests passed; the actual render exited0, with a
 peak-curve still and six-frame sequence inspected. No model/controller inference
 was repeated. Exact receipts sit beside the new video; originals are preserved.
+
+`controller_route_seams.py` now creates a separate analysis view for two proven
+TRAIN segment boundaries. It restores only missing-asof prefix entries from
+actual valid, causal raw events within the original freshness limits. Observed
+invalid/stale events, original time grids, camera mappings and source arrays are
+preserved. Full raw CP/SP, source/schema and frozen training membership are bound;
+unknown model capture origins remain unknown. Twenty-five scoped tests and Ruff
+passed. The actual derive and two-route stopping amendment exited0; a failed
+evaluation caused by omitted static route-context inheritance is preserved, then
+fixed using the original census's canonical enrichment without rerunning derive.
+
+The b1 route changes12 to11 episode rows and3 to2 initially active predictions;
+its sole uninterrupted completion remains one. The b7 route changes11 to10 rows,
+retaining one initially active prediction and zero completed controlled stops.
+Manual braking and disengagement across its seam now remain visible censors.
+This is a two-route amendment, not a global recount, plant fit or stopline result.
+See `recent-seam-code-validation.json`, `recent-seam-repair-v1/manifest.json` and
+`recent-seam-stops-amendment-v1.json`.
+
+The frozen replacement stopping diagnostic spans b7--25/26 with320 exact pairs,
+132 genuine history and188 subsequent outputs. Cameras for25 are newly requested;
+26 is already verified locally and its selected indices0..153 do not overlap the
+earlier replay. Only37 scored exposures precede the exact raw brake event; output
+availability must also precede that censor. Subsequent footage is takeover-only
+display, excluded from controlled scoring. Preparation and inference receipts,
+not this selection, establish whether that diagnostic actually ran.
