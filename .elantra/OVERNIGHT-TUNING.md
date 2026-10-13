@@ -380,3 +380,25 @@ full controller tune. The newer extraction has390 decoded logs across40 decoded
 routes;41 raw routes were transferred. The dirty f9 source's empty recorded GitDiff
 does not establish its actual opendbc pin; the source-provenance audit preserves
 that missing evidence rather than substituting the base commit's gitlink.
+
+`controller_native_lateral.py` now runs the actual current-master torqueV0 and
+jerk-aware extension against the recent turning RDF output, using full raw CS,
+vehicleParameters, CP/SP, learner and delay payloads. Typed recorded Params are
+read-only; recorded latActive is checked, not recomputed by the engagement system.
+The core's published delay plus global0.0 remains separate from extension lag and
+RDF catalog smoothing. A publication-as-receive proxy for learner frequency is
+explicit; historical socket timing and dirty-controller parity remain unknown.
+
+The actual bounded POSIX replay exited0:3200 synthetic100Hz ticks,2535 admitted,
+665 genuine-history/unavailable ticks. All admitted rows retain cold-state
+uncertainty and fixed recorded hardware feedback. Raw requests ranged
+[-0.2232,0.3733]; native driver/rate limiting produced[-71,146] CAN-equivalent
+counts. This clip does not reach the409 ceiling. The native409/3-up/7-down and
+driver/angle-request contracts are fixed; full CAN packing is not performed here.
+Seventeen native POSIX tests passed, including cold requests above1 before native
+limiting and inherited reset-state persistence. Two failed API-wiring attempts,
+executed adapters, inputs and logs are preserved. Independent review also fixed
+ambiguous frame identity, actual NN constructor asset binding and preparation/
+runtime adapter identity. `rdf-v2/recent-turning-native-lateral-transfer.json`
+records exact commands, exits, sources, hashes and limitations. No physical
+controller improvement, actuation or deployment follows from this diagnostic.
