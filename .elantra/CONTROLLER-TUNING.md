@@ -133,3 +133,19 @@ identity, genuine history and causal output availability are required; paths mov
 from capture to the displayed ego frame using measured past motion. Capture-origin
 model errors and stop distances now use exact EncodeIdx frame matches, never a
 publication timestamp substituted for camera capture.
+
+The selected historical research gains `0.4/0.4` have no established mapping to
+native controller settings. The current native LongControl constructor fixes Kp
+at zero, takes its integral schedule from `CP.longitudinalTuning.kiBP/kiV`, and
+uses `CP.stopAccel` as its stopping floor. Its stopping ramp is a source literal,
+not an existing CP parameter. Native parameter optimization must run the actual
+controller against simulated vehicle feedback and preserve `shouldStop`; a replay
+against frozen recorded feedback is only a command diagnostic.
+
+Native feedforward acceleration at the model's future action time is distinct
+from a physically aligned acceleration reference at the current simulation tick.
+Tune selection requires a causally available raw plan with capture/horizon
+alignment, a trusted same-cohort plant, identical supported validation windows
+and explicit stopping coverage. Command-target tracking alone cannot select a
+physical controller tune. See `native-parameter-contract.json` in the artifact
+directory for the current source-bound parameter and runtime-overwrite contract.

@@ -488,3 +488,51 @@ speed traces. A still and seven-frame sequence were inspected. This3s window's
 target-acceleration MAE is0.071452 baseline versus0.051931 selected, descriptive
 only. Exact phase receipts preserve commands, exits, stdout/stderr and failures.
 Earlier simulation videos used different gains and do not represent this result.
+
+The B7 stopping/intervention RDF job subsequently completed with exit 0 and all
+seven transferred artifacts hash-verified. Across five completed jobs there are
+2,320 real synchronized pairs, 660 genuine history frames and 1,660 subsequent
+timing-admissible outputs. B7 has 188 such outputs, but only 36 were ready before
+the exact raw manual-brake censor at 68914.104516183. Thirty-seven exposures
+precede braking; the last corresponding output was already too late. There are
+zero complete three-second controlled GT windows and no completed stop in this
+clip. Later predictions are takeover display only. Compute median/p95/p99/max
+was 39.460/45.574/53.658/58.112 ms; battery 65%, maximum temperature 44.3C and offroad
+state stayed within the bounded test limits. Startup and temporal-state reset
+proof remain separate in the frozen bench receipts.
+
+The first two-source video loader failed before decode because it treated the
+frozen producer's boolean history mask as a scalar; the corrected loader passed
+against both actual logs, four cameras and all causal inputs. A subsequent
+file-backed render completed both exact camera decodes, then exceeded its600s
+outer bound during composition. Its final partial contains 150 complete frames,
+not the stale 11-frame reading observed earlier. Both decoded buffers, the 720MB
+partial, executed source and actual timeout/exit receipts are preserved. A bounded
+single-frame reproduction passed and did not reproduce a blocking stack, so the
+failure's cause remains unproven. Explicit bounded RAM recovery is being checked;
+no successful B7 video or native stopping outcome follows from that attempt.
+
+`native-parameter-contract.json` records the actual current native source contract
+and matches four normalized source hashes to existing POSIX replay receipts.
+Historical inverse-response gains are research parameters, not native Ki values.
+Native optimization against a trusted plant and low-speed stopping evidence is
+still unfinished; neither the successful RDF inference nor fixed-feedback native
+diagnostics establishes an accepted full tune.
+
+The explicit RAM recovery subsequently passed: 160 distinct encoded frames,
+159 calibrated projections and 92 fresh visible RDF paths. Seventeen displayed
+frames have pre-brake output availability; 75 are post-censor takeover displays.
+Both camera buffers were read once with exact executed select/source/index/size
+proof and fresh hashes. The 1,258,291,200 byte arrays were admitted below a 2GiB cap;
+composition took 7.0133s and encoding 3.4140s, with all 768,000,000 pipe bytes confirmed.
+The encoder deadline covers the writer and child; real pipe-backpressure tests
+exercise timeout and cleanup. Old RGBs and the 720MB partial remain preserved.
+No camera decode, model inference or native controller replay was repeated.
+
+`videos/rdf-v2-real-stopping-intervention-16s-ram-v3.mp4` has SHA256
+`56313748b8015ee45bad978f70b47caa163b4bb053fab64d6c123180897362ad`.
+The actual render and encoder exited 0. Pre/post stills and an eight-frame seam
+sequence were inspected, including the explicitly missing telemetry/calibration
+frame. The artifact distinguishes availability from outcomes and labels driver
+takeover; it computes no controlled improvement score. Exact sources, commands,
+exits, preserved files and test receipts are in the adjacent `livecheck.json`.
