@@ -560,3 +560,48 @@ process groups exited, with offroad state, battery65% and maximum temperature38.
 recorded across seven monitor snapshots. Device allocation guards passed before
 the small source/input upload and execution. Params, services, safety, vehicle
 state and the existing native adapter were preserved; no model inference repeated.
+
+`controller_native_search.py` now executes the actual native longitudinal class
+against simulated speed/acceleration feedback and empirical supported response
+cells. The 100Hz substep preserves the identified20Hz backward-Euler pole; this
+is an explicit resampling assumption, not proof of high-frequency car dynamics.
+It separates future action-time feedforward from capture/horizon-aligned physical
+tracking targets, binds consumed RDF action times and smoothing, and refuses the
+latest explicitly inadmissible output without falling back to an older target.
+
+The finite Ki/stopAccel selector preserves actual baseline settings and records
+all failed or unsupported trials. It compares the same supported validation
+windows, applying direction, comfort, saturation and stopping regressions. Stop
+feasibility requires a causal stationary model prediction and a hash-bound margin
+derived from at least20 uninterrupted controlled TRAIN outcomes across two routes.
+One physical log cannot be relabelled as two independent routes. Observed stop
+residuals do not become stopline ground truth. Native stopping may begin near
+standstill; a continuous prior moving approach is required rather than forcing an
+early native state. Current data has neither trusted native plants nor that margin.
+
+Forty-three host tests passed with one actual-runtime skip. The unchanged core's
+full actual POSIX suite then passed44 cases, including real capnp CP/SP and
+LongControl stopping semantics. A separately added real-native moving PID/Ki
+regression passed alone, with44 prior cases deselected: changing Ki changes actual
+native commands, while replacing future recorded motion leaves commands, integral
+state and simulated motion unchanged. These are synthetic algorithm/API fixtures,
+not car-performance results. Independent source review fixed the cross-route log
+alias defect and closed on source SHA
+`b24eea007afad36e818211f30a1c7fe563b2fa5f9ad1b9acd1fd24d63ee68ac5`.
+Exact manifests, commands, exits, guards, process groups and health sit in
+`recent-clips/native-search-api-v1-result` and `native-search-pid-api-v2-result`.
+No drive arrays, fits, held-out data or model inference were used for these checks.
+
+The new plural native overlay binds both logs, four cameras, packet/RDF, prepared
+native tape, result/transfer receipts, executed adapters and eight native sources.
+It verifies the actual100Hz raw inputs, admission, target/stop/censor masks and
+acceleration bounds before drawing. Shared single-source consumers are unchanged.
+Thirteen affected validator/layout tests and Ruff passed. The actual bounded RAM
+render exited0, with160 frames,159 calibrated views,92 fresh RDF paths and93 native
+samples. Its native caption and takeover banner occupy separate space. An actual
+post-brake still and four-frame seam sequence were inspected, including missing
+display telemetry. No decode, model inference or native replay was repeated.
+`videos/rdf-v2-real-stopping-intervention-native-v1.mp4` has SHA256
+`f4144992c15ae9796cfb824cd10a80d5743ffc83d1f9a5379cc3a01af80167ca`.
+All commands remain cold and conditional on fixed recorded feedback. No accepted
+native long/lat tune, physical improvement or completed stop follows.

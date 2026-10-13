@@ -9,7 +9,21 @@ import numpy as np
 import pytest
 
 from controller_model_overlay import RenderError
-from controller_route_video import decode_rgb, display_schedule, encode_ram, ram_admission, read_reuse_rgb, run_phase, validate_targets
+from controller_route_video import decorate_route, decode_rgb, display_schedule, encode_ram, ram_admission, read_reuse_rgb, run_phase, validate_targets
+from PIL import Image
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_native_caption_and_route_censor_have_separate_canvas_space(native):
+  source = Image.new("RGB", (1600, 1200 if native else 1000), "black")
+  result = decorate_route(source, "POST-BRAKE TAKEOVER DISPLAY ONLY", True, native)
+  assert result.size == (1600, 1240 if native else 1000)
+  assert source.size == (1600, 1200 if native else 1000)
+
+
+def test_native_canvas_mismatch_rejects_before_encoder_byte_contract():
+  with pytest.raises(RenderError, match="dimensions"):
+    decorate_route(Image.new("RGB", (1600, 1000)), "label", False, True)
 
 
 def test_display_schedule_retains_global_clock_across_local_index_reset():

@@ -149,3 +149,19 @@ alignment, a trusted same-cohort plant, identical supported validation windows
 and explicit stopping coverage. Command-target tracking alone cannot select a
 physical controller tune. See `native-parameter-contract.json` in the artifact
 directory for the current source-bound parameter and runtime-overwrite contract.
+
+`controller_native_search.py` now provides `load_native_runtime`, `evaluate_trial`
+and `validation_search` for actual LongControl with simulated vehicle feedback.
+Its declared default grid contains twelve Ki/stopAccel combinations, preserving
+the recorded Ki breakpoints and baseline vector. It retains every failed trial,
+uses one common validation population and constrains acceleration/braking errors,
+jerk, saturation, native stopping completion and model-target distance feasibility.
+Model targets are predictions, never stopline GT. A missing verified TRAIN-only
+uncertainty margin, unsupported low-speed response or uncertain reset prevents
+selection. The core refuses held-out windows and always disables production.
+
+This native longitudinal core has actual POSIX API/regression evidence, including
+the moving PID/Ki branch and future-GT invariance. It has not selected a native
+current-car tune: the recent source/plant and low-speed stopping evidence remain
+insufficient. Native lateral parameter optimization and a coupled native
+longitudinal/lateral search remain unfinished.

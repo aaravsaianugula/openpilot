@@ -15,10 +15,25 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from controller_extract import sha256
-from controller_model_overlay import RenderError, measured_forecasts, rdf_path
+from controller_model_overlay import RenderError, measured_forecasts, native_index, rdf_path
 from controller_route_overlay import display_rdf_copy, load_route_evidence
 from controller_video import camera_mapping, compose, frame_schedule, probe_video, projection_config, text
 from rdf_frames import available_memory_bytes
+
+
+def decorate_route(canvas, label, post, has_native):
+  expected = (1600, 1200 if has_native else 1000)
+  if canvas.size != expected:
+    raise RenderError("route/native compose dimensions differ from declared encoder input")
+  if has_native:
+    expanded = Image.new("RGB", (1600, 1240), canvas.getpixel((0, 0)))
+    expanded.paste(canvas, (0, 0))
+    canvas = expanded
+  draw = ImageDraw.Draw(canvas)
+  text(draw, (24, 1204 if has_native else 94), f"TWO-SOURCE ROUTE25+26 | {label}", 14, "#ff7272" if post else "#ffbd69")
+  footer = "Measured future GT is display-only, including driver braking. No completed-stop, tuned-response or improvement claim."
+  text(draw, (24, 1227 if has_native else 987), footer, 11, "#99aaba")
+  return canvas
 
 
 def display_schedule(packet, frames, fps):
@@ -241,6 +256,14 @@ def render(args):
     raise RenderError("existing ffmpeg/ffprobe are required")
   spec, packet, data, metadata, rdf, masks, evidence = load_route_evidence(
     args.selection, args.selection_sha256, args.packet, args.raw_root, args.dataset_dir, args.schema_dir, args.rdf_output, args.transfer_receipt)
+  native_output, native_binding = None, None
+  native_paths = [getattr(args, key, None) for key in ("native_output", "native_transfer", "native_input")]
+  if any(path is not None for path in native_paths):
+    if any(path is None for path in native_paths):
+      raise RenderError("plural native overlay requires output, transfer and prepared input together")
+    from controller_native_route_overlay import load_plural_native
+    native_output, native_binding = load_plural_native(*native_paths, evidence, rdf, Path(__file__).resolve().parent.parent)
+    evidence = {**evidence, "input_sha256": {**evidence["input_sha256"], **native_binding["input_sha256"]}}
   inputs = [Path(path) for path in evidence["input_sha256"]]
   inputs.extend((Path(__file__), Path(__file__).with_name("controller_route_overlay.py")))
   validate_targets(args.out, args.raw_root, inputs)
@@ -254,7 +277,8 @@ def render(args):
   display_rdf = display_rdf_copy(rdf, masks)
   pixels, decodes, local_to_compact, probes, origins = [], [], [], [], []
   reuse = getattr(args, "ram_reuse", None)
-  render_bytes = len(times) * 1600 * 1000 * 3
+  width_out, height_out = 1600, 1240 if native_output is not None else 1000
+  render_bytes = len(times) * width_out * height_out * 3
   memory_proof = None
   if reuse is not None:
     if reuse.is_symlink() or not reuse.is_dir() or not reuse.resolve().is_relative_to(args.out.parent.resolve()):
@@ -292,10 +316,10 @@ def render(args):
     with args.out.with_suffix(".rgb-reuse.json").open("x", encoding="utf-8") as output:
       json.dump({"mode": "bounded_RAM_reuse", "memory_admission": memory_proof, "buffers": decodes,
                  "old_buffers_and_partial_preserved": True, "no_redecode_no_inference": True}, output, indent=2, allow_nan=False)
-    render_array = np.empty((len(times), 1000, 1600, 3), dtype=np.uint8)
+    render_array = np.empty((len(times), height_out, width_out, 3), dtype=np.uint8)
     ram_writer = RamWriter(render_array)
   encode_command = ["ffmpeg", "-nostdin", "-n", "-v", "error", "-threads", "2", "-filter_threads", "1",
-                    "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "1600x1000", "-r", str(args.fps), "-i",
+                    "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{width_out}x{height_out}", "-r", str(args.fps), "-i",
                     "pipe:0" if reuse is not None else str(render_target),
                     "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-threads:v", "2", "-pix_fmt", "yuv420p",
                     "-movflags", "+faststart", str(args.out)]
@@ -312,16 +336,15 @@ def render(args):
           image = Image.fromarray(np.asarray(pixels[source_num][local_to_compact[source_num][local]]))
           _, fresh_index = rdf_path(display_rdf, data, timestamp)
           canvas, horizon, is_calibrated = compose(image, data, replay, timestamp, origins[source_num],
-                                                 spec["source_chunks"][source_num]["segment"], intrinsics, projection, 1.22, display_rdf)
+                                                 spec["source_chunks"][source_num]["segment"], intrinsics, projection, 1.22,
+                                                 display_rdf, native=native_output)
           controlled = fresh_index is not None and bool(masks["controlled_admissible"][fresh_index]) and timestamp < censor
           post = timestamp >= censor
           label = ("POST-BRAKE TAKEOVER — DISPLAY ONLY; excluded from controlled metrics" if post else
                    ("PRE-BRAKE — RDF ready: availability only; future GT may include takeover" if controlled else
                     "HISTORY / stale or missing display motion; no visible admitted output"))
-          draw = ImageDraw.Draw(canvas)
-          text(draw, (24, 94), f"TWO-SOURCE ROUTE25+26 | {label}", 14, "#ff7272" if post else "#ffbd69")
-          footer = "Measured future GT is display-only, including driver braking. No completed-stop, tuned-response or improvement claim."
-          text(draw, (24, 987), footer, 11, "#99aaba")
+          canvas = decorate_route(canvas, label, post, native_output is not None)
+          ni = native_index(native_output, timestamp) if native_output is not None else None
           raw = canvas.tobytes()
           output.write(raw)
           render_hash.update(raw)
@@ -331,6 +354,8 @@ def render(args):
                          "segment": spec["source_chunks"][source_num]["segment"], "frame_id": int(packet["frame_id"][row]),
                          "source_presentation_index": local, "packet_row": int(row), "camera_age_ms": (display_t - timestamp) * 1000,
                          "rdf_index": None if fresh_index is None else int(fresh_index), "controlled_output_available": controlled,
+                         "native_index": ni, "native_cold_uncertain": ni is not None,
+                         "native_controlled_command_available": ni is not None and bool(native_output["controlled_command_available"][ni]),
                          "post_censor_display": post, "calibrated_flat_ground": bool(is_calibrated), "measured_gt_horizon_s": horizon})
           if reuse is not None:
             print(json.dumps({"stage": "compose_frame_done", "index": len(frames) - 1}), file=sys.stderr, flush=True)
@@ -409,6 +434,8 @@ def render(args):
              "encoder_input": {"mode": "RAM" if reuse is not None else "file", "bytes": render_bytes,
                                "sha256": render_hash.hexdigest(), "verified_generated_file_removed": reuse is None},
              "memory_admission": memory_proof, "preserved_rgb_reuse": reuse is not None,
+             "native_overlay_binding": native_binding,
+             "native_visible_frames": sum(frame["native_index"] is not None for frame in frames),
              "source_sha256": {str(p.resolve()): sha256(p) for p in sources},
              "controlled_mask_sha256": sha256(args.out.with_suffix(".controlled-mask.npz")),
              "source_alignment": "Explicit packet source_chunk_index/globalID/localpresentationindex/actualnarrowEOF; containerfps unused",
@@ -434,6 +461,9 @@ def main():
   parser.add_argument("--out", type=Path, required=True)
   parser.add_argument("--fps", type=float, default=10.)
   parser.add_argument("--ram-reuse", type=Path, help="Explicit boundedRAM recovery from complete proven RGB buffers; never decodes or falls back")
+  parser.add_argument("--native-output", type=Path)
+  parser.add_argument("--native-transfer", type=Path)
+  parser.add_argument("--native-input", type=Path)
   render(parser.parse_args())
 
 
