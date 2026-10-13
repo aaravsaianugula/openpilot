@@ -634,3 +634,35 @@ Hyundai's recorded SAS_Speed is unsigned; it must not classify turn direction or
 invented as a signed rack derivative. No 50ms response may be applied every10ms.
 The new native runtime adapter is under implementation/review; actual API proof and
 a supported multirate joint plant remain required. No full native tune is accepted.
+
+### Native lateral runtime proof and shorter right-turn acquisition
+
+The new runtime adapter now passed actual POSIX execution against all44 independent
+host-bound native source/asset hashes and the unchanged master/opendbc pins. Twenty-
+one fixture cases passed in the first actual run. Its real-native case initially
+correctly rejected a synthetic CP lacking RAISED_LIMITS (native384 instead of409).
+After that fixture correction it reached frame300 and exposed an exact decimal
+assertion against capnp Float32 friction. Both named failures, commands and outputs
+remain preserved. Only the corrected actual case was rerun, passing1 with21
+deselected; the other cases' AST nodes remain unchanged. Real v0/jerk proof covers
+A/B/A provider isolation, both turn signs, simulated angle feedback, frame300
+effective overrides and native reset versus cold restart. These are synthetic
+API checks, not measured vehicle or tuned performance.
+
+Independent review also corrected a test that had supplied raw requested torque
+as delivered feedback. It now uses applied CAN counts/409 and verifies next-tick
+steering-limited feedback. Runtime source was unchanged throughout the fixture
+corrections. All owned process groups exited, with offroad battery65% and execution
+monitor temperatures at most38.7C; Params, services, device source and safety were preserved.
+Exact evidence is under `recent-clips/native-lateral-runtime-api-v{1,2,3}-*`.
+
+The full recent TRAIN32s census opened187 arrays and retained1049 window outcomes:
+no eligible right-turn window, mostly because manual intervention cut the horizon.
+Acquisition now accepts explicit durations with the unchanged132 history frames.
+Thirty-four selector tests and Ruff passed. The new16/24s census opened only the
+same187 TRAIN sources, retaining2997 new anchors and reusing the32s result without
+rerunning it. Fourteen eligible right-turn windows span four routes. The first
+24s selection, b8--9 frame11204..11683, contains273 right-request rows with100%
+measured-yaw sign agreement and92/110/71 entry/steady/exit rows. Camera availability
+is unverified; b1--24 remains known absent from the prior storage incident. No
+model inference, fit, controller search or test-array access occurred in this census.

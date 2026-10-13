@@ -66,3 +66,57 @@ def test_training_path_filter_never_opens_validation_or_test_arrays(tmp_path, mo
   reservation = {"cohorts": {"cohort": {"split": {key: [key] for key in ("train", "validation", "test")}}}}
   paths = clips.training_paths(tmp_path, reservation, "cohort")
   assert [meta["route"] for _, meta in paths] == ["train"]
+
+
+def turning_data(frames):
+  d = {key: value[:frames].copy() for key, value in data().items()}
+  d["v"][:] = 10.
+  d["yaw"][:] = .1
+  d["torque"][:] = 30.
+  return d
+
+
+@pytest.mark.parametrize("seconds,frames,scored", [(16., 320, 188), (24., 480, 348)])
+def test_explicit_short_duration_preserves_exact_frames_and132_history(seconds, frames, scored):
+  rows, rejected = clips.segment_candidates(META, turning_data(frames), seconds=seconds)
+  assert not rejected
+  turns = [row for row in rows if row["kind"] == "turning"]
+  assert len(turns) == 1
+  assert turns[0]["seconds"] == seconds
+  assert turns[0]["history_s"] * 20 == 132
+  assert turns[0]["scored_rows"] == scored
+  assert turns[0]["last_frame_id"]-turns[0]["first_frame_id"]+1 == frames
+
+
+@pytest.mark.parametrize("seconds", [16., 24.])
+@pytest.mark.parametrize("field,value", [("valid_lat", 0), ("lat_active", 0), ("torque", 410),
+                                        ("yaw", np.nan), ("brake_pressed", 1), ("calibration_valid", 0)])
+def test_short_clip_keeps_every_scored_row_gate(seconds, field, value):
+  d = turning_data(round(seconds*20))
+  d[field][-1] = value
+  rows, _ = clips.segment_candidates(META, d, seconds=seconds)
+  assert not [row for row in rows if row["kind"] == "turning"]
+
+
+@pytest.mark.parametrize("seconds", [True, None, "16", 0., -16., 8.55, 8.61, 16.025, np.nan, np.inf])
+def test_invalid_duration_is_rejected_before_source_inspection(seconds):
+  with pytest.raises(ValueError, match="duration"):
+    clips.segment_candidates(META, {}, seconds=seconds)
+
+
+def test_short_sources_never_fabricate_longer_footage_or_motion():
+  d = turning_data(320)
+  assert clips.segment_candidates(META, d, seconds=24.)[0] == []
+  assert clips.segment_candidates(META, d)[0] == []
+  d = turning_data(480)
+  for key in ("t", "v", "a", "yaw", "torque"):
+    d[key] = d[key][:320]
+  rows, rejected = clips.segment_candidates(META, d, seconds=24.)
+  assert not rows and rejected["motion_coverage"] == 1
+
+
+def test_default32_second_contract_is_unchanged_and_minimum_duration_is_explicit():
+  d = turning_data(1200)
+  assert clips.segment_candidates(META, d) == clips.segment_candidates(META, d, seconds=32.)
+  rows, _ = clips.segment_candidates(META, turning_data(172), seconds=8.6)
+  assert rows[0]["scored_rows"] == 40

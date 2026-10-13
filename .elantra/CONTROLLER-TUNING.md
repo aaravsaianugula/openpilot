@@ -180,5 +180,18 @@ research evaluation and do not change controller gains.
 The two recent selected clips contain left-turn demand and no qualifying right-turn
 demand under this contract. Their new TRAIN-only coverage receipt does not establish
 balanced turn coverage. No historical search, fit or held-out evaluation was rerun.
-The native lateral runtime and the joint steering-rack/yaw plant still need their
-own admission before a native coupled candidate can be selected.
+The native lateral runtime now has actual POSIX API proof. The joint steering-rack/
+yaw plant and native coupled search still need admission before a candidate can be
+selected. `controller_native_lateral_runtime.py` supplies actual v0/jerk handles
+with independent immutable Params, native learner/override ordering, simulated
+angle/speed/acceleration feedback and separate prior delivered-torque feedback.
+The only numeric candidates are finite declared factor/friction values; fixed
+override policy is explicit and distinct from the recorded baseline. The source
+409/3/7/driver/angle envelope is verified rather than replaced. Model delays remain
+fixed. Native reset retains PID/filter history; cold restart remains uncertain.
+
+Explicit acquisition durations now preserve the same 132 genuine history frames
+and validity/active/driver/409 gates. A new TRAIN-only 16/24-second census found
+right-turn footage, including a 24-second b8--9 clip with entry/steady/exit coverage.
+This changes footage acquisition, not controller acceptance. No test data was read;
+camera availability, packet construction and fresh inference remain separate gates.

@@ -18,8 +18,19 @@ KINDS = ("stopping", "acceleration", "turning")
 SECONDS, HISTORY_S = 32., 6.6
 
 
-def segment_candidates(meta, data):
-  """Rank uninterrupted control after genuine model-history footage."""
+def segment_candidates(meta, data, seconds=SECONDS):
+  """Rank continuous footage after the unchanged genuine 132-frame history.
+
+  Duration is an acquisition choice, never a relaxation of control/validity
+  gates. It must cover at least two scored seconds on the exact 20 Hz grid.
+  """
+  if isinstance(seconds, (bool, np.bool_)) or not isinstance(seconds, (int, float, np.integer, np.floating)):
+    raise ValueError("duration must be a finite number of seconds")
+  seconds = float(seconds)
+  frames = seconds * 20
+  if (not np.isfinite(frames) or seconds < HISTORY_S + 2 or abs(frames-round(frames)) > 1e-8):
+    raise ValueError("duration must cover history+2 seconds and match the 20 Hz frame grid")
+  frames = int(round(frames))
   result, rejected = [], Counter()
   capture = data["raw_encode_t"]
   frame_id, segment_id = data["raw_encode_frame_id"], data["raw_encode_segment_id"]
@@ -27,16 +38,16 @@ def segment_candidates(meta, data):
     return result, {"missing_camera_mapping": 1}
   order = np.argsort(capture)
   capture, frame_id, segment_id = capture[order], frame_id[order], segment_id[order]
-  for camera_start in range(0, len(capture) - int(SECONDS * 20) + 1, 100):
-    z = slice(camera_start, camera_start + int(SECONDS * 20))
+  for camera_start in range(0, len(capture) - frames + 1, 100):
+    z = slice(camera_start, camera_start + frames)
     camera_t = capture[z]
     if (not np.isfinite(camera_t).all() or np.any(np.abs(np.diff(camera_t) - .05) > .005)
         or np.any(np.diff(frame_id[z]) != 1) or np.any(np.diff(segment_id[z]) != 1)):
       rejected["camera_gap_or_identity"] += 1
       continue
     start = float(camera_t[0])
-    indices = np.flatnonzero((data["t"] >= start) & (data["t"] < start + SECONDS))
-    if len(indices) < 639 or np.any(np.abs(np.diff(data["t"][indices]) - .05) > .002):
+    indices = np.flatnonzero((data["t"] >= start) & (data["t"] < start + seconds))
+    if len(indices) < frames - 1 or np.any(np.abs(np.diff(data["t"][indices]) - .05) > .002):
       rejected["motion_coverage"] += 1
       continue
     scored = indices[data["t"][indices] >= start + HISTORY_S]
@@ -51,7 +62,7 @@ def segment_candidates(meta, data):
       rejected["driver_intervention"] += 1
       continue
     common = {"segment": meta["segment"], "route": meta["route"], "camera_start_s": start - float(capture[0]),
-              "seconds": SECONDS, "history_s": HISTORY_S, "capture_start_t": start,
+              "seconds": seconds, "history_s": HISTORY_S, "capture_start_t": start,
               "first_frame_id": int(frame_id[z][0]), "last_frame_id": int(frame_id[z][-1]),
               "scored_rows": len(scored), "source_log_sha256": meta["source_log_sha256"]}
     v, a = data["v"][scored], data["a"][scored]
