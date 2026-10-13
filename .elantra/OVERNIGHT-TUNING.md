@@ -666,3 +666,34 @@ rerunning it. Fourteen eligible right-turn windows span four routes. The first
 measured-yaw sign agreement and92/110/71 entry/steady/exit rows. Camera availability
 is unverified; b1--24 remains known absent from the prior storage incident. No
 model inference, fit, controller search or test-array access occurred in this census.
+
+### Raw rack/yaw motion proof and right-camera availability
+
+The selected b8--9 narrow/wide pair is present on the device, with74,774,822 bytes
+and full source hashes matching the frozen TRAIN selection. Its full CP/SP records
+precede the first history exposure. Storage rejected the minimum new replay peak.
+After concrete root review, only the two newly generated, compressed-reconstructible
+B7 stopping-intervention NV12 buffers were removed:1,554,513,920 bytes, with fresh
+literal path/inode/link/hash and before/after evidence. Old e9/stop buffers, all
+camera footage, packets, compressed streams and results remain preserved. Exact
+future packet bytes and per-phase native-deleter guards are still required.
+
+Independent review found two raw-motion producer defects before its first decode:
+sendcan bus0 had been confused with returned echo source128, and physical aliases
+could bypass a logical TRAIN path. Six first-red regressions reproduced them. The
+fixed source passed19 tests and Ruff, and the reviewer closed both findings without
+repeating checks. Original source/test snapshots and failures remain preserved.
+
+One bounded new raw-motion run then decoded six selected TRAIN logs in34.528 seconds,
+exit0, with no fit or old/test array opens. All twelve output files are hash-bound.
+The first launcher preflight had rejected the later IQ-protection split-file hash,
+before any schema/raw decode. The successful launcher uses the preserved original
+frozen split and verifies the current selected-cohort partitions are identical.
+Both launcher states remain recorded; no dataset or split was rewritten.
+
+The actual tapes retain roughly100Hz carState/rack data and20Hz calibrated LLK yaw.
+Every selected log has finite roll but nonfinite roll uncertainty, so the strict
+LLK quality mask admits zero rows; required `CustomTorqueParams` is also absent.
+No uncertainty, policy value, signed vendor rate or physical actuation was invented.
+The new multirate joint response and native coupled algorithms remain under work;
+no current full long/lat candidate or physical improvement is accepted.

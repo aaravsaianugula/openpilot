@@ -195,3 +195,22 @@ and validity/active/driver/409 gates. A new TRAIN-only 16/24-second census found
 right-turn footage, including a 24-second b8--9 clip with entry/steady/exit coverage.
 This changes footage acquisition, not controller acceptance. No test data was read;
 camera availability, packet construction and fresh inference remain separate gates.
+
+`controller_motion_tape.py` now provides a separate selected-TRAIN raw motion tape.
+It retains genuine uint64 publication clocks, rack angle, unsigned Hyundai rate,
+full calibrated LLK yaw/roll uncertainty, individual CAN origins/request bits,
+static payloads and typed policy snapshots. It never creates a 100Hz replay grid.
+All sources must be regular unique files in the exact flat layout, with no
+symlink/junction/hardlink alias, before any schema load or decode. Returned
+LKAS11 echoes use CAN source128; outgoing sendcan uses bus0. Neither proves
+physical actuator delivery. Nineteen tests and independent source review cover
+these source and clock contracts.
+
+A bounded actual run decoded only six selected TRAIN logs from b7 and b8, including
+their own segment0 static sources, into `motion-recent-train-v1`. Original datasets
+and the frozen chronological split remain unchanged; no held-out array was opened.
+The raw carState cadence is approximately100Hz and calibrated LLK yaw approximately
+20Hz. All six logs have finite roll but nonfinite roll uncertainty, and their
+recorded Params omit required `CustomTorqueParams`. The producer preserves both
+gaps and rejects LLK quality admission. Dirty source and unknown opendbc identity
+also remain untrusted. These tapes do not yet establish a selectable joint plant.
