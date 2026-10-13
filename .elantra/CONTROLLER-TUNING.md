@@ -230,5 +230,29 @@ Full semantic CP/SP hashing now retains Cap'n Proto Data fields, including firmw
 bytes. Three focused regressions and an actual17-firmware-field raw CP/SP example
 passed; existing non-Data hash semantics and all prior test functions remain
 unchanged. This is a typed CP/SP content contract, not a generic type-injective
-serialization format. The native coupled runner is still under review and needs
-its own actual API evidence; standstill/hold coupling remains a separate gap.
+serialization format. The moving native coupled runner has scoped host review
+and still needs actual API evidence; standstill/hold coupling remains a separate gap.
+
+`controller_native_joint.py` now supplies a moving-regime conditional joint search.
+It caches actual native longitudinal trials, feeds their pre-transition simulated
+speed/acceleration into the native lateral handle, and advances empirical joint
+angle/yaw/rate after five valid commands. Fixed raw-plan current-time geometry,
+path and left/right populations remain separate from future action feedforward.
+Every finite trial retains missing/failed windows and independent direction,
+acceleration/braking, comfort, saturation and stopping-feasibility rejections.
+
+Full source/static/policy/model/cell hashes, actual LLK uncertainty, causal learner
+snapshot, complete five-tick horizons and native model horizons must pass before
+either controller runs. An independently extracted inference-time lateral-delay
+witness binds the exact frame/capture/source, packet delay and action inputs; later
+core published delay and extension cache are distinct. Thirty-seven host checks
+and Ruff passed after independent review fixes. The one actual POSIX case remains
+skipped on Windows and unperformed because the device is unreachable. These are
+host-validated research source changes, not complete runtime or car proof.
+
+This runner keeps complete candidates absent and production disabled. It supports
+moving joint diagnostics; inactive lateral response, low-speed transition/hold,
+100Hz physical feedback, initialization and frozen adaptation remain unsupported.
+Stop/hold work must retain the continuous native handle and require its own
+empirical request-false/mixed-pattern response, without inventing zero curvature
+or a frozen rack state at standstill.

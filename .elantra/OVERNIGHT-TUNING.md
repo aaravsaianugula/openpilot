@@ -723,3 +723,48 @@ changes. AST comparison proves the other native search functions and all25 prior
 test functions unchanged. Independent review accepted this schema-valid CP/SP path;
 the Data marker is not claimed to be a generic type-injective serialization scheme.
 No native controller/API behavior was changed or rerun by this hash correction.
+
+### Moving native joint search: host proof, actual runtime pending
+
+The new joint runner now caches the existing native LongControl trials and supplies
+their pre-transition simulated speed/acceleration to the actual lateral adapter.
+It keeps simulated rack/yaw/rate feedback between empirical50ms transitions and
+passes five unshifted CAN-command/speed nodes to each joint update. The same raw
+RDF current-time geometry and fixed reference path/turn populations apply across
+candidates. Independent acceleration/braking and left/right entry/steady/exit,
+jerk, saturation, speed/path and stopping gates retain every failed common window.
+No complete candidate or production path is enabled.
+
+Review found and closed three admission defects: an unfinished terminal macro could
+be called complete; native horizon mismatch was checked after LongControl ran; and
+the inference-time lateral delay lacked an independent source witness. Five new
+cases reproduced the defects before correction. Complete five-tick horizons,
+native horizon equality and exact frame/capture/delay/packet/source witnesses now
+fail before either controller factory. Inference delay is distinct from the later
+native core delay and extension cache. Root also caught an unused obsolete direct
+Kp assignment in the POSIX fixture; the pinned schema and AST check verified its
+removal without changing controller behavior.
+
+The final owned host suite passed37 with one POSIX skip; Ruff passed. Root and
+independent changed-line review found no remaining scoped source blocker. Original
+source/test snapshots, red tests and final commands/hashes are in
+`recent-clips/native-joint-source-review-42baf`. The actual POSIX case has not run.
+The comma's saved hostname/address and strict known-host SSH checks time out;
+targeted neighbor/hostname discovery found no reachable alternate. No new device
+allocation, packet expansion, right-turn inference or joint CPU job was launched.
+
+The right-turn host packet is complete:480exact pairs/132history/348subsequent,
+283.868seconds, builder/wrapper exit0. Its633,514,128 compressed bytes plus
+2,331,770,880 expanded bytes and268,435,456 temporary/output headroom require
+3,233,720,464 additional device bytes. This is a plan, not current storage admission.
+Identity/source/offroad/health/job checks and phase guards remain mandatory when
+connectivity returns. The two preceding wrapper failures happened before decode
+and remain preserved; the successful packet must not be rebuilt.
+
+The moving runner cannot finish standstill/hold windows. The next separate regime
+must preserve the same continuous native handle, permit legitimate inactive
+zero-CAN/request-false behavior and query a separately admitted empirical transition/
+hold plant. Raw-plan availability and undefined zero-speed curvature are different
+contracts; no curvature, rack state, contact response or model-stop ground truth
+may be invented. Current source, roll uncertainty, policy and low-speed evidence
+remain insufficient. No road test, deployment, actuation or flash occurred.
