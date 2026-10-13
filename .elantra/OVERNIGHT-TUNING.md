@@ -697,3 +697,29 @@ LLK quality mask admits zero rows; required `CustomTorqueParams` is also absent.
 No uncertainty, policy value, signed vendor rate or physical actuation was invented.
 The new multirate joint response and native coupled algorithms remain under work;
 no current full long/lat candidate or physical improvement is accepted.
+
+The new pure joint multirate core passed19 owned tests and Ruff. It advances one
+nominal50ms joint rack/yaw/unsigned-rate median after five completed native input
+nodes, holding feedback between updates. It retains actual48..52ms sample deltas,
+strict source/static/policy/TRAIN admission, invalid/request-false interpositions,
+two-route/100-sample cell support and no extrapolation. ZOH/Markov response,
+physical delivery and native100Hz feedback are explicitly unvalidated, so its
+selection and production flags stay false.
+
+The first actual driver rejected periodic duplicate static snapshots before any
+fit. Inspection proved the duplicates byte-identical. The corrected new v2 driver
+binds each route's own earliest matching full CP/SP prefix, keeps the first failure,
+and runs only the six already produced TRAIN tapes. Full semantic CP/SP is equal
+across these routes, but exact raw typed policies differ, so they remain two groups.
+The diagnostic retains3401 and3386 excluded windows respectively, zero accepted
+windows/cells and no candidate. Missing roll uncertainty, policy and historical
+source identity were not filled or bypassed. No old or reserved NPZ was opened.
+
+Root also fixed a concrete full-CP proof failure: firmware Cap'n Proto Data bytes
+could not be JSON-hashed. Two new cases failed first, then three focused cases
+passed with45 prior cases deselected. An actual recorded CP/SP with17 firmware Data
+fields hashes without stripping anything and changes identity when one Data value
+changes. AST comparison proves the other native search functions and all25 prior
+test functions unchanged. Independent review accepted this schema-valid CP/SP path;
+the Data marker is not claimed to be a generic type-injective serialization scheme.
+No native controller/API behavior was changed or rerun by this hash correction.

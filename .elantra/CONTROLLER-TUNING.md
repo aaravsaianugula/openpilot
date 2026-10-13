@@ -214,3 +214,21 @@ The raw carState cadence is approximately100Hz and calibrated LLK yaw approximat
 recorded Params omit required `CustomTorqueParams`. The producer preserves both
 gaps and rejects LLK quality admission. Dirty source and unknown opendbc identity
 also remain untrusted. These tapes do not yet establish a selectable joint plant.
+
+`controller_multirate_lateral.py` implements a separate joint binned-median research
+hypothesis: one rack-angle/calibrated-yaw/unsigned-rate transition after five
+100Hz command/speed nodes. Feedback is held between those nominal50ms transitions;
+this ZOH/Markov command-proxy assumption has not been physically validated. It
+never divides a50ms delta into invented100Hz measurements or shifts CAN commands
+by model delay. Static/policy anchors, invalid interpositions, request-false
+prefixes, exact source grouping and cell bounds fail closed. At least100 samples
+and two independent TRAIN routes are required per supported cell. Nineteen tests
+passed. Its first real diagnostic retains6787 excluded windows in two distinct
+recorded policy groups and selects no cell or candidate.
+
+Full semantic CP/SP hashing now retains Cap'n Proto Data fields, including firmware
+bytes. Three focused regressions and an actual17-firmware-field raw CP/SP example
+passed; existing non-Data hash semantics and all prior test functions remain
+unchanged. This is a typed CP/SP content contract, not a generic type-injective
+serialization format. The native coupled runner is still under review and needs
+its own actual API evidence; standstill/hold coupling remains a separate gap.

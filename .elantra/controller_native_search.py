@@ -53,6 +53,8 @@ class NativeRuntime:
 
 
 def _material(value):
+  if isinstance(value, (bytes, bytearray)):
+    return {"capnp_data_hex": bytes(value).hex()}
   if isinstance(value, np.ndarray):
     if value.dtype.hasobject:
       raise SearchError("object arrays are not a native input contract")

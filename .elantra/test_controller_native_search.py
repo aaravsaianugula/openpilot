@@ -426,3 +426,25 @@ def test_actual_native_pid_uses_simulated_feedback_and_candidate_integral_schedu
   for key in ("command", "pid_integral", "a", "v", "native_state"):
     np.testing.assert_array_equal(changed_gain["trace"][key], unchanged_feedback["trace"][key])
   assert not changed_gain["selection_eligible"]  # Synthetic plant is not car stopping evidence.
+
+
+def test_full_static_capnp_data_can_be_content_bound_without_stripping_firmware():
+  original = {"carFw": [{"ecu": "eps", "fwVersion": b"\x00\xff\x80"}], "lateralTuning": {"torque": {"friction": .1}}}
+  changed = deepcopy(original)
+  changed["carFw"][0]["fwVersion"] = b"\x00\xfe\x80"
+  assert search.value_hash(original) != search.value_hash(changed)
+  assert original["carFw"][0]["fwVersion"] == b"\x00\xff\x80"
+
+
+def test_capnp_data_bytes_and_bytearray_share_identity_but_text_does_not():
+  assert search.value_hash({"fwVersion": b"\x00\xff"}) == search.value_hash({"fwVersion": bytearray(b"\x00\xff")})
+  assert search.value_hash({"fwVersion": b"\x00\xff"}) != search.value_hash({"fwVersion": "00ff"})
+
+
+def test_capnp_data_extension_preserves_prior_nondata_hash_contract():
+  import hashlib
+  import json
+
+  old = {"float": .1, "flags": [True, False], "nested": {"numbers": [1, 2]}}
+  encoded = json.dumps(old, sort_keys=True, allow_nan=False, separators=(",", ":")).encode()
+  assert search.value_hash(old) == hashlib.sha256(encoded).hexdigest()
