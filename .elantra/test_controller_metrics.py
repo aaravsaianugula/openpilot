@@ -17,6 +17,8 @@ def record(seconds=4, speed=10., yaw=0.):
           "desired_curvature": np.full(n, yaw / speed), "accel_command": np.zeros(n),
           "accel_target": np.zeros(n), "model_t": t.copy(), "model_horizon": np.tile(horizon, (n, 1)),
           "model_x": np.tile(speed * horizon, (n, 1)), "model_y": np.zeros((n, 33)),
+          "model_frame_id": np.arange(n, dtype=np.int64), "raw_encode_frame_id": np.arange(n, dtype=np.int64),
+          "raw_encode_t": t.copy(),
           "lat_active": np.ones(n), "long_active": np.ones(n)}
   for key in ("calibrated", "calibration_valid", "model_valid", "car_state_valid", "car_control_valid",
               "car_output_valid", "controls_valid", "planner_valid", "location_valid", "location_measurement_valid",
@@ -83,17 +85,86 @@ def test_future_gap_is_not_interpolated_away():
 
 
 def test_model_age_is_causal_and_strictly_bounded():
-  data = record(seconds=1)
+  data = record(seconds=2)
   data["model_t"] -= .051
   result = cm.segment_metrics(data)["both"]["model_vs_measured"]["1"]
-  assert result["excluded"]["stale_model"] == 2
+  assert result["excluded"]["stale_model"] == 3
   data["model_t"] = data["t"] + .001
   result = cm.segment_metrics(data)["both"]["model_vs_measured"]["1"]
-  assert result["excluded"]["future_model"] == 2
+  assert result["excluded"]["future_model"] == 3
   data["model_t"] = data["t"] - .05
+  data["raw_encode_t"] = data["model_t"].copy()
   result = cm.segment_metrics(data)["both"]["model_vs_measured"]["1"]
   assert result["used"] == 1
   assert result["model_age_s"] == pytest.approx([.05])
+
+
+def delayed_record(seconds=4):
+  data = record(seconds=seconds)
+  data["t"] += 10.
+  data["model_t"] = data["t"] - .01
+  data["raw_encode_t"] = data["t"] - .08
+  data["v"] = 4. + .7 * (data["t"] - 10.)
+  data["a"][:] = .7
+  horizon = np.r_[[0., .03, .11, .26, .5, .8, 1., 1.3, 1.8, 2., 2.5, 3.], np.linspace(3.2, 10., 21)]
+  data["model_horizon"][:] = horizon
+  capture_v = 4. + .7 * (data["raw_encode_t"] - 10.)
+  data["model_x"][:] = capture_v[:, None] * horizon + .35 * horizon**2 + 7.
+  data["model_y"][:] = 4.
+  return data
+
+
+def test_exact_80ms_capture_delay_anchors_gt_to_exposure_with_nonuniform_model_horizon():
+  data = delayed_record()
+  data["model_velocity"] = np.full(len(data["t"]), 999.)
+  metrics = cm.segment_metrics(data)["both"]["model_vs_measured"]
+  one = metrics["1"]
+  assert one["used"] == 3 and one["candidates"] == 5
+  assert one["excluded"] == {"missing_capture_prefix": 1, "future_unavailable": 1}
+  assert cm.summarize(one["endpoint_l2_m"])["max"] < 1e-10
+  assert one["capture_age_s"] == pytest.approx([.08] * 3)
+  assert one["capture_to_publication_s"] == pytest.approx([.07] * 3)
+  assert metrics["3"]["used"] == 1
+  assert cm.summarize(metrics["3"]["endpoint_l2_m"])["max"] < 1e-10
+
+
+@pytest.mark.parametrize(("field", "value", "reason"), [
+  ("brake_pressed", 1., "driver_intervention"), ("location_measurement_valid", 0., "invalid_measured_telemetry"),
+  ("car_state_valid", 0., "invalid_measured_telemetry"), ("calibration_valid", 0., "invalid_calibration"),
+])
+def test_capture_prefix_interpolation_requires_both_bracketing_rows_valid(field, value, reason):
+  data = delayed_record(seconds=2)
+  data[field][18] = value  # 10.90 is before capture10.92 and publication10.99.
+  one = cm.segment_metrics(data)["both"]["model_vs_measured"]["1"]
+  assert one["used"] == 0
+  assert one["excluded"][reason] == 1
+
+
+def test_capture_gt_rejects_missing_mapping_and_stale_capture_without_publication_fallback():
+  data = delayed_record(seconds=2)
+  del data["raw_encode_frame_id"]
+  one = cm.segment_metrics(data)["both"]["model_vs_measured"]["1"]
+  assert one["used"] == 0 and one["excluded"]["unknown_model_capture"] == 3
+  data = delayed_record(seconds=2)
+  data["raw_encode_t"] = data["t"] - .201
+  one = cm.segment_metrics(data)["both"]["model_vs_measured"]["1"]
+  assert one["used"] == 0 and one["excluded"]["stale_model_capture"] == 3
+
+
+def test_capture_gt_never_interpolates_across_prefix_gap_or_uses_future_gt_as_a_model_input():
+  data = delayed_record(seconds=3)
+  data["t"][19:] += .1
+  data["model_t"] = data["t"] - .01
+  data["raw_encode_t"] = data["t"] - .08
+  one = cm.segment_metrics(data)["both"]["model_vs_measured"]["1"]
+  assert one["excluded"]["time_gap"] >= 1
+  data = delayed_record(seconds=2)
+  before = data["model_x"].copy()
+  data["v"][30:] += 2.
+  one = cm.segment_metrics(data)["both"]["model_vs_measured"]["1"]
+  assert one["used"] == 1
+  assert one["endpoint_l2_m"][0] > .7
+  np.testing.assert_array_equal(data["model_x"], before)
 
 
 def test_insufficient_or_nonmonotonic_model_horizon_is_explicit():

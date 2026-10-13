@@ -126,3 +126,21 @@ def test_transient_rollout_uses_delayed_commands_and_native_limiter():
     assert np.isfinite(tuned).all() and tuned[-1] > 0
     assert np.all(tuned[:3] == 0)  # two delayed command samples
     assert commands[0] == -15 and np.all(np.abs(commands) <= 409)
+
+
+def test_rollout_gain_series_matches_scalar_and_applies_current_sample_gain():
+    d = {k: np.zeros(40) for k in ("a", "yaw", "roll", "torque")}
+    d.update(t=np.arange(40) * .05, v=np.full(40, 5.), desired_curvature=np.full(40, .01))
+    cell = {"state_min": -.25, "state_max": .25, "command": [-100., 0., 100.], "delta": [.03, 0., -.03]}
+    model = {"kind": "median_transition", "delay_s": 0., "state_edges": [-.25, .25],
+             "cells": {"3-7": {"0": cell}}}
+    scalar = ct.rollout(d, 12, model, "lat", .1, seconds=.5)
+    series = ct.rollout(d, 12, model, "lat", np.full(11, .1), seconds=.5)
+    np.testing.assert_array_equal(scalar, series)
+    gains = np.r_[np.zeros(5), np.full(6, .1)]
+    state, command = ct.rollout(d, 12, model, "lat", gains, seconds=.5)
+    assert np.all(state[:6] == 0) and state[6] > 0
+    assert np.all(command[:5] == 0) and command[5] < 0
+    for invalid in ([.1], np.full((11, 1), .1), np.full(11, np.nan), -.1):
+        with pytest.raises(ValueError, match="gain"):
+            ct.rollout(d, 12, model, "lat", invalid, seconds=.5)

@@ -104,3 +104,29 @@ avoid a lead vehicle or improve a live drive. No road test, deployment, service
 restart, panda reflash or vehicle actuation is part of this desktop experiment.
 
 All additions live in `.elantra/`, which the existing weekly overlay carries wholesale.
+
+## Fresh RDF v2 and finite automatic search
+
+See `OVERNIGHT-TUNING.md` for exact RDFMV2 identity, isolated device execution and
+current receipts. `rdf_frames.py` preserves consecutive synchronized narrow/wide
+images, recorded calibration and causal inputs. `rdf_bench.py` verifies the compiled
+artifact hash before loading, runs without publishers or control changes, and saves
+native plans/actions plus measured compute and conservative serial availability.
+The initial 132 actual camera frames build temporal history and are excluded from
+scoring. Model initialization/kernel warmup is reported separately.
+
+`controller_search.py --dataset <dataset> --plant-report <tuning-report.json>
+--out <search-directory>` reuses an identified same-cohort plant and immutable route
+split. It searches separate acceleration, braking and lateral gains over the stated
+finite grid, selecting validation target tracking after support and physical/comfort
+constraints. It freezes selection before reading held-out test arrays. Low-speed
+stops and untrusted plant axes remain unsupported. A partial axis result cannot
+become a complete controller candidate; production stays disabled.
+
+Pass `--rdf-output <rdf_bench.npz>` to `controller_video.py` for fresh RDF evidence.
+This view shows logged model versus fresh RDF trajectories with measured future GT
+and actual hardware traces. It labels the absence of a validated tune. Exact frame
+identity, genuine history and causal output availability are required; paths move
+from capture to the displayed ego frame using measured past motion. Capture-origin
+model errors and stop distances now use exact EncodeIdx frame matches, never a
+publication timestamp substituted for camera capture.

@@ -2,10 +2,10 @@
 """Observation-only archive metrics: recorded model/controller output vs measured motion.
 
 Trajectory GT integrates carState.vEgo and measured LLK yaw, never model velocity.
-Model publication is causal as-of, no older than 50 ms; the nonuniform recorded
-horizon is interpolated without time reanchoring. Camera capture alignment is not
-established, so the model/GT origin mismatch is not bounded by this publication-age
-gate. No replay, gain identification or road-performance claim is made here.
+Model publication is causal as-of, no older than 50 ms. Exact frame-ID matching
+anchors each model path and measured future trajectory to camera capture, with
+capture age at most 200 ms. Interpolation of measured signals is for offline
+labels only. No replay, gain identification or road-performance claim is made.
 """
 from __future__ import annotations
 
@@ -17,14 +17,17 @@ from pathlib import Path
 
 import numpy as np
 
-from controller_extract import hold_calibration, sha256
-from controller_tune import DT, clean_mask, cohort_key, enrich_route_metadata, integrate, resolve_gitlinks
+from controller_extract import hold_calibration, model_capture_times, sha256
+from controller_tune import DT, clean_mask, cohort_key, enrich_route_metadata, resolve_gitlinks
 
 HORIZONS = (1, 2, 3)
 MAX_MODEL_AGE = .05
+MAX_CAPTURE_AGE = .2
 MODES = ("manual", "lateral_only", "longitudinal_only", "both", "unknown")
 ERROR_FIELDS = ("lat_target_minus_measured_mps2", "delivered_minus_requested_fraction",
                 "accel_command_minus_measured_mps2", "accel_target_minus_measured_mps2")
+TRAJECTORY_FIELDS = ("endpoint_l2_m", "lateral_signed_m", "lateral_abs_m", "model_age_s",
+                     "capture_age_s", "capture_to_publication_s")
 
 
 def mode_indices(data):
@@ -51,31 +54,63 @@ def empty_mode():
           "sampled_torque_counts": Counter(),
           "lat_tracking": {"candidates": 0, "used": 0}, "long_tracking": {"candidates": 0, "used": 0},
           "instantaneous": {key: [] for key in ERROR_FIELDS},
-          "model_vs_measured": {str(h): {"candidates": 0, "used": 0, "excluded": Counter(),
-            "endpoint_l2_m": [], "lateral_signed_m": [], "lateral_abs_m": [], "model_age_s": []} for h in HORIZONS}}
+          "model_vs_measured": {str(h): dict(candidates=0, used=0, excluded=Counter(),
+                                            **{key: [] for key in TRAJECTORY_FIELDS}) for h in HORIZONS}}
 
 
-def window_reason(data, modes, i, h):
-  end = i + int(round(h / DT)) + 1
-  if end > len(data["t"]):
-    return "future_unavailable"
-  z = slice(i, end)
+def _window_brackets(data, modes, i, h, capture_t):
+  """Admit every measured row used to bracket/interpolate a capture-based label."""
+  timestamps = data["t"]
+  if capture_t < timestamps[0]:
+    return None, "missing_capture_prefix"
+  end_t = capture_t + h
+  if end_t > timestamps[-1]:
+    return None, "future_unavailable"
+  lo = int(np.searchsorted(timestamps, capture_t, side="right") - 1)
+  hi = int(np.searchsorted(timestamps, end_t, side="left"))
+  z = slice(lo, hi + 1)
   t = data["t"][z]
-  if np.any(np.abs(np.diff(t) - DT) > .002) or abs(t[-1] - t[0] - h) > .002:
-    return "time_gap"
+  if np.any(np.abs(np.diff(t) - DT) > .002):
+    return None, "time_gap"
   if any(not np.isfinite(data[key][z]).all() for key in ("v", "yaw")) or any(
       not np.all(data[key][z] == 1) for key in ("car_state_valid", "location_valid", "location_measurement_valid")):
-    return "invalid_measured_telemetry"
+    return None, "invalid_measured_telemetry"
   if any(not np.all(data[key][z] == 1) for key in ("calibration_valid", "calibrated")):
-    return "invalid_calibration"
+    return None, "invalid_calibration"
   pressed = np.stack([data[key][z] for key in ("steering_pressed", "brake_pressed", "gas_pressed")])
   if not np.isfinite(pressed).all():
-    return "missing_driver_state"
+    return None, "missing_driver_state"
   if np.any(pressed != 0):
-    return "driver_intervention"
+    return None, "driver_intervention"
   if modes[i] == 4 or np.any(modes[z] != modes[i]):
-    return "mode_change"
-  return None
+    return None, "mode_change"
+  return (lo, hi, end_t), None
+
+
+def window_reason(data, modes, i, h, capture_t=None):
+  return _window_brackets(data, modes, i, h, data["t"][i] if capture_t is None else capture_t)[1]
+
+
+def measured_endpoint(data, modes, i, h, capture_t):
+  """Capture-origin measured future position; label-only interpolation, never model input.
+
+  Interpolate speed/yaw at the two requested boundary times only after all
+  bracketing rows pass admission. Integrate each actual interval using midpoint
+  speed, midpoint yaw and midpoint heading in x-forward/y-right coordinates.
+  """
+  brackets, reason = _window_brackets(data, modes, i, h, capture_t)
+  if reason:
+    return None, reason
+  lo, hi, end_t = brackets
+  t = data["t"][lo:hi+1]
+  nodes = np.r_[capture_t, t[(t > capture_t) & (t < end_t)], end_t]
+  speed = np.interp(nodes, t, data["v"][lo:hi+1])
+  yaw = np.interp(nodes, t, data["yaw"][lo:hi+1])
+  dt = np.diff(nodes)
+  turns = .5 * (yaw[:-1] + yaw[1:]) * dt
+  midpoint_heading = np.cumsum(turns) - .5 * turns
+  distance = .5 * (speed[:-1] + speed[1:]) * dt
+  return np.array([np.sum(distance * np.cos(midpoint_heading)), np.sum(distance * np.sin(midpoint_heading))]), None
 
 
 def model_endpoint(data, i, h):
@@ -93,6 +128,7 @@ def model_endpoint(data, i, h):
 
 def segment_metrics(data):
   modes = mode_indices(data)
+  captures = model_capture_times(data)
   result = {name: empty_mode() for name in MODES if np.any(modes == MODES.index(name))}
   clean_lat, clean_long = clean_mask(data, "lat"), clean_mask(data, "long")
   for mode, value in result.items():
@@ -115,6 +151,8 @@ def segment_metrics(data):
   for i in anchor_indices(data["t"]):
     mode = result[MODES[modes[i]]]
     age = data["t"][i] - data["model_t"][i]
+    capture_t = captures[i]
+    capture_age = data["t"][i] - capture_t
     for h in HORIZONS:
       value = mode["model_vs_measured"][str(h)]
       value["candidates"] += 1
@@ -124,22 +162,29 @@ def segment_metrics(data):
         reason = "future_model"
       elif age > MAX_MODEL_AGE + 1e-8:
         reason = "stale_model"
+      elif not np.isfinite(capture_t):
+        reason = "unknown_model_capture"
+      elif capture_age > MAX_CAPTURE_AGE + 1e-8:
+        reason = "stale_model_capture"
       else:
-        reason = window_reason(data, modes, i, h)
+        reason = None
+      measured = None
+      if reason is None:
+        measured, reason = measured_endpoint(data, modes, i, h, capture_t)
       predicted = None if reason else model_endpoint(data, i, h)
       if reason is None and predicted is None:
         reason = "invalid_model_horizon"
       if reason:
         value["excluded"][reason] += 1
         continue
-      end = i + int(round(h / DT)) + 1
-      measured = integrate(data["v"][i:end], data["yaw"][i:end], DT)[-1]
       error = predicted - measured
       value["used"] += 1
       value["endpoint_l2_m"].append(float(np.linalg.norm(error)))
       value["lateral_signed_m"].append(float(error[1]))
       value["lateral_abs_m"].append(float(abs(error[1])))
       value["model_age_s"].append(float(max(0, age)))
+      value["capture_age_s"].append(float(capture_age))
+      value["capture_to_publication_s"].append(float(data["model_t"][i] - capture_t))
   return result
 
 
@@ -165,8 +210,7 @@ def finalize_mode(value):
   output["model_vs_measured"] = {}
   for h, metrics in value["model_vs_measured"].items():
     output["model_vs_measured"][h] = {key: metrics[key] for key in ("candidates", "used", "excluded")}
-    output["model_vs_measured"][h].update({key: summarize(metrics[key]) for key in
-      ("endpoint_l2_m", "lateral_signed_m", "lateral_abs_m", "model_age_s")})
+    output["model_vs_measured"][h].update({key: summarize(metrics[key]) for key in TRAJECTORY_FIELDS})
     output["model_vs_measured"][h]["coverage"] = metrics["used"] / metrics["candidates"] if metrics["candidates"] else None
   return output
 
@@ -185,7 +229,7 @@ def merge_mode(target, source):
     for key in ("candidates", "used"):
       a[key] += b[key]
     a["excluded"].update(b["excluded"])
-    for key in ("endpoint_l2_m", "lateral_signed_m", "lateral_abs_m", "model_age_s"):
+    for key in TRAJECTORY_FIELDS:
       a[key].extend(b[key])
 
 
@@ -277,14 +321,18 @@ def main():
   report = analyze(paths)
   report.update(extraction_context(args.dataset))
   report.update({"dataset": str(args.dataset.resolve()), "npz_records_present_at_start": len(available), "smoke_limit": args.limit,
-    "trajectory_timing_status": "publication_based_capture_alignment_unverified",
+    "trajectory_timing_status": "exact_frame_capture_anchored_measured_gt",
+    "analysis_version": 2,
     "contract": {"scope": "all selected extracted records; source archive/extraction completeness must be checked separately",
       "sample_rate_hz": 1 / DT, "anchor_spacing_s": 1, "trajectory_horizons_s": HORIZONS,
-      "gt": "midpoint integration of measured carState.vEgo and LLK angularVelocityCalibrated.value[2]; x forward,y right",
+      "gt": "capture-origin midpoint integration of measured speed/yaw on actual intervals; x forward,y right; boundary interpolation is labels only",
       "model": "recorded nonuniform modelV2.position.t; linear endpoint interpolation; subtract position at horizon0",
-      "alignment": "causal model publication age<=50ms; no reanchoring; capture-origin mismatch is not established or bounded by publication freshness",
-      "model_age_s": "modelV2 publication age only; these apparent endpoint errors include unestablished capture-to-publication origin mismatch",
-      "future_window": "whole horizon contiguous and measured-valid, calibrated, driver-free and constant engagement mode; no segment bridging",
+      "alignment": "exact model_frame_id to narrowRoadEncodeIdx.frameId exposure timestamp; publication causal and age<=50ms; capture age<=200ms",
+      "model_age_s": "modelV2 publication age only; capture_age_s and capture_to_publication_s reported separately",
+      "capture_age_s": "analysis-row time minus exact matched EncodeIdx.timestampEof; never publication fallback",
+      "future_window": "capture through capture+horizon including both bracketing rows contiguous, measured-valid, calibrated, driver-free and constant mode",
+      "missing_prefix": "capture before this segment's first measured row is excluded; no backward fill or implicit segment stitching",
+      "label_causality": "future measured motion/interpolation used only as offline evaluation labels; never model/controller inputs or tuning features",
       "calibration": "analysis-only hold_calibration<=500ms for identical valid source event; dynamic telemetry keeps extraction freshness",
       "lat_tracking": "desired_curvature*vEgo^2 minus measured vEgo*yaw; >=3m/s clean active rows",
       "torque_normalization": "delivered CAN counts/409 minus requested carControl fraction;409 is a comparison reference, historical ceiling unverified",

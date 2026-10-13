@@ -12,6 +12,8 @@ def data(seconds=8):
   d = {"t": t, "v": np.full(n, 5.), "a": np.zeros(n), "yaw": np.zeros(n),
        "accel_command": np.zeros(n), "accel_target": np.zeros(n),
        "model_t": t.copy(), "model_horizon": np.tile(h, (n, 1)),
+       "model_capture_t": t.copy(), "model_frame_id": np.arange(n),
+       "raw_encode_frame_id": np.arange(n), "raw_encode_t": t.copy(),
        "model_x": np.tile(5 * np.minimum(h, 2), (n, 1)), "model_y": np.zeros((n, 33)),
        "source_segment": np.full(n, "route--0")}
   for key in ("long_active", "model_valid", "car_state_valid", "car_control_valid", "car_output_valid",
@@ -65,6 +67,40 @@ def test_model_prediction_rejects_future_stale_or_invalid_horizons():
   assert cs.prediction_at(d, 0) is None
 
 
+def test_stop_error_uses_exact_capture_origin_and_current_remaining_distance():
+  d = data()
+  d["v"][40:] = 0
+  d["model_t"][:] = d["t"] - .05
+  d["model_capture_t"][:] = d["t"] - .1
+  p = cs.prediction_at(d, 4)
+  assert p["capture_t"] == pytest.approx(.1)
+  e = cs.stop_event(d, 4, p, "route", True)
+  assert e["capture_age_s"] == pytest.approx(.1)
+  assert e["actual_stop_distance_m"] == pytest.approx(9.375)
+  assert e["prediction_error_m"] == pytest.approx(-.625)
+  assert e["travel_since_capture_m"] == pytest.approx(.5)
+  assert e["remaining_predicted_stop_distance_m"] == pytest.approx(9.5)
+  assert e["model_age_basis"] == "exact EncodeIdx frame capture"
+
+
+def test_stop_prediction_refuses_unknown_capture_future_capture_and_missing_prefix():
+  d = data()
+  for capture in (np.nan, .01, -.201, -.05):
+    d["model_capture_t"][0] = capture
+    assert cs.prediction_at(d, 0) is None
+
+
+def test_driver_intervention_between_capture_and_publication_excludes_comma_only():
+  d = data()
+  d["v"][40:] = 0
+  d["model_capture_t"][4] = .1
+  d["brake_pressed"][2] = 1
+  e = cs.stop_event(d, 4, cs.prediction_at(d, 4), "route", True)
+  assert not e["capture_prefix_driver_control_valid"]
+  assert not e["comma_only_eligible"]
+  assert e["first_manual_brake_s"] is None
+
+
 def test_measured_stop_distance_and_yaw_are_not_model_ground_truth():
   d = data()
   d["v"][40:] = 0
@@ -73,11 +109,11 @@ def test_measured_stop_distance_and_yaw_are_not_model_ground_truth():
   assert len(events) == 1
   e = events[0]
   assert e["outcome"] == "stopped"
-  assert e["actual_stop_distance_m"] == pytest.approx(10, abs=.001)
+  assert e["actual_stop_distance_m"] == pytest.approx(9.875, abs=.001)
   assert e["actual_stop_endpoint_xy_m"][1] > .9
   assert e["predicted_stop_distance_m"] == pytest.approx(10)
   assert e["comma_only_eligible"]
-  assert e["prediction_error_m"] == pytest.approx(0, abs=.001)
+  assert e["prediction_error_m"] == pytest.approx(-.125, abs=.001)
   disabled = cs.stop_events(d, "route", op_long=False)[0]
   assert disabled["control_regime"] == "cp_long_disabled"
   assert not disabled["comma_only_eligible"]
@@ -93,7 +129,7 @@ def test_manual_intervention_censors_acceptance_but_keeps_actual_event():
   d["brake_pressed"][20:] = 1
   d["long_active"][25:] = 0
   e = cs.stop_events(d, "route", op_long=True)[0]
-  assert e["actual_stop_distance_m"] == pytest.approx(10)
+  assert e["actual_stop_distance_m"] == pytest.approx(9.875)
   assert not e["comma_only_eligible"]
   assert e["comma_only_censor_s"] == 1
   assert e["first_manual_brake_s"] == 1
@@ -110,7 +146,7 @@ def test_inactive_predicted_stop_is_retained_separately_from_comma_acceptance():
   e = cs.stop_events(d, "route", op_long=True)[0]
   assert e["control_regime"] == "longitudinal_inactive"
   assert not e["comma_only_eligible"]
-  assert e["actual_stop_distance_m"] == pytest.approx(10)
+  assert e["actual_stop_distance_m"] == pytest.approx(9.875)
   assert e["censor_cause"] == ["not_comma_longitudinal_at_prediction"]
 
 

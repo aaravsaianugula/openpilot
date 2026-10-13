@@ -183,6 +183,10 @@ def fit_table(records, axis):
 
 def rollout(d, start, model, axis, gain=None, seconds=3, speed_override=None):
     n = int(round(seconds / DT)) + 1
+    gains = None if gain is None else np.asarray(gain, dtype=float)
+    if gains is not None and (gains.ndim > 1 or (gains.ndim == 1 and len(gains) != n)
+                              or not np.isfinite(gains).all() or np.any(gains < 0)):
+        raise ValueError("gain must be a finite nonnegative scalar or length-n window array")
     z = slice(start, start+n)
     v = d["v"][z].copy() if speed_override is None else np.array(speed_override, copy=True)
     measured = d["v"][z] * d["yaw"][z] if axis == "lat" else d["a"][z]
@@ -202,6 +206,7 @@ def rollout(d, start, model, axis, gain=None, seconds=3, speed_override=None):
         if gain is None:
             command[j] = d[cmd_key][i]
         else:
+            gain_j = float(gains if gains.ndim == 0 else gains[j])
             target = d["desired_curvature"][i] * v[j]**2 if axis == "lat" else d["accel_target"][i]
             if transition:
                 from controller_dynamics import inverse as transition_inverse, reachable
@@ -212,10 +217,10 @@ def rollout(d, start, model, axis, gain=None, seconds=3, speed_override=None):
                     break
                 # Saturate the desired state change to observed capacity; commands
                 # remain inside measured support and the unchanged native limiter.
-                target_next = np.clip(corrected + gain * (target - state[j]), *bounds)
+                target_next = np.clip(corrected + gain_j * (target - state[j]), *bounds)
                 ask = transition_inverse(model, v[j], corrected, target_next)
             else:
-                target += gain * (target - state[j])
+                target += gain_j * (target - state[j])
                 if axis == "lat":
                     target -= 9.81 * d["roll"][i]
                 ask = inverse(model["table"], v[j], target)

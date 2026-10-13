@@ -7,6 +7,7 @@ from controller_video import (
   RenderError, calibration_at, camera_mapping, contiguous_path, forecast_paths,
   frame_schedule, project_ground, projection_config, reanchor_paths, validate_output_path,
 )
+from controller_model_overlay import capture_path, measured_forecasts, model_path, rdf_path, validate_rdf_output
 
 
 def test_nonuniform_camera_timestamps_choose_logged_frames_not_container_rate():
@@ -125,3 +126,106 @@ def test_existing_hardlink_to_input_is_rejected(tmp_path):
   output.hardlink_to(data)
   with pytest.raises(RenderError, match="collision"):
     validate_output_path(output, tmp_path / "raw--0", data, tmp_path / "replay.npz")
+
+
+def motion_data(n=150):
+  d = {"t": np.arange(n) * .05, "v": np.full(n, 10.), "yaw": np.zeros(n)}
+  for key in ("car_state_valid", "location_valid", "location_measurement_valid"):
+    d[key] = np.ones(n)
+  return d
+
+
+def test_render_forecast_uses_exact_camera_phase_and_past_measured_pose():
+  d = motion_data()
+  xy = np.column_stack((np.arange(61) * .5, np.zeros(61)))[None]
+  replay = {"forecast_t": np.array([.1]), "forecast_dt": np.array(.05),
+            "gt_xy": xy, "baseline_xy": xy, "tuned_xy": np.full_like(xy, np.nan)}
+  paths, anchor = forecast_paths(replay, .125, d)
+  assert anchor == .1
+  np.testing.assert_allclose(paths[0][0], [0, 0], atol=1e-10)
+  assert paths[0][-1, 0] == pytest.approx(29.75)
+  assert not len(paths[2])
+
+
+def test_fresh_evidence_gt_retains_measured_driver_motion_but_never_fills_sensor_holes():
+  d = motion_data()
+  d.update(calibration_valid=np.ones(150), calibrated=np.ones(150),
+           steering_pressed=np.ones(150), long_active=np.zeros(150))
+  replay = measured_forecasts(d)
+  assert replay["gt_xy"][0, -1, 0] == pytest.approx(30.)
+  assert np.isnan(replay["tuned_xy"]).all()
+  d["location_valid"][20] = 0
+  replay = measured_forecasts(d)
+  assert np.isfinite(replay["gt_xy"][0, 19]).all()
+  assert np.isnan(replay["gt_xy"][0, 20:]).all()
+  d["t"][20:] += 1
+  replay = measured_forecasts(d)
+  assert np.isnan(replay["gt_xy"][0, 20:]).all()
+
+
+def test_capture_path_compensates_only_measured_past_and_rejects_gaps():
+  d = motion_data()
+  xy = np.column_stack((np.arange(33), np.zeros(33)))
+  h = np.arange(33) * .1
+  path = capture_path(d, xy, h, .1, .2)
+  np.testing.assert_allclose(path[0], [0., 0.], atol=1e-10)
+  assert path[-1, 0] == pytest.approx(31.)
+  d["v"][5:] = 1000  # future motion cannot change the displayed pose
+  np.testing.assert_allclose(capture_path(d, xy, h, .1, .2), path)
+  assert not len(capture_path(d, xy, h, -.1, .1))
+  assert not len(capture_path(d, xy, h, .1, .301))
+  d["location_valid"][2] = 0
+  assert not len(capture_path(d, xy, h, .1, .2))
+  d["location_valid"][2] = 1
+  d["location_valid"][4] = 0  # displayed endpoint admission is required too
+  assert not len(capture_path(d, xy, h, .1, .2))
+  short = {key: value[:2].copy() for key, value in motion_data().items()}
+  short["t"] = np.array([0., .15])
+  assert not len(capture_path(short, xy, h, .1, .15))
+
+
+def test_recorded_model_overlay_requires_exact_capture_and_causal_publication():
+  d = motion_data()
+  n = len(d["t"])
+  d.update(model_t=d["t"].copy(), model_capture_t=d["t"] - .05, model_valid=np.ones(n),
+           model_x=np.tile(np.arange(33), (n, 1)), model_y=np.zeros((n, 33)),
+           model_horizon=np.tile(np.arange(33) * .1, (n, 1)))
+  assert len(model_path(d, .2))
+  d["model_t"][4] = .201
+  assert not len(model_path(d, .2))
+  d["model_t"][4] = .2
+  d["model_capture_t"][4] = np.nan
+  assert not len(model_path(d, .2))
+
+
+def test_fresh_rdf_identity_warmup_availability_and_source_match():
+  from rdf_bench import WHOLE_SHA
+
+  d = motion_data()
+  n = len(d["t"])
+  d.update(raw_encode_frame_id=np.arange(n), raw_encode_t=d["t"].copy())
+  position = np.zeros((n, 33, 3))
+  position[:, :, 0] = np.arange(33)
+  rdf = {"input_t": d["t"].copy(), "narrow_t": d["t"].copy(), "output_ready_t": d["t"] + .035,
+         "frame_id": np.arange(n), "position": position, "horizon": np.arange(33) * .1,
+         "scored_mask": np.arange(n) >= 132, "desired_curvature": np.zeros(n), "desired_acceleration": np.zeros(n),
+         "model_sha256": np.asarray(WHOLE_SHA)}
+  validate_rdf_output(rdf, d)
+  rdf["input_t"] -= .001
+  with pytest.raises(RenderError, match="availability"):
+    validate_rdf_output(rdf, d)
+  rdf["input_t"] += .001
+  assert rdf_path(rdf, d, 6.63)[1] is None  # frame132 not ready; earlier frames are history
+  assert rdf_path(rdf, d, 6.65)[1] == 132
+  rdf["output_ready_t"] += 1.
+  assert rdf_path(rdf, d, 7.4)[1] is None  # delayed output is never displayed at capture time
+  rdf["scored_mask"][0] = True
+  with pytest.raises(RenderError, match="warmup"):
+    validate_rdf_output(rdf, d)
+  rdf["scored_mask"][0] = False
+  rdf["frame_id"][0] = 999
+  with pytest.raises(RenderError, match="exactly match"):
+    validate_rdf_output(rdf, d)
+  rdf["model_sha256"] = np.asarray("wrong")
+  with pytest.raises(RenderError, match="identity"):
+    validate_rdf_output(rdf, d)

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from controller_extract import hold_calibration
+from controller_extract import hold_calibration, model_capture_times
 from controller_metrics import cohort_identity, extraction_context, source_reference, summarize, validate_output
 from controller_tune import DT, cohort_key, enrich_route_metadata, resolve_gitlinks
 from lateral_report import band_of
@@ -23,7 +23,7 @@ from lateral_report import band_of
 MARGINS = (0, .5, 1, 1.5, 2)
 RESPONSE_PREFIX = int(round(.5 / DT))
 COMMAND_PREFIX = int(round(.3 / DT))
-FIELDS = ("t", "v", "a", "yaw", "accel_command", "accel_target", "long_active", "model_t", "model_horizon",
+FIELDS = ("t", "v", "a", "yaw", "accel_command", "accel_target", "long_active", "model_t", "model_capture_t", "model_horizon",
           "model_x", "model_y", "model_valid", "car_state_valid", "car_control_valid", "car_output_valid",
           "location_valid", "location_measurement_valid", "calibration_valid", "calibrated",
           "planner_valid", "age_longitudinalPlan", "age_carOutput", "age_carState",
@@ -51,6 +51,11 @@ def prediction_at(d, i):
   age = d["t"][i] - d["model_t"][i]
   if d["model_valid"][i] != 1 or not np.isfinite(age) or not -1e-8 <= age <= .05 + 1e-8:
     return None
+  capture = d["model_capture_t"][i]
+  capture_age = d["t"][i] - capture
+  if (not np.isfinite(capture) or capture > d["model_t"][i] + 1e-8
+      or capture < d["t"][0] or not 0 <= capture_age <= .2 + 1e-8):
+    return None
   h, x, y = (d[key][i] for key in ("model_horizon", "model_x", "model_y"))
   if not np.isfinite([h, x, y]).all() or h[0] != 0 or np.any(np.diff(h) <= 0):
     return None
@@ -64,6 +69,7 @@ def prediction_at(d, i):
       if duration >= 1:
         return {"distance_m": float(arc[start]), "stop_horizon_s": float(h[start]),
                 "stationary_s": float(duration), "model_age_s": float(max(0, age)),
+                "capture_t": float(capture), "capture_age_s": float(capture_age),
                 "model_stop_xy": [float(x[start] - x[0]), float(y[start] - y[0])]}
     else:
       start = None
@@ -83,6 +89,7 @@ def stitch_route(paths, calibration_hold=True):
     with np.load(path, allow_pickle=False) as archive:
       raw = {key: archive[key] for key in archive.files}
     data = hold_calibration(raw) if calibration_hold else raw
+    data["model_capture_t"] = model_capture_times(raw)
     t = data["t"]
     if not len(t) or not np.isfinite(t).all() or np.any(np.diff(t) <= 0):
       raise ValueError(f"nonempty strictly monotonic extracted timestamps required: {path}")
@@ -91,6 +98,7 @@ def stitch_route(paths, calibration_hold=True):
     piece["source_segment_start_t"] = np.full(len(t), t[0])
     pieces.append(piece)
     coverage["input_rows"] += len(t)
+    coverage["unknown_capture_rows"] += int(np.sum(~np.isfinite(data["model_capture_t"])))
   pieces.sort(key=lambda d: d["t"][0])
   runs, current = [], []
   for piece in pieces:
@@ -149,19 +157,39 @@ def travel(d, start, end):
   t = d["t"][start:end]
   if not len(t):
     return 0., [0., 0.]
-  # Measured dt, including accepted segment boundaries; no invented uniform span.
-  xy, heading = np.zeros(2), 0.
-  distance = 0.
-  for j, dt in enumerate(np.diff(t), start):
-    step = d["v"][j] * dt
-    mid = heading + d["yaw"][j] * dt / 2
-    xy += step * np.array([np.cos(mid), np.sin(mid)])
-    distance += abs(step)
-    heading += d["yaw"][j] * dt
-  return float(distance), xy.tolist()
+  return travel_between(d, float(t[0]), float(t[-1]))
+
+
+def travel_between(d, start_t, end_t):
+  """Measured capture-origin label; interpolate only admitted boundary samples.
+
+  For capture-to-decision distance every sample is already in the decision's
+  past. Future samples used to label the actual stop are never controller inputs.
+  """
+  t = d["t"]
+  if not np.isfinite([start_t, end_t]).all() or start_t < t[0] or end_t > t[-1] or start_t > end_t:
+    raise ValueError("measured travel requires a complete in-range time interval")
+  if start_t == end_t:
+    return 0., [0., 0.]
+  lo = int(np.searchsorted(t, start_t, side="right") - 1)
+  hi = int(np.searchsorted(t, end_t, side="left"))
+  if np.any(np.diff(t[lo:hi+1]) > .075 + 1e-8) or not np.all(motion_valid(d)[lo:hi+1]):
+    raise ValueError("invalid measured motion or time gap in travel interval")
+  nodes = np.r_[start_t, t[(t > start_t) & (t < end_t)], end_t]
+  speed = np.interp(nodes, t, d["v"])
+  yaw = np.interp(nodes, t, d["yaw"])
+  dt = np.diff(nodes)
+  turns = .5 * (yaw[:-1] + yaw[1:]) * dt
+  heading = np.cumsum(turns) - .5 * turns
+  step = .5 * (speed[:-1] + speed[1:]) * dt
+  xy = [float(np.sum(step * np.cos(heading))), float(np.sum(step * np.sin(heading)))]
+  return float(np.sum(np.abs(step))), xy
 
 
 def stop_event(d, i, prediction, route, op_long):
+  capture_t = prediction["capture_t"]
+  capture_lo = int(np.searchsorted(d["t"], capture_t, side="right") - 1)
+  past_travel, _ = travel_between(d, capture_t, float(d["t"][i]))
   end = int(np.searchsorted(d["t"], d["t"][i] + 15 + 1e-8, side="right"))
   local_stop = first_sustained_time(d["v"][i:end] <= .3, d["t"][i:end], .5)
   actual_stop = None if local_stop is None else i + local_stop
@@ -176,10 +204,13 @@ def stop_event(d, i, prediction, route, op_long):
   source_origin = d.get("source_segment_start_t", np.full(len(d["t"]), d["t"][0]))[i]
   event = {"route": route, "source_segment": str(d["source_segment"][i]), "t": float(d["t"][i]),
            "prediction_t": float(d["t"][i]), "actual_stop_t": None if actual_stop is None else float(d["t"][actual_stop]),
+           "capture_t": capture_t, "capture_age_s": prediction["capture_age_s"],
+           "travel_since_capture_m": past_travel,
+           "remaining_predicted_stop_distance_m": max(0., prediction["distance_m"] - past_travel),
            "prediction_segment_offset_s": float(d["t"][i] - source_origin),
            "covering_segments": list(dict.fromkeys(str(s) for s in d["source_segment"][i:last+1])),
            "model_stop_xy": prediction["model_stop_xy"], "measured_stop_xy": None,
-           "model_age_basis": "publication; camera capture alignment unverified",
+           "model_age_basis": "exact EncodeIdx frame capture",
            "control_regime": regime, "op_long_at_prediction": op_long,
            "long_active_at_prediction": float(d["long_active"][i]) if np.isfinite(d["long_active"][i]) else None,
            "speed_mps": float(d["v"][i]), "predicted_stop_distance_m": prediction["distance_m"],
@@ -187,12 +218,12 @@ def stop_event(d, i, prediction, route, op_long):
            "outcome": "stopped" if confirmed is not None else ("timeout_15s" if d["t"][last] - d["t"][i] >= 14.95 else "motion_block_ended"),
            "actual_stop_distance_m": None, "prediction_error_m": None, "actual_stop_endpoint_xy_m": None}
   if actual_stop is not None:
-    distance, endpoint = travel(d, i, actual_stop + 1)
+    distance, endpoint = travel_between(d, capture_t, float(d["t"][actual_stop]))
     event.update(actual_stop_distance_m=distance, prediction_error_m=distance - prediction["distance_m"],
                  actual_stop_endpoint_xy_m=endpoint, measured_stop_xy=endpoint,
                  actual_stop_s=float(d["t"][actual_stop] - d["t"][i]),
                  stop_confirmed_s=float(d["t"][confirmed] - d["t"][i]))
-  event["distance_until_observation_end_m"] = travel(d, i, last + 1)[0]
+  event["distance_until_observation_end_m"] = travel_between(d, capture_t, float(d["t"][last]))[0]
   censor = None
   conditions = {"manual_brake": d["brake_pressed"] == 1, "manual_gas": d["gas_pressed"] == 1,
                 "manual_steer": d["steering_pressed"] == 1, "disengage": d["long_active"] == 0,
@@ -214,7 +245,11 @@ def stop_event(d, i, prediction, route, op_long):
       d, i, last+1, key, valid_key, age_key, threshold, duration)
   if regime != "comma_longitudinal_active":
     censor = i
-  event["comma_only_eligible"] = confirmed is not None and censor is None and regime == "comma_longitudinal_active"
+  prefix = slice(capture_lo, i+1)
+  prefix_valid = (np.all(d["car_control_valid"][prefix] == 1) and np.all(d["long_active"][prefix] == 1)
+                  and all(np.all(d[k][prefix] == 0) for k in ("brake_pressed", "gas_pressed", "steering_pressed")))
+  event["capture_prefix_driver_control_valid"] = bool(prefix_valid)
+  event["comma_only_eligible"] = confirmed is not None and censor is None and prefix_valid and regime == "comma_longitudinal_active"
   event["comma_only_censor_s"] = None if censor is None else float(d["t"][censor] - d["t"][i])
   event["comma_only_prefix_distance_m"] = travel(d, i, (last if censor is None else censor) + 1)[0]
   event["censor_t"] = float(d["t"][censor if censor is not None else last])
@@ -372,8 +407,8 @@ def analyze(paths):
       stop["partition"] = split.get(stop["route"], "unknown")
       latency = params["braking"]["latency_s"]
       stop["candidate_margin_sensitivity"] = [] if latency is None else [
-        {"margin_m": margin, "request_mps2": stopping_request(stop["speed_mps"], stop["predicted_stop_distance_m"], latency, margin)[0],
-         "unreachable": stopping_request(stop["speed_mps"], stop["predicted_stop_distance_m"], latency, margin)[1]} for margin in MARGINS]
+        {"margin_m": margin, "request_mps2": stopping_request(stop["speed_mps"], stop["remaining_predicted_stop_distance_m"], latency, margin)[0],
+         "unreachable": stopping_request(stop["speed_mps"], stop["remaining_predicted_stop_distance_m"], latency, margin)[1]} for margin in MARGINS]
     raw_can = Counter()
     for _, meta in members:
       raw_can.update({name: int(meta.get("can_counts", {}).get(name, 0)) for name in
@@ -415,20 +450,23 @@ def main():
   report = analyze(paths)
   report.update(extraction_context(args.dataset))
   report.update({"dataset": str(args.dataset.resolve()), "npz_present": len(present), "smoke_limit": args.limit,
-    "trajectory_timing_status": "publication_based_capture_alignment_unverified",
+    "trajectory_timing_status": "exact_frame_capture_anchored_measured_gt", "version": 2,
     "contract": {"gt": "measured carState speed and LLK yaw integrated using actual monotonic dt; never model velocity",
-      "stop_prediction": "modelV2 nonuniform path arc speed<0.3m/s sustained>=1s; publication age<=50ms; capture-origin mismatch unverified",
+      "stop_prediction": ("modelV2 nonuniform path arc speed<0.3m/s sustained>=1s; publication age<=50ms; "
+                          + "exact EncodeIdx capture age<=200ms; complete capture prefix"),
       "stop_episode": ("first model stationary prediction while speed>=2m/s; retain inactive/unknown/CP-disabled regimes separately; "
                        + "reset after actual stop or2s no prediction"),
       "stop_observation": "speed<=0.3m/s sustained>=0.5s within15s; gaps>75ms or invalid motion/calibration end observations",
-      "stop_error": "actual travel minus initial predicted stationary distance; prediction discrepancy, NOT stop-line ground truth or causal overshoot",
+      "stop_error": ("capture-origin measured travel minus initial predicted stationary distance; "
+                     + "prediction discrepancy, NOT stop-line ground truth or causal overshoot"),
       "interventions": "retain all episodes; comma-only completion excluded at first brake/gas/steering/disengage or unknown driver/control state",
       "signal_onsets": "first valid negative planner/output/aEgo; finite,valid,age<=200ms throughout sustained interval; unavailable rows counted",
       "response": ("command change>=0.25m/s² vs previous0.3s median; negative command<=-0.2 or positive>=0.2; "
                    + "measured aEgo change>=0.15 sustained0.15s within3s"),
       "response_admission": "clean0.5s prefix and effect through response; no v>=3 gate; rejects already-changing acceleration and driver overrides",
       "latency": "training-route median observed event response only; descriptive, not identified hardware delay; separate braking/acceleration",
-      "law": "decel=-v²/[2*(predicted_stop_distance-v*training_brake_latency-margin)] clipped[-3.5,0]; exhausted distance/excess demand flaggedunreachable",
+      "law": ("decel=-v²/[2*(remaining_predicted_stop_distance-v*training_brake_latency-margin)] clipped[-3.5,0]; "
+              + "subtract already-travelled capture-to-decision distance causally; exhausted distance/excess demand flaggedunreachable"),
       "margins_m": MARGINS, "margin_selection": "unoptimized sensitivity settings; no optimized margin or counterfactual plant claim",
       "cohorts": "separate model/hardware/control provenance; whole routes partitioned by recorded wallTime; unknown walls excluded from parameter training",
       "calibration": "same recorded calibration event held<=500ms in analysis; no source changes",

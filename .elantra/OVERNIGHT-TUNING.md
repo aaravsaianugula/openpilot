@@ -28,12 +28,13 @@ for October 13 in America/Los_Angeles; pause the heartbeat at actual completion.
   `D:\comma_four\routes` does not exist; the older archive README is stale.
 - Dataset schemas are the existing recorded-build snapshot in
   `D:\comma_four\tuning\lat-tracking\schemas`.
-- `archive-analysis.json`: enriched, 28 provenance cohorts, 24,653 admitted
-  three-second windows. Numeric model-to-GT metrics remain provisional until
-  exposure-origin alignment is corrected (see below).
-- `stopping-analysis.json`: 415 initial model-stop episodes; 36 initially
-  comma-long-active / 379 inactive; 312 observed stops, 53 timeouts, 50 motion
-  block endings. Only five uninterrupted comma-controlled completed stops.
+- `archive-analysis.json`: corrected exact frame-capture alignment, 28 provenance
+  cohorts, 24,924 admitted three-second windows. Earlier publication-origin
+  results are preserved in `archive-analysis-publication-baseline.json`.
+- `stopping-analysis-capture.json`: corrected exact capture-origin stop errors,
+  414 initial model-stop episodes; 36 initially comma-long-active / 378 inactive.
+  Only five uninterrupted comma-controlled completed stops. The older
+  `stopping-analysis.json` is retained as the publication-origin baseline.
   Initial model stop predictions are not certified stop-line locations.
 - Existing comparison `videos/controller-comparison.mp4`: 30 s / 300 frames,
   frame-mapped via EncodeIdx, inspected frame and sequence. It visibly labels
@@ -49,7 +50,7 @@ for October 13 in America/Los_Angeles; pause the heartbeat at actual completion.
 - Tinygrad commit `e837e367aac9e1a66e689f4f32ce20ca9367df13`.
 - Artifact `driving_rdf_model_v2_august_11_2026_tinygrad.pkl`, three chunks;
   whole SHA256 `52fcf48bfb991f327a8982037eb0855d9a63437d78e9f4828d2be54df0f32567`.
-- The old flat archive's v2 manifests are one-byte placeholders, not weights.
+- The old flat archive has v2 count manifests but lacks their referenced chunks.
   `rdf23` / `rdf33` aliases and RDF v1 chunk files are different artifacts.
 - Verified v2 artifacts are now in `D:\comma_four\models\rdf-v2`: three
   chunks totaling 126,297,124 bytes, plus `rdf-v2-identity.json` containing
@@ -62,9 +63,12 @@ for October 13 in America/Los_Angeles; pause the heartbeat at actual completion.
   Check offroad, temperature, ignition and active jobs immediately before
   isolated benchmarks. No device writes/restarts were performed in that audit.
 - Subsequent snapshot: `IsOffroad=1`, battery **Discharging**, USB/DC online 0.
-  Existing isolated-bench guard requires external power. **Do not start sustained
-  comma inference on battery.** Continue desktop implementation/data work and
-  recheck power at follow-ups; the physical power condition is a real blocker.
+  The owner then explicitly confirmed comma is in their room connected to the
+  wall outlet over USB-C and instructed proceeding. Record this discrepancy;
+  **USB online status is not a blocker under this owner instruction.** Proceed
+  with bounded isolated inference while monitoring battery and relevant hardware
+  temperatures; stop on actual low battery, overheating or vehicle engagement.
+  Do not modify power, safety, service or vehicle-control state.
 - GPU is QCOM **Adreno630v2**. This compiled model has no verified desktop
   CUDA/ORT execution path. Device tinygrad checkout is `f6fc4e3`, while the
   catalog's matching `e837e367` Git object exists. Use an isolated runtime if
@@ -87,17 +91,18 @@ for October 13 in America/Los_Angeles; pause the heartbeat at actual completion.
 
 ## Required next work
 
-1. Fix timing interpretation before optimizing against trajectory error.
+1. Capture timing correction is implemented and the full reports regenerated.
    Extracted `model_t` is modelV2 **publication** monotonic time; a 50 ms
    publication-age gate does not bound camera/model processing latency.
    `controller_extract.model_capture_times()` now matches exact
    `model_frame_id` to `raw_encode_frame_id` / `raw_encode_t`. No publication
-   fallback or ambiguous frame-ID matching is allowed. Anchor measured GT at
-   camera exposure time, or explicitly report capture age and any remaining
-   grid-origin error. Do not certify prior endpoint metrics as time-aligned.
-2. Complete source-valid onset gating in stops: planner-negative onset requires
+   fallback or ambiguous frame-ID matching is allowed. Metrics interpolate only
+   admitted measured label brackets; stop distance starts at the same capture.
+   The stopping law subtracts already-travelled capture-to-decision distance.
+   Do not certify prior publication-origin endpoint metrics as time-aligned.
+2. Source-valid onset gating in stops is implemented: planner-negative onset requires
    valid/fresh planner messages; commanded-negative onset requires valid/fresh
-   carOutput. Missing/invalid onsets need explicit coverage, not fake timings.
+   carOutput. Missing/invalid onsets have explicit coverage, not fake timings.
 3. Finish exact RDF v2 runtime/dataflow verification and isolated inference.
    Preserve recurrent/history state, synchronized narrow/wide camera inputs,
    calibration, frame IDs and causal vehicle inputs. Retain continuous outputs
@@ -125,6 +130,67 @@ for October 13 in America/Los_Angeles; pause the heartbeat at actual completion.
 Reuse `controller_extract.py`, `controller_metrics.py`, `controller_stops.py`,
 `controller_dynamics.py`, `controller_tune.py`, `controller_video.py` and their
 regression tests. Do not build a second extraction stack.
+
+New modules: `rdf_frames.py` builds exact real dual-camera packets with production
+NV12 padding and canonical recorded calibration warps. `rdf_bench.py` runs the
+verified RDFMV2 QCOM artifact in an isolated monitored process. It records all
+outputs, excludes 132 genuine history frames, and separately records conservative
+serial output availability. Cold initialization, production kernel warmup and
+fresh camera-history warmup are distinct costs; never discard them silently.
+`controller_model_overlay.py` validates exact model/frame identity and compensates
+paths by measured past motion at the displayed camera timestamp.
+
+`rdf-packets/e9/packet.json` records 240 real paired frames (5043-5282) from
+`F:\routes\000000e9--7a28169241--4`, starting about 12 s into the segment.
+Maximum pair skew is 18.54 microseconds; each padded stream is 582,942,720 bytes.
+All 240 recorded SP turn messages were invalid: neutral desire is admitted only
+because fresh valid blinkers are both OFF and recorded lane-change state is OFF,
+which proves the canonical controller's neutral branch. Preserve that proof and
+invalid-SP flags; do not generalize it to turning or unknown states.
+
+RDF runtime functional probes have produced finite plans/actions and changing
+recurrent state on Adreno630v2. Those short synthetic probes are not footage or
+sustained inference-rate acceptance. Exact replay receipts live under `rdf-v2/`.
+
+The **actual e9 replay completed**, exit 0: all 240 consecutive real dual-camera
+pairs processed, all finite; 132 genuine history frames excluded, 108 scored and
+108 within the declared 200 ms serial availability deadline. Scored full compute
+median 38.869 ms, p95 42.721 ms, p99 44.854 ms, max 50.145 ms. Production kernel
+warmup took 5,034 ms before camera replay and exact temporal-state checks passed;
+this cost is reported separately. Battery 65 -> 65 percent, relevant temperature
+max 44.6 C, continuously offroad. These 12 seconds do not establish sustained road
+20 Hz acceptance. `rdf-e9-12s-transfer.json` preserves the executed adapter and
+model/output SHA; a subsequent hardlink-output guard fix did not rerun inference.
+
+Production action timing also includes the RDF catalog's smoothing. The immutable
+packet stores base `action_t` .284269/.575; the bench explicitly adds .1/.3 exactly
+once, producing effective .384269/.875. The base/effective timing is saved in the
+receipt and NPZ. Never omit or double-count smoothing during a delay search.
+
+`videos/rdf-v2-real-replay-e9.mp4` is rendered and inspected: 12 s, 120 distinct
+camera frames, all calibrated projections; 53 viewing frames show post-history
+fresh RDF, with maximum camera selection age .155 ms. It shows measured future
+GT, logged model and fresh RDF with actual torque/acceleration/speed/curvature.
+Driver actions remain visible and flagged in this descriptive video. Separate
+driver-free quantitative evaluation admits only 15 of 108 one-second windows,
+and zero two/three-second windows because of driver interventions. Do not turn
+those exclusions into a controller-performance claim.
+
+A second packet is being built from `0000000c--6c5e8ce437--21`, start32s/duration24s,
+480 fresh pairs, covering one uninterrupted comma-controlled stop. Its historical
+source gitlink is unknown and remains separate from the current replay checkout.
+The packet builder owns one transfer; the benchmark owner owns one GPU process.
+
+`controller_search.py` searches the finite grid 0, .025, .05, .1, .2, .4, with
+separate acceleration/braking gains, target tracking selection, identical supported
+windows and jerk/slew/saturation/regression constraints. Historical cohort
+`1af6dc6837be` supports a **partial longitudinal research candidate**: gains .4/.4,
+validation balanced target MAE .0448447 -> .0318879 (93/120 common windows), frozen
+test .0455741 -> .0337994 (104/120). Both gains are at the upper search boundary;
+no convergence or global-best claim is supported. All 216 complete-controller grid
+combinations reject because lateral identification is untrusted. Current-model/409
+cohorts reject their plant gates. See `search-control/`; production remains false.
+Stopping below 3 m/s remains outside this plant search and is not tuned by it.
 
 `enrich_route_metadata()` recovers missing static CP only from the same route's
 own recorded configuration with matching commit/dirty state. Keep inheritance

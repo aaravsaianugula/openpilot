@@ -16,6 +16,10 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
+from controller_model_overlay import (
+  RenderError, causal_index, contiguous_path, capture_path, measured_forecasts, model_path, rdf_path, validate_rdf_output,
+)
+
 GT = "#77edac"
 BASELINE = "#67b7ff"
 TUNED = "#ffbd69"
@@ -25,10 +29,6 @@ MUTED = "#99aaba"
 BG = "#0e151e"
 PANEL = "#18232f"
 MAX_CAMERA_GAP = 0.15
-
-
-class RenderError(ValueError):
-  """Missing or ambiguous evidence must stop the render."""
 
 
 def camera_mapping(data, segment_num):
@@ -81,17 +81,6 @@ def frame_schedule(mapping, start, seconds, fps):
   return times, source_indices[positions]
 
 
-def contiguous_path(xy, valid=None):
-  xy = np.asarray(xy, dtype=float)
-  if xy.ndim != 2 or xy.shape[1] != 2:
-    raise RenderError("trajectory must have shape [horizon,2]")
-  good = np.isfinite(xy).all(axis=1)
-  if valid is not None:
-    good &= np.asarray(valid, dtype=bool)
-  bad = np.flatnonzero(~good)
-  return xy[:int(bad[0]) if len(bad) else len(xy)]
-
-
 def reanchor_paths(paths, offset):
   """Express all forecasts in the measured ego frame at the displayed timestamp."""
   gt = paths[0]
@@ -122,13 +111,7 @@ def project_ground(xy, intrinsics, rpy, height):
   return uv
 
 
-def causal_index(times, timestamp, max_age=0.2):
-  times = np.asarray(times)
-  i = int(np.searchsorted(times, timestamp, side="right") - 1)
-  return i if i >= 0 and timestamp - times[i] <= max_age else None
-
-
-def forecast_paths(replay, timestamp):
+def forecast_paths(replay, timestamp, data=None):
   index = causal_index(replay["forecast_t"], timestamp, 0.55)
   if index is None:
     return [np.empty((0, 2)) for _ in range(3)], None
@@ -138,6 +121,10 @@ def forecast_paths(replay, timestamp):
   # the contiguous measured horizon, and its own first missing point.
   paths = [path[:len(paths[0])] for path in paths]
   dt = float(replay["forecast_dt"])
+  if data is not None:
+    anchor = float(replay["forecast_t"][index])
+    return [capture_path(data, path, np.arange(len(path)) * dt, anchor, timestamp, max_age=.55)
+            for path in paths], anchor
   offset = int(math.floor((timestamp - replay["forecast_t"][index]) / dt + 1e-7))
   return reanchor_paths(paths, offset), float(replay["forecast_t"][index])
 
@@ -195,20 +182,6 @@ def plot_trace(draw, box, title, series, current, limits, rail=None):
   text(draw, (x0, bottom - 23), "past 6 s", 12, MUTED)
 
 
-def model_path(data, timestamp):
-  if "model_t" not in data or "model_x" not in data:
-    return np.empty((0, 2))
-  i = causal_index(data["t"], timestamp)
-  if i is None or not np.isfinite(data["model_t"][i]) or timestamp - data["model_t"][i] > .2:
-    return np.empty((0, 2))
-  xy = np.column_stack((data["model_x"][i], data["model_y"][i]))
-  horizon = np.asarray(data["model_horizon"][i])
-  valid = np.isfinite(horizon) & (horizon >= 0)
-  if len(horizon) > 1:
-    valid[1:] &= np.diff(horizon) > 0
-  return contiguous_path(xy, valid)
-
-
 def scalar_at(data, key, timestamp):
   i = causal_index(data["t"], timestamp)
   return float(data[key][i]) if i is not None and key in data else float("nan")
@@ -250,22 +223,27 @@ def calibration_at(data, timestamp, assumed_height):
   return np.zeros(3), assumed_height, False
 
 
-def compose(frame, data, replay, timestamp, origin, segment, intrinsics, projection_label, ground_height):
+def compose(frame, data, replay, timestamp, origin, segment, intrinsics, projection_label, ground_height, rdf=None):
   canvas = Image.new("RGB", (1600, 1000), BG)
   draw = ImageDraw.Draw(canvas)
   text(draw, (24, 10), "CN7 / comma 4    CONTROLLER EXPERIMENT", 24)
-  text(draw, (24, 43), "OFFLINE SIMULATION — recorded targets; no model feedback • tuned controller was NOT driven", 20, TUNED)
-  status = " | UNTRUSTED PLANT: diagnostic only" if bool(replay.get("diagnostic_only", False)) else ""
-  if not bool(replay.get("lateral_model_available", True)):
+  subtitle = ("FRESH RDF v2 / dual-camera replay — fixed recorded images; controller not deployed" if rdf is not None else
+              "OFFLINE SIMULATION — recorded targets; no model feedback • tuned controller was NOT driven")
+  text(draw, (24, 43), subtitle, 20, TUNED)
+  status = " | UNTRUSTED PLANT: diagnostic only" if rdf is None and bool(replay.get("diagnostic_only", False)) else ""
+  if rdf is None and not bool(replay.get("lateral_model_available", True)):
     status += " | lateral response unavailable"
   text(draw, (24, 74), f"{segment}     recorded time +{timestamp - origin:05.2f} s" + status, 17, MUTED)
   source_width, source_height = frame.size
   frame = frame.resize((1040, 588))
   canvas.paste(frame, (16, 112))
   draw = ImageDraw.Draw(canvas)
-  paths, anchor = forecast_paths(replay, timestamp)
+  paths, anchor = forecast_paths(replay, timestamp, data)
   recorded_model = model_path(data, timestamp)
   all_paths = [*paths, recorded_model]
+  if rdf is not None:
+    fresh_path, fresh_index = rdf_path(rdf, data, timestamp)
+    all_paths = [paths[0], recorded_model, np.empty((0, 2)), fresh_path]
   colors = (GT, BASELINE, TUNED, MODEL)
   rpy, ground_height, logged_calibration = calibration_at(data, timestamp, ground_height)
   rotation_label = "logged calibration rotation" if logged_calibration else "NOMINAL rotation"
@@ -280,7 +258,7 @@ def compose(frame, data, replay, timestamp, origin, segment, intrinsics, project
   height_label = "logged height" if logged_calibration else "assumed height"
   text(draw, (26, 661), f"{projection_mode} ({ground_height:.2f} m {height_label})", 17, TUNED)
   text(draw, (26, 682), f"{projection_label}; {rotation_label}", 13, MUTED)
-  if len(recorded_model) == 0:
+  if len(recorded_model) == 0 and rdf is None:
     draw.rectangle((16, 112, 378, 141), fill=BG)
     text(draw, (26, 116), "Recorded model trajectory unavailable", 15, MODEL)
   draw.rounded_rectangle((1072, 112, 1584, 700), radius=12, fill=PANEL)
@@ -299,13 +277,23 @@ def compose(frame, data, replay, timestamp, origin, segment, intrinsics, project
     points = np.column_stack((x0 + path[:, 1] * scale_x, y0 - path[:, 0] * scale_y))
     draw_line(draw, points, color, 4, (1095, 192, 1562, 655))
   draw.polygon([(x0, y0 - 14), (x0 - 7, y0 + 5), (x0 + 7, y0 + 5)], fill=FG)
-  horizon = max(len(paths[0]) - 1, 0) * float(replay["forecast_dt"])
+  horizon = 0.
+  if anchor is not None and len(paths[0]):
+    index = int(np.searchsorted(replay["forecast_t"], anchor))
+    original_count = len(contiguous_path(replay["gt_xy"][index]))
+    horizon = max(0., (original_count - 1) * float(replay["forecast_dt"]) - (timestamp - anchor))
   caption = f"valid measured horizon {horizon:.2f} s" if anchor is not None else "forecast unavailable at this time"
-  if len(paths[2]) == 0:
+  if rdf is not None:
+    caption = "Fresh RDF: warming up / unavailable" if fresh_index is None else (
+      f"RDF capture age {(timestamp - rdf['narrow_t'][fresh_index]) * 1000:.0f} ms; 132 history frames excluded")
+  elif len(paths[2]) == 0:
     caption += " | tuned unavailable"
   text(draw, (1092, 682), caption, 14, MUTED)
-  for x, label, color in ((24, "Measured future GT", GT), (350, "Baseline simulation", BASELINE),
-                           (690, "Tuned simulation", TUNED), (1020, "Recorded model path", MODEL)):
+  legend = ((24, "Measured future GT", GT), (350, "Logged model path", BASELINE),
+            (690, "Tune not validated", TUNED), (1020, "Fresh RDF v2 path", MODEL)) if rdf is not None else (
+              (24, "Measured future GT", GT), (350, "Baseline simulation", BASELINE),
+              (690, "Tuned simulation", TUNED), (1020, "Recorded model path", MODEL))
+  for x, label, color in legend:
     draw.line((x, 728, x + 25, 728), fill=color, width=4)
     text(draw, (x + 35, 714), label, 19, color)
   interventions, missing_flags = [], []
@@ -323,7 +311,11 @@ def compose(frame, data, replay, timestamp, origin, segment, intrinsics, project
   lat = scalar_at(data, "lat_active", timestamp)
   long = scalar_at(data, "long_active", timestamp)
   text(draw, (900, 748), f"lat active {display_value(lat, 0)} | long active {display_value(long, 0)}", 17, MUTED)
-  text(draw, (24, 767), "Green = measured. Blue/orange = torque & acceleration COMMANDS; yaw = plant simulation; speed simulated only with valid long fit.",
+  trace_caption = ("Green = measured; blue = logged commands/model targets; purple = fresh RDF targets. "
+                   + "No simulated hardware response or optimized tune is shown."
+                   if rdf is not None else
+                   "Green = measured. Blue/orange = torque & acceleration COMMANDS; yaw = plant simulation; speed simulated only with valid long fit.")
+  text(draw, (24, 767), trace_caption,
        11, MUTED)
   measured_torque = data["can_torque"] if "can_torque" in data else data["torque"]
   traces = [
@@ -332,6 +324,24 @@ def compose(frame, data, replay, timestamp, origin, segment, intrinsics, project
     ("Speed m/s", data["v"], "baseline_v", "tuned_v", (0, max(30, float(np.nanmax(data["v"])) + 2)), None),
     ("Yaw rate rad/s", data["yaw"], "baseline_yaw", "tuned_yaw", (-.8, .8), None),
   ]
+  if rdf is not None:
+    ready_age = rdf["output_ready_t"] - rdf["narrow_t"]
+    available = rdf["scored_mask"] & (ready_age >= 0) & (ready_age <= .2)
+    fresh_accel = np.where(available, rdf["desired_acceleration"], np.nan)
+    fresh_curvature = np.where(available, rdf["desired_curvature"], np.nan)
+    measured_curvature = np.divide(data["yaw"], data["v"], out=np.full(len(data["t"]), np.nan), where=data["v"] > 1)
+    fresh_traces = [
+      ("Actual torque / rail ±409", [(data["t"], measured_torque, GT)], (-450, 450), 409),
+      ("Accel: measured / cmd / RDF target", [(data["t"], data["a"], GT), (data["t"], data["accel_command"], BASELINE),
+                                           (rdf["output_ready_t"], fresh_accel, MODEL)], (-4, 3), None),
+      ("Measured speed m/s", [(data["t"], data["v"], GT)], (0, max(30, float(np.nanmax(data["v"])) + 2)), None),
+      ("Curvature: measured / targets", [(data["t"], measured_curvature, GT), (data["t"], data["desired_curvature"], BASELINE),
+                                        (rdf["output_ready_t"], fresh_curvature, MODEL)], (-.04, .04), None),
+    ]
+    for j, (title, series, limits, rail) in enumerate(fresh_traces):
+      left = 16 + 396 * j
+      plot_trace(draw, (left, 782, left + 382, 984), title, series, timestamp, limits, rail)
+    return canvas, horizon, calibrated
   for j, (title, measured, baseline, tuned, limits, rail) in enumerate(traces):
     left = 16 + 396 * j
     # Replay and data can have different clocks/grids: plot each on its own time.
@@ -388,10 +398,10 @@ def validate_inputs(data, replay):
     raise RenderError("forecast trajectories must have matching shapes")
 
 
-def validate_output_path(output, segment, data_path, replay_path):
+def validate_output_path(output, segment, data_path, replay_path, extra_sources=()):
   targets = (output.resolve(), output.with_suffix(".json").resolve())
   raw_directory = segment.resolve()
-  inputs = [segment / "fcamera.hevc", data_path, data_path.with_suffix(".json"), replay_path, replay_path.with_suffix(".json")]
+  inputs = [segment / "fcamera.hevc", data_path, data_path.with_suffix(".json"), replay_path, replay_path.with_suffix(".json"), *extra_sources]
   for target in targets:
     if target.is_relative_to(raw_directory):
       raise RenderError("output and receipt must be outside the raw source segment directory")
@@ -404,15 +414,22 @@ def validate_output_path(output, segment, data_path, replay_path):
 
 
 def render(args):
-  from controller_extract import hold_calibration
+  from controller_extract import hold_calibration, model_capture_times, sha256
 
   for executable in ("ffmpeg", "ffprobe"):
     if shutil.which(executable) is None:
       raise RenderError(f"{executable} is not installed")
-  validate_output_path(args.out, args.segment, args.data, args.replay)
+  rdf_file = getattr(args, "rdf_output", None)
+  validate_output_path(args.out, args.segment, args.data, args.replay,
+                       () if rdf_file is None else (rdf_file, rdf_file.with_suffix(".json")))
   data = hold_calibration(dict(np.load(args.data, allow_pickle=False)))
+  data["model_capture_t"] = model_capture_times(data)
   replay = dict(np.load(args.replay, allow_pickle=False))
   validate_inputs(data, replay)
+  rdf = None if rdf_file is None else dict(np.load(rdf_file, allow_pickle=False))
+  if rdf is not None:
+    validate_rdf_output(rdf, data)
+    replay.update(measured_forecasts(data))
   metadata_file = args.data.with_suffix(".json")
   metadata = json.loads(metadata_file.read_text(encoding="utf-8")) if metadata_file.exists() else {}
   source = args.segment / "fcamera.hevc"
@@ -433,7 +450,7 @@ def render(args):
   encode_cmd = ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "1600x1000",
                 "-r", str(args.fps), "-i", "pipe:0", "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "20",
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(args.out)]
-  receipt_frames, horizons, calibrated_frames = [], [], 0
+  receipt_frames, horizons, calibrated_frames, fresh_available = [], [], 0, 0
   with subprocess.Popen(decode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as decoder, \
        subprocess.Popen(encode_cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE) as encoder:
     try:
@@ -448,7 +465,9 @@ def render(args):
           frame = Image.frombytes("RGB", (width, height), raw)
         source_t = float(mapping[1][wanted])
         canvas, horizon, calibrated = compose(frame, data, replay, source_t, origin, args.segment.name,
-                                              intrinsics, projection_label, args.ground_height)
+                                              intrinsics, projection_label, args.ground_height, rdf)
+        if rdf is not None:
+          fresh_available += rdf_path(rdf, data, source_t)[1] is not None
         encoder.stdin.write(canvas.tobytes())
         horizons.append(horizon)
         calibrated_frames += calibrated
@@ -476,6 +495,7 @@ def render(args):
              "nominal_projection_frames": len(times) - calibrated_frames, "assumed_height_when_missing_m": args.ground_height,
              "analysis_calibration_max_age_s": .5, "held_calibration_rows": int(np.count_nonzero(data["calibration_held"])),
              "forecast_semantics": "offline simulation; frozen recorded targets; tuned controller not driven; no model feedback",
+             "recorded_model_path_alignment": "exact EncodeIdx capture origin, compensated by measured past motion at displayed timestamp",
              "trace_semantics": {"green": "recorded measured torque, acceleration, speed, yaw",
                                  "baseline_torque_tuned_torque": "controller commands",
                                  "baseline_accel_tuned_accel": "acceleration commands, not plant/measured acceleration",
@@ -483,6 +503,15 @@ def render(args):
                                  "baseline_v_tuned_v": "simulated where longitudinal fit valid; recorded speed otherwise"},
              "valid_horizon_min_s": min(horizons), "valid_horizon_max_s": max(horizons),
              "frames": receipt_frames, "decode_command": decode_cmd, "encode_command": encode_cmd}
+  if rdf is not None:
+    receipt.update(forecast_semantics="fresh chronological RDF v2 camera inference; fixed recorded images; no tuned controller or hardware simulation",
+                   rdf_output=str(rdf_file.resolve()), rdf_output_sha256=sha256(rdf_file),
+                   fresh_rdf_available_frames=int(fresh_available),
+                   fresh_rdf_history_frames_excluded=132, fresh_rdf_max_capture_age_s=.2,
+                   gt_admission=("display-only measured future; finite valid motion/calibration, contiguous timestamps; "
+                                 + "driver/control actions retained and flagged"),
+                   trace_semantics={"green": "recorded measured signals", "blue": "recorded commands and model targets",
+                                    "purple": "fresh RDF v2 desired acceleration/curvature at conservative serial output availability"})
   receipt_path = args.out.with_suffix(".json")
   receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
   print(json.dumps({"video": str(args.out), "receipt": str(receipt_path), "frames": len(times),
@@ -494,6 +523,7 @@ def main():
   parser.add_argument("--segment", type=Path, required=True)
   parser.add_argument("--data", type=Path, required=True)
   parser.add_argument("--replay", type=Path, required=True)
+  parser.add_argument("--rdf-output", type=Path, help="Fresh rdf_bench output; show model evidence with no candidate-performance claim")
   parser.add_argument("--out", type=Path, required=True)
   parser.add_argument("--start", type=float, default=0.)
   parser.add_argument("--seconds", type=float, default=30.)
