@@ -1,0 +1,106 @@
+# Comma 4 / 2024 Elantra SEL Convenience controller experiment
+
+Branch: `experimental/comma4-cn7-controller-tuning`, based on fork master
+`13aedc522518fe1b62651d9a8a320e931efc335c`. The exact opendbc pin is
+`b45eb78def29582bcce43c68cfb1d55f19224d1a`.
+
+This branch adds desktop analysis, empirical controller experiments and recorded-video
+comparisons. It does not change the shipping controller, safety firmware or device.
+The existing flat **409** steering ceiling and **3/7 counts per 10 ms** rate limits
+are fixed constraints, never optimization variables. The existing real controller/CAN
+packing regression reaches 409 with matching normalized feedback at seven speeds.
+
+## Existing recordings and generated artifacts
+
+The current filesystem differs from the older `D:\comma_four\README.md`:
+
+- `F:\routes`: 1,208 complete narrow/wide road camera + rlog segments.
+- `D:\Openmayo_Archive\comma4_sidequest\recorded_routes\realdata`: another 225,
+  with no duplicate segment names across these two sources.
+- Together: 1,433 complete recorded segments, across 120 populated routes.
+- `D:\comma_four\routes` is absent. No source footage was moved or duplicated.
+- Generated datasets, reports and videos belong under
+  `D:\comma_four\tuning\controller-tuning-20261012`.
+
+The inventory names missing files and extraction failures. Presence of a camera/log
+triple does not guarantee that its compressed log is complete or decodable.
+
+## Reproduce on this desktop
+
+Run from `D:\Coding\sunnypilot-comma4-tuning`, using the existing Windows Python
+with NumPy, pycapnp, zstandard, Pillow, pytest and Ruff; FFmpeg/FFprobe must be on PATH.
+No GPU, model download, device connection or global package installation is needed.
+
+```powershell
+python .elantra/controller_extract.py extract `
+  --root F:\routes `
+  --root D:\Openmayo_Archive\comma4_sidequest\recorded_routes\realdata `
+  --schema-dir D:\comma_four\tuning\lat-tracking\schemas `
+  --out D:\comma_four\tuning\controller-tuning-20261012\dataset --workers 6
+
+python .elantra/controller_metrics.py `
+  --dataset D:\comma_four\tuning\controller-tuning-20261012\dataset `
+  --out D:\comma_four\tuning\controller-tuning-20261012\archive-analysis.json
+
+python .elantra/controller_tune.py `
+  --dataset D:\comma_four\tuning\controller-tuning-20261012\dataset `
+  --out D:\comma_four\tuning\controller-tuning-20261012\experiment
+```
+
+`controller_tune.py` selects a provenance cohort with at least five routes, preferring
+recordings that actually reached 409 without exceeding it. `--cohort` selects another
+eligible cohort explicitly. It reads whole routes into chronological training (60%),
+validation (20%) and test (20%) partitions using recorded wall clock timestamps.
+Changing a candidate after seeing test results requires a new held-out evaluation.
+
+For a selected segment listed in the report, pass its original raw directory,
+dataset NPZ and generated replay NPZ to `controller_video.py`, with `--out`,
+`--start`, `--seconds` and `--fps`. The MP4's JSON receipt records source frame IDs,
+actual camera times, projection status and output frame count. Requested viewing FPS
+does not imply inference speed or a source camera frame rate.
+
+## Analysis contract
+
+Messages are sorted by monotonic time, then joined causally at 20 Hz. Dynamic
+telemetry expires at 200 ms. The analysis may hold the *same valid calibration
+event* for up to 500 ms, explicitly marked; it never fills a missing/new/invalid
+calibration event or stale speed, yaw or command.
+
+Measured motion uses `carState.vEgo`, `carState.aEgo` and
+`liveLocationKalman.angularVelocityCalibrated.value[2]`. `carState.yawRate` and
+model-predicted velocity are not ground truth. Steering delivery uses recorded
+`carOutput.torqueOutputCan`, independently accompanied by decoded transmitted
+LKAS11; MDPS faults are decoded only on bus 0. The normalized request multiplied
+by 409 is labelled a reference, since historical builds used other ceilings.
+
+Controller/model settings, car parameters and source commits remain separate cohorts.
+Recorded source commits are resolved to their local gitlinks where possible;
+unknown identities stay unknown, and a dirty recorded build is not certified by a
+clean commit's gitlink. Learner outputs and delays are retained in the dataset.
+
+The longitudinal baseline is acceleration feedforward with stopping behavior, not
+a velocity PID. Identification excludes stops and driver inputs. Lateral and
+longitudinal response tables use empirical binned medians with route/sample support;
+unsupported cells are not extrapolated. Delay/dynamics and candidate gains are
+compared on identical window populations, with missing support in the denominator.
+
+## Interpreting the comparison
+
+- **Measured future GT** is integrated recorded ego motion, not a certified safe
+  path or lane-position ground truth. Road cam projection assumes locally flat ground.
+- **Recorded model path** is its logged prediction on a nonuniform horizon.
+- **Baseline simulation** replays recorded commands through the empirical vehicle
+  model; it does not rerun the historical controller against altered vehicle state.
+- **Tuned simulation** runs an experimental inverse-response feedback controller
+  against frozen recorded targets. It does not rerun perception on changed images.
+- Longitudinal speed predictions feed lateral dynamics when both axes are simulated;
+  otherwise recorded speed is explicitly retained. Unsupported trajectories stop.
+- Untrusted plant models are diagnostic only and are labelled. `candidate.json`
+  includes identification status and always has `production_enabled: false`.
+
+Model prediction errors and replay advantages are descriptive offline evidence.
+They do not prove that a different controller would safely follow the same road,
+avoid a lead vehicle or improve a live drive. No road test, deployment, service
+restart, panda reflash or vehicle actuation is part of this desktop experiment.
+
+All additions live in `.elantra/`, which the existing weekly overlay carries wholesale.
