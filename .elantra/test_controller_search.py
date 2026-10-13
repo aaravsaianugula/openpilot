@@ -21,6 +21,16 @@ def selection(raw, baseline=None):
                             min_coverage=.6, min_windows=2, min_direction_points=50)
 
 
+def lat_result(params, ids=("a", "b"), left=.1, right=.1):
+  curvature = np.r_[np.linspace(-.002, -.01, 10), np.full(10, -.01), np.linspace(-.01, -.002, 10),
+                    np.linspace(.002, .01, 10), np.full(10, .01), np.linspace(.01, .002, 10)]
+  target = curvature * 100.
+  state = target + np.where(curvature < 0, left, right)
+  return {"parameters": params, "windows": {name: search.window_metrics(
+    state, np.zeros(60), target, np.zeros(60), "lat", curvature=curvature,
+    curvature_prefix=(.05, 0.)) for name in ids}}
+
+
 def test_acceleration_gain_never_applies_to_negative_braking_target():
   gains = search.gain_series(np.array([.2, -.2, -1., 0.]), .4, .025)
   np.testing.assert_array_equal(gains, [.4, .025, .025, .4])
@@ -131,8 +141,9 @@ def test_both_trusted_axis_winners_cannot_claim_a_complete_controller_without_jo
     raw = raw_result(params, ids=tuple(f"window-{i}" for i in range(24)), error=.1 if params is None else .03)
     raw["attempted"] = 24
     if axis == "lat":
-      for window in raw["windows"].values():
-        window["tracking"] = {"lateral": window["tracking"]["braking"]}
+      error = .1 if params is None else .03
+      raw = lat_result(params, ids=tuple(raw["windows"]), left=error, right=error)
+      raw["attempted"] = 24
     return raw
 
   monkeypatch.setattr(search, "evaluate_axis", evaluate)
@@ -146,7 +157,8 @@ def test_both_trusted_axis_winners_cannot_claim_a_complete_controller_without_jo
 def test_canonical_source_hashes_and_runtime_versions_are_recorded():
   evidence = search.source_runtime_evidence()
   assert set(evidence["canonical_source_sha256"]) == {
-    "controller_tune.py", "controller_extract.py", "controller_metrics.py", "controller_dynamics.py", "lateral_report.py"}
+    "controller_tune.py", "controller_extract.py", "controller_metrics.py", "controller_dynamics.py",
+    "controller_turns.py", "lateral_report.py"}
   assert all(len(value) == 64 for value in evidence["canonical_source_sha256"].values())
   assert evidence["numpy_version"] == np.__version__
   assert evidence["python_version"] and evidence["python_executable"]
@@ -160,6 +172,16 @@ def test_missing_direction_or_regressed_braking_rejects_candidate():
   for window in candidate["windows"].values():
     del window["tracking"]["acceleration"]
   assert selection([candidate])["winner"] is None
+
+
+def test_lateral_selection_refuses_legacy_pooled_only_turn_errors():
+  baseline, candidate = raw_result(None), raw_result({"lateral_gain": .1}, error=.02)
+  for raw, error in ((baseline, .1), (candidate, .02)):
+    for window in raw["windows"].values():
+      window["tracking"] = {"lateral": {"errors": [error] * 60, "points": 60}}
+  result = search.select_axis([candidate], baseline, "lat", attempted=2,
+                              min_coverage=.6, min_windows=2, min_direction_points=50)
+  assert result["winner"] is None  # Pooled improvement cannot establish either turn direction.
 
 
 def test_output_cannot_alias_dataset_or_plant_report(tmp_path):
@@ -179,11 +201,10 @@ def test_output_cannot_alias_dataset_or_plant_report(tmp_path):
 
 def joint_raw(params, ids=("a", "b"), error=.1, speed=.1, endpoint=.2):
   long = raw_result(params, ids=ids, error=error)
+  lat = lat_result(params, ids=ids, left=error, right=error)
   windows = {}
   for name, metrics in long["windows"].items():
-    lat = deepcopy(metrics)
-    lat["tracking"] = {"lateral": {"errors": [error] * 60, "points": 60}}
-    windows[name] = {"lat": lat, "long": metrics, "speed_errors": [speed] * 60, "path_endpoint_error": endpoint}
+    windows[name] = {"lat": lat["windows"][name], "long": metrics, "speed_errors": [speed] * 60, "path_endpoint_error": endpoint}
   return {"parameters": params, "windows": windows, "attempted": 2}
 
 
@@ -206,7 +227,7 @@ def test_joint_simulation_passes_longitudinal_speed_to_lateral_response(monkeypa
   np.testing.assert_allclose(passed[0], 5 + np.arange(61) * .4 * .05)
   window = result["windows"]["r--0:12"]
   assert max(window["speed_errors"]) < 1e-10
-  assert max(window["lat"]["tracking"]["lateral"]["errors"]) < 1e-10
+  assert max(window["lat"]["tracking"]["right"]["errors"]) < 1e-10
   assert window["path_endpoint_error"] < 1e-10
 
 
@@ -218,6 +239,27 @@ def test_joint_constraints_cannot_buy_target_gain_with_speed_or_path_regression(
     result = search.select_joint([candidate], baseline, min_windows=2)
     assert result["winner"] is None
     assert reason in result["trace"][0]["rejections"]
+
+
+def test_joint_gain_cannot_hide_a_left_turn_regression_with_longitudinal_improvement():
+  params = {"lateral_gain": .1, "acceleration_gain": .2, "braking_gain": .2}
+  candidate = joint_raw(params, error=.01, speed=.05, endpoint=.1)
+  changed = lat_result(params, left=.3, right=.01)
+  for key in candidate["windows"]:
+    candidate["windows"][key]["lat"] = changed["windows"][key]
+  result = search.select_joint([candidate], joint_raw(None), min_windows=2)
+  assert result["winner"] is None
+  assert any("left" in reason and "regression" in reason for reason in result["trace"][0]["rejections"])
+
+
+def test_turn_phase_prefix_requires_actual_prior_timestamp_and_validity():
+  data = {"t": np.array([1., 1.05]), "valid_lat": np.array([True, True]), "desired_curvature": np.array([-.01, -.02])}
+  assert search.curvature_prefix(data, 1) == pytest.approx((.05, -.01))
+  assert search.curvature_prefix(data, 0) is None
+  data["valid_lat"][0] = False
+  assert search.curvature_prefix(data, 1) is None
+  del data["t"]
+  assert search.curvature_prefix(data, 1) is None
 
 
 def test_joint_reference_speed_restarts_without_negative_speed_debt(monkeypatch):

@@ -605,3 +605,32 @@ display telemetry. No decode, model inference or native replay was repeated.
 `f4144992c15ae9796cfb824cd10a80d5743ffc83d1f9a5379cc3a01af80167ca`.
 All commands remain cold and conditional on fixed recorded feedback. No accepted
 native long/lat tune, physical improvement or completed stop follows.
+
+### Left/right and combined acceptance — October 13 follow-up
+
+The owner explicitly requires both turn directions and simultaneous longitudinal/
+lateral tuning. The existing combined selector already propagates simulated long
+speed into lateral demand and response. Its previous pooled lateral tracking score
+could hide a direction regression. `controller_turns.py` now supplies frozen FRD
+reference direction, causal entry/steady/exit labels, balanced direction objectives
+and separate direction/phase support, error, jerk and saturation gates. Root
+integration rejects old pooled-only rows and a left-turn regression even when the
+combined longitudinal/lateral mean improves. Sixteen helper tests and twenty-three
+integration/search tests passed under their separate owners; Ruff/diff checks passed.
+
+The actual new diagnostic opens only the two previously selected TRAIN arrays.
+`recent-clips/turn-selected-coverage-v2.json` records 508 scored analysis-grid rows
+per clip, no invalid/override rows after the canonical held-calibration helper,
+335 left-request rows in acceleration and 142 in turning, and no qualifying right
+requests in either. These are recorded demand/motion coverage, not candidate
+performance or frame-capture GT alignment. The first raw-calibration view and its
+driver remain preserved as v1; v2 uses the same view as the frozen clip selector.
+All reserved test arrays remain unopened. A separate new right-turn selection is
+limited to the frozen TRAIN candidate catalog, with no tuning-error ranking.
+
+Native lateral simulation needs actual rack-angle dynamics in addition to measured
+yaw response. Existing 20Hz acceleration-only plants cannot supply that feedback.
+Hyundai's recorded SAS_Speed is unsigned; it must not classify turn direction or be
+invented as a signed rack derivative. No 50ms response may be applied every10ms.
+The new native runtime adapter is under implementation/review; actual API proof and
+a supported multirate joint plant remain required. No full native tune is accepted.

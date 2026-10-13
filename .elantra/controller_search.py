@@ -18,6 +18,7 @@ import sys
 import numpy as np
 
 import controller_tune as tune
+import controller_turns as turns
 from controller_extract import sha256
 from controller_metrics import source_reference
 
@@ -106,25 +107,44 @@ def evaluate_axis(records, model, axis, parameters, max_windows=120):
     if not np.isfinite(state).all() or not np.isfinite(command).all():
       continue
     actual = data["v"][z] * data["yaw"][z] if axis == "lat" else data["a"][z]
-    evaluated[name] = window_metrics(state, command, target, actual, axis)
+    kwargs = {"curvature": data["desired_curvature"][z],
+              "curvature_prefix": curvature_prefix(data, start),
+              "measured_yaw": data["yaw"][z]} if axis == "lat" else {}
+    evaluated[name] = window_metrics(state, command, target, actual, axis, **kwargs)
   return {"parameters": parameters, "windows": evaluated, "attempted": len(windows)}
 
 
-def window_metrics(state, command, target, actual, axis):
-  masks = {"lateral": np.ones(len(state), dtype=bool)} if axis == "lat" else {
-    "acceleration": target > .05, "braking": target < -.05}
-  tracking = {direction: {"errors": np.abs(state[mask] - target[mask]).tolist(), "points": int(mask.sum())}
-              for direction, mask in masks.items()}
+def curvature_prefix(data, start):
+  if not start or any(key not in data for key in ("t", "valid_lat", "desired_curvature")):
+    return None
+  age = float(data["t"][start] - data["t"][start-1])
+  value = data["desired_curvature"][start-1]
+  return (age, float(value)) if data["valid_lat"][start-1] == 1 and np.isfinite([age, value]).all() else None
+
+
+def window_metrics(state, command, target, actual, axis, *, curvature=None, curvature_prefix=None, measured_yaw=None):
+  if axis not in ("lat", "long"):
+    raise ValueError("explicit lateral or longitudinal axis required")
+  turn = turns.window_metrics(curvature, state, target, command, dt_s=tune.DT,
+                             reference_prefix=curvature_prefix, measured_yaw=measured_yaw) if axis == "lat" else None
+  masks = {"acceleration": target > .05, "braking": target < -.05}
+  tracking = {side: {"errors": values["errors"], "points": len(values["rows"])}
+              for side, values in turn["tracking"].items()} if turn is not None else {
+    direction: {"errors": np.abs(state[mask] - target[mask]).tolist(), "points": int(mask.sum())}
+    for direction, mask in masks.items()}
   saturated = np.abs(command) >= 409 - 1e-8 if axis == "lat" else (command <= -3.5 + 1e-8) | (command >= 2 - 1e-8)
-  return {"tracking": tracking, "gt_errors": np.abs(state - actual).tolist(),
+  result = {"tracking": tracking, "gt_errors": np.abs(state - actual).tolist(),
           "jerk": (np.abs(np.diff(state)) / tune.DT).tolist(), "saturated": saturated.astype(float).tolist(),
           "command_rate": (np.abs(np.diff(command)) / tune.DT).tolist()}
+  if turn is not None:
+    result["turns"] = turn
+  return result
 
 
 def _summary(raw, common, axis):
   values = [raw["windows"][key] for key in common]
   result = {"windows": len(common), "tracking": {}}
-  for direction in (("lateral",) if axis == "lat" else ("acceleration", "braking")):
+  for direction in (() if axis == "lat" else ("acceleration", "braking")):
     errors = [error for value in values for error in value["tracking"].get(direction, {}).get("errors", [])]
     result["tracking"][direction] = {"points": len(errors),
       "windows": sum(bool(value["tracking"].get(direction, {}).get("points")) for value in values),
@@ -132,14 +152,22 @@ def _summary(raw, common, axis):
   for key in ("jerk", "command_rate", "gt_errors", "saturated"):
     array = [item for value in values for item in value[key]]
     result[key] = {"mean": float(np.mean(array)), "p95": float(np.percentile(array, 95)), "max": float(np.max(array))} if array else None
-  scores = [entry["mae"] for entry in result["tracking"].values()]
-  result["target_objective"] = float(np.mean(scores)) if all(value is not None for value in scores) else None
+  if axis == "lat":
+    result["turns"] = turns.summarize({key: raw["windows"][key].get("turns") for key in common}, common)
+    result["tracking"] = {side: {key: row[key] for key in ("points", "windows", "mae", "p95")}
+                          for side, row in result["turns"]["tracking"].items()}
+    result["target_objective"] = result["turns"]["target_objective"]
+  else:
+    scores = [entry["mae"] for entry in result["tracking"].values()]
+    result["target_objective"] = float(np.mean(scores)) if all(value is not None for value in scores) else None
   return result
 
 
 def _constraints(metrics, baseline, axis, min_direction_points, require_improvement=True):
-  reasons = []
-  for direction, score in metrics["tracking"].items():
+  reasons = turns.constraints(metrics.get("turns"), baseline.get("turns"),
+                              min_direction_points=min_direction_points,
+                              require_improvement=require_improvement) if axis == "lat" else []
+  for direction, score in (metrics["tracking"].items() if axis == "long" else []):
     before = baseline["tracking"][direction]
     if min(score["points"], before["points"]) < min_direction_points or min(score["windows"], before["windows"]) < 2:
       reasons.append(f"missing_{direction}_support")
@@ -157,7 +185,7 @@ def _constraints(metrics, baseline, axis, min_direction_points, require_improvem
   objective, before = metrics["target_objective"], baseline["target_objective"]
   if require_improvement and (objective is None or before is None or objective >= before * (1 - LIMITS["minimum_tracking_improvement"])):
     reasons.append("no_meaningful_target_improvement")
-  return reasons
+  return sorted(set(reasons)) if axis == "lat" else reasons
 
 
 def select_axis(evaluations, baseline, axis, attempted, min_coverage=MIN_COVERAGE,
@@ -238,7 +266,10 @@ def evaluate_joint(records, models, parameters, max_windows=120, long_cache=None
     actual_path = tune.integrate(speed, lateral / np.maximum(speed, 1.), tune.DT)
     target_path = tune.integrate(reference_v, curvature * reference_v, tune.DT)
     evaluated[name] = {
-      "lat": window_metrics(lateral, torque, curvature * speed**2, data["v"][z] * data["yaw"][z], "lat"),
+      "lat": window_metrics(lateral, torque, curvature * speed**2, data["v"][z] * data["yaw"][z], "lat",
+                            curvature=curvature,
+                            curvature_prefix=curvature_prefix(data, start),
+                            measured_yaw=data["yaw"][z]),
       "long": window_metrics(acceleration, accel_command, target_a, data["a"][z], "long"),
       "speed_errors": np.abs(speed - reference_v).tolist(),
       "path_endpoint_error": float(np.linalg.norm(actual_path[-1] - target_path[-1]))}
@@ -410,7 +441,7 @@ def source_runtime_evidence():
   directory = Path(__file__).resolve().parent
   return {"canonical_source_sha256": {name: sha256(directory / name) for name in
                                       ("controller_tune.py", "controller_extract.py", "controller_metrics.py",
-                                       "controller_dynamics.py", "lateral_report.py")},
+                                       "controller_dynamics.py", "controller_turns.py", "lateral_report.py")},
           "python_version": sys.version, "python_executable": sys.executable, "numpy_version": np.__version__}
 
 
@@ -445,6 +476,7 @@ def main():
               "search_source_sha256": sha256(Path(__file__)), "grid": GRID, "max_windows_per_axis_partition": args.max_windows,
               "minimum_common_coverage": MIN_COVERAGE, "minimum_windows": MIN_WINDOWS,
               "minimum_direction_points": MIN_DIRECTION_POINTS, "constraints": LIMITS,
+              "turn_contract": turns.CONTRACT,
               "rejected_plants": rejected, "heldout_test": test, "sources": [source_reference(p, m) for p, m in paths],
               "heldout_joint_test": joint_test,
               "scope": "historical same-cohort frozen-target plant simulation; not fresh RDF/current-model or closed-loop replay",

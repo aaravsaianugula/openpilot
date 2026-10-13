@@ -165,3 +165,20 @@ the moving PID/Ki branch and future-GT invariance. It has not selected a native
 current-car tune: the recent source/plant and low-speed stopping evidence remain
 insufficient. Native lateral parameter optimization and a coupled native
 longitudinal/lateral search remain unfinished.
+
+The owner requires longitudinal and lateral tuning together, with independent
+left/right turn acceptance. The combined observational selector now freezes turn
+direction and entry/steady/exit labels from the same geometric curvature reference
+for every candidate. Positive FRD curvature requests a right turn; negative requests
+a left turn. Simulated longitudinal speed changes lateral demand and response, but
+cannot change those direction/phase populations. Tracking, comfort and saturation
+must pass separately on both sides and all three phases. Legacy pooled lateral
+scores cannot select a candidate. `controller_turns.py` records the segmentation
+thresholds and every missing or unsupported point; these thresholds describe the
+research evaluation and do not change controller gains.
+
+The two recent selected clips contain left-turn demand and no qualifying right-turn
+demand under this contract. Their new TRAIN-only coverage receipt does not establish
+balanced turn coverage. No historical search, fit or held-out evaluation was rerun.
+The native lateral runtime and the joint steering-rack/yaw plant still need their
+own admission before a native coupled candidate can be selected.
