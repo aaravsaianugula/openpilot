@@ -791,3 +791,40 @@ that std vector with NaNs. Calibrated angular velocity receives computed covaria
 The blobs are identical and source-bound in validation-llk-roll-uncertainty-source-v1.
 This explains a publisher limitation, not the dirty runtime or a valid uncertainty
 substitute. Existing selection/source/uncertainty gates have not been relaxed.
+
+### Native approach, stopping and hold: host implementation
+
+The new continuous native stop/hold runner passed39 host cases and Ruff. It reuses
+the same lateral handle, source/delay/learner admission and cached native LongControl
+feedback, with separate moving and inactive/mixed response models. The shared finite
+search evaluates moving and stopping windows on fixed common IDs. Model stop-target
+distance, hold motion and unknown full-horizon geometry remain separate contracts;
+no model endpoint becomes stopline ground truth and no restart regime is invented.
+
+First-red regressions closed an unaligned moving-macro admission defect, a cached
+Long failure summary crash, uncensored simulated release after zero and unsupported
+terminal macros extending hold evidence. Supported steps are now distinct from
+used command rows, and hold/turn metrics consume successful complete macros only.
+Actual native stop/hold execution remains unperformed; all contact, initialization,
+100Hz feedback and source gaps keep selection absent and production disabled.
+
+Independent review also found absent recorded hardware-standstill eligibility.
+The corrected runner requires a source/hash-bound raw uint64 carState publication
+stream and validates latest as-of clocks,15ms freshness/gaps, every consumed invalid
+interposition and recorded standstill/speed compatibility before either controller.
+Three first-red cases reached the cache before correction; the final suite covers
+missing, malformed, stale, wrong-source, clock, gap and invalid-state boundaries.
+Measured witness values never enter simulated feedback, and invalid future rows
+cannot change the checked window. Original source/tests/receipts remain snapshotted.
+One final integration correction matches the frozen producers' integer-times1e-9
+clock conversion exactly. Division by1e9 can differ by one ULP for the same original
+nanosecond timestamp; the earlier fixture had hidden this by recanonicalizing clocks.
+Two first-red producer-clock/as-of cases passed after correction, with no tolerance
+widening or edits to existing producers. Final39-case checks supersede earlier
+19/37-case source snapshots, which remain preserved.
+
+One strict saved-identity SSH recheck after65 minutes again timed out (exit255,
+5.053s); the remote never ran. Its exclusive v2 connectivity receipt preserves the
+command, fingerprint and prior completed-job state. No allocation, upload, right-turn
+inference or native API job occurred. The prepared packet remains ready, and the
+owner's earlier address question remains pending without repeated prompts.

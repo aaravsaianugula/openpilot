@@ -274,3 +274,27 @@ Finite roll remains present, but its calibrated uncertainty is unknown by publis
 design. This is not evidence of damaged logs, nor proof of the dirty runtime source.
 No uncalibrated covariance or zero uncertainty is substituted. The source receipt
 `validation-llk-roll-uncertainty-source-v1.json` preserves both exact Git blob hashes.
+
+`controller_native_stop_hold.py` extends conditional native joint diagnostics through
+one approach, stop request and hold, using the same lateral handle and cached
+longitudinal simulated feedback. Completed macros dispatch to the moving or separate
+hold response according to actual effective-active/request patterns. Only successful
+completed macros count toward hold duration and turn support; attempted commands
+and partial failures remain visible separately. Undefined standstill geometry stays
+unknown, with no re-entry after model-speed jitter. A finite mixed moving/stopping
+search retains identical window IDs, independent turn/longitudinal constraints,
+stop-target feasibility and hold-motion regressions. Thirty-nine host cases and Ruff
+passed; real native execution and physical contact/feedback validation remain pending.
+No complete candidate or production path is enabled.
+
+A separate hash-bound raw carState witness preserves original uint64 publication
+clocks, Event.valid, canValid, standstill and measured speed. The latest as-of
+publication must match the existing tape clock exactly and be at most15ms old;
+every consumed interposed row
+must be valid. Missing evidence and hardware standstill above0.3m/s refuse before
+either native controller runs. These measured states check source eligibility only;
+they never replace simulated feedback. Simulated standstill remains an explicitly
+unvalidated assumption and a hard selection rejection.
+Nanosecond conversion uses the existing producers' exact integer-times1e-9
+expression; division can differ by one floating ULP and falsely break source-clock
+equality. Producer-clock and as-of boundary regressions preserve exact binding.
