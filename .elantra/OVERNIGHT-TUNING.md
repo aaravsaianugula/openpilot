@@ -828,3 +828,27 @@ One strict saved-identity SSH recheck after65 minutes again timed out (exit255,
 command, fingerprint and prior completed-job state. No allocation, upload, right-turn
 inference or native API job occurred. The prepared packet remains ready, and the
 owner's earlier address question remains pending without repeated prompts.
+
+### Local native joint API proof
+
+The previously pending moving and continuous approach/stop/hold cases now each
+passed once against actual native LongControl and V0 classes on isolated x86 WSL.
+The exact 13a/b45/msgq tree, 44 native files/assets, two built libraries and 21 research
+snapshot modules verify before and after execution. The moving case reports 1 pass
+in 4.78 seconds; the continuous stop case reports 1 pass in 4.43 seconds. Both JUnit files contain
+one non-skipped successful case, and all owned process groups exited.
+
+The stop case checks 200 ticks/40 macros on one actual lateral handle, matching
+simulated longitudinal feedback, native state transitions, zero inactive command
+and request behavior, the 409 ceiling, rate bounds and synthetic hold motion. Its raw plans,
+source/support labels, uncertainty and plant cells are explicit fixtures. Selection
+and production remain disabled; no physical stopping or tuning benefit follows.
+
+The artifact-only environment installed 17 pinned wheels, then exactly one proven
+missing locked zstandard wheel. The original post-install scan timeout, first
+native include-path error and pytest capture/import failures are preserved. Header
+generation, dependencies and successful builds were reused rather than repeated.
+Final proof is `native-posix-api-v1/phase3-api-v3.windows-postproof.json`; native
+source, recorded data, device Params/services and production controllers are unchanged.
+Fresh right-turn inference still requires connectivity to the comma. No road test,
+deployment, vehicle actuation or panda flash occurred.

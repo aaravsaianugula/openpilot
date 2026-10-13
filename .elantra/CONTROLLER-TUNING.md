@@ -246,9 +246,9 @@ snapshot, complete five-tick horizons and native model horizons must pass before
 either controller runs. An independently extracted inference-time lateral-delay
 witness binds the exact frame/capture/source, packet delay and action inputs; later
 core published delay and extension cache are distinct. Thirty-seven host checks
-and Ruff passed after independent review fixes. The one actual POSIX case remains
-skipped on Windows and unperformed because the device is unreachable. These are
-host-validated research source changes, not complete runtime or car proof.
+and Ruff passed after independent review fixes. The one actual moving POSIX case
+now passes in the isolated local runtime described below. These research checks
+do not establish physical plant support or car performance.
 
 This runner keeps complete candidates absent and production disabled. It supports
 moving joint diagnostics; inactive lateral response, low-speed transition/hold,
@@ -266,7 +266,7 @@ Full static identity,16 typed Params, causal anchors and every consumed raw row
 must pass before support is counted. Thirty-five synthetic checks and Ruff passed.
 Independent review found a phased prefix predecessor outside the original quality
 span; first-red regressions and the corrected as-of quality checks are preserved.
-No actual hold fit or native stop/hold execution has run.
+No actual hold fit has run. Synthetic native stop/hold execution is recorded below.
 
 The committed location publisher at both recorded base `e748a4d` and current base
 `13aedc5` explicitly writes NaNs for calibrated orientation standard deviation.
@@ -284,7 +284,8 @@ and partial failures remain visible separately. Undefined standstill geometry st
 unknown, with no re-entry after model-speed jitter. A finite mixed moving/stopping
 search retains identical window IDs, independent turn/longitudinal constraints,
 stop-target feasibility and hold-motion regressions. Thirty-nine host cases and Ruff
-passed; real native execution and physical contact/feedback validation remain pending.
+passed; one actual synthetic native case also passed. Physical contact/feedback
+validation remains pending.
 No complete candidate or production path is enabled.
 
 A separate hash-bound raw carState witness preserves original uint64 publication
@@ -298,3 +299,20 @@ unvalidated assumption and a hard selection rejection.
 Nanosecond conversion uses the existing producers' exact integer-times1e-9
 expression; division can differ by one floating ULP and falsely break source-clock
 equality. Producer-clock and as-of boundary regressions preserve exact binding.
+
+The moving joint and continuous stop/hold API cases now each pass once on an
+isolated x86 WSL runtime with the exact 13a/b45/msgq source pins. The moving case
+executes two native trials of 100 ticks with distinct synthetic initial speeds and
+different resulting rack/yaw trajectories. The stop case executes 200 ticks and 40
+successful macros through one actual V0 handle, native PID-to-stopping transition,
+inactive zero-CAN/request-false behavior and a supported synthetic hold. Both
+retain the 409 ceiling and native rate bounds, with no complete or production candidate.
+
+The runtime verifies 44 native files/assets and both built ELF libraries. A missing
+generated-header include, pytest temporary-file capture failure and missing locked
+zstandard dependency were diagnosed separately; original failures and successful
+phase outputs remain preserved. No controller/test assertions were weakened.
+Final source/binary/snapshot checks, exact commands/exits and the two non-skipped
+JUnit cases live under `native-posix-api-v1/phase3-api-v3` in the tuning artifact tree.
+These synthetic CPU checks do not run RDF inference, identify a real plant or
+validate 100Hz feedback, contact, frozen vision/adaptation or road performance.

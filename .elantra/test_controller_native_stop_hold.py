@@ -418,3 +418,114 @@ def test_original_integer_clock_asof_includes_exact_publication_and_excludes_fut
   window["tape"]["carState_t"] = np.asarray([published[2]])
   with pytest.raises(stop.StopHoldError, match="invalid/interposed"):
     stop._raw_car_state_eligibility(window, env)
+
+
+def test_actual_native_stop_hold_continuous_api_synthetic_inputs(monkeypatch):
+  """Actual controller APIs only; synthetic vision/plant/support, not car performance."""
+  import hashlib
+  import inspect
+  import json
+  import os
+  from pathlib import Path
+  import subprocess
+
+  required = ("NATIVE_LATERAL_SOURCE_ROOT", "NATIVE_SEARCH_SOURCE_ROOT", "NATIVE_JOINT_SOURCE_MANIFEST")
+  if os.name != "posix" or not all(os.environ.get(key) for key in required):
+    pytest.skip("Owner-serialized actual native POSIX/source environment required")
+  repo = Path(os.environ[required[0]]).resolve()
+  manifest_path = Path(os.environ[required[2]])
+  if not repo.is_dir() or not manifest_path.is_file():
+    pytest.skip("Actual native POSIX source/manifest unavailable")
+  assert Path(os.environ[required[1]]).resolve() == repo
+  manifest_bytes = manifest_path.read_bytes()
+  assert hashlib.sha256(manifest_bytes).hexdigest() == "2f7c60555e8329ad6cf259ec9b87d6bac93e6ee97d3e2f948afd3f61bd5c02d2"
+  manifest = json.loads(manifest_bytes)
+  assert len(manifest["expected_native_sources"]) == 44
+  assert subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip() == \
+    "13aedc522518fe1b62651d9a8a320e931efc335c"
+  loaded = stop.joint.lateral.load_runtime(repo, manifest["expected_native_sources"], manifest["expected_opendbc_gitlink"])
+  sources = stop.long.source_hashes(repo)
+  assert all(value == manifest["expected_native_sources"][key] for key, value in sources.items() if key in manifest["expected_native_sources"])
+  lr = stop.long.load_native_runtime(repo, sources, stop.joint.lateral.OPENDBC_PIN)
+  class CountedRuntime(stop.joint.lateral.Runtime):
+    def create(self, *args, **kwargs):
+      actual_handle = super().create(*args, **kwargs)
+      handles.append(actual_handle)
+      return actual_handle
+  handles = []
+  lat = CountedRuntime(loaded.bindings, loaded.sources, loaded.pin)
+  # Only reuse construction of synthetic inputs; restore BOTH predictor patches
+  # before evaluating. No factory or predictor is replaced in the actual trial.
+  with monkeypatch.context() as fixture_patch:
+    fixture = example(fixture_patch)
+  args, hold, assumptions, _ = fixture
+  window, report, env, moving = args[:4]
+  from opendbc.car.structs import car
+  from opendbc.car.hyundai.values import HyundaiFlags
+  from openpilot.cereal import custom
+  cp = car.CarParams.new_message(carFingerprint="HYUNDAI_ELANTRA_2024", brand="hyundai", mass=1360., wheelbase=2.72,
+                                centerToFront=1.088, rotationalInertia=2500., steerRatio=13.5, steerRatioRear=0.,
+                                tireStiffnessFront=80000., tireStiffnessRear=80000., steerActuatorDelay=.1,
+                                steerLimitTimer=.4, minSteerSpeed=0., steerAtStandstill=False, steerControlType="torque",
+                                flags=int(HyundaiFlags.RAISED_LIMITS), openpilotLongitudinalControl=True,
+                                longitudinalActuatorDelay=.5, stopAccel=-2.)
+  tuning = cp.lateralTuning.init("torque")
+  tuning.latAccelFactor, tuning.latAccelOffset, tuning.friction = 2.5, 0., .1
+  cp.longitudinalTuning.kiBP, cp.longitudinalTuning.kiV = [0., 30.], [0., 0.]
+  firmware = cp.init("carFw", 1)[0]
+  firmware.ecu, firmware.fwVersion = "eps", b"\x00\xff\x80"
+  sp = custom.CarParamsSP.new_message(enableGasInterceptor=False)
+  sp.neuralNetworkLateralControl.model.path = str(repo/stop.joint.lateral.ASSET)
+  window.update(cp=cp.to_dict(), sp=sp.to_dict(), opendbc_gitlink=stop.joint.lateral.OPENDBC_PIN,
+                fixture_scope="Synthetic raw plan/CS/plant/uncertainty/support identities; actual native API only")
+  report["fixture_scope"] = window["fixture_scope"]
+  env.update(cp_raw=np.frombuffer(cp.to_bytes(), np.uint8).copy(), sp_raw=np.frombuffer(sp.to_bytes(), np.uint8).copy(),
+             opendbc_gitlink=stop.joint.lateral.OPENDBC_PIN, static_identity_sha256=stop.joint.static_identity(window["cp"], window["sp"]))
+  tape, horizon = window["tape"], np.asarray(lat.bindings.horizon)
+  tape["rdf_horizon"] = horizon
+  plan = np.zeros_like(tape["rdf_plan"])
+  for i, capture in enumerate(tape["rdf_narrow_t"]):
+    speed = max(0., 3.-3.5*(capture-tape["t"][0]))
+    phase = np.minimum(horizon, speed/3.5)
+    plan[i, :, 0], plan[i, :, 3] = speed*phase-1.75*phase**2, np.maximum(0., speed-3.5*horizon)
+    plan[i, :, 6] = np.where(horizon < speed/3.5, -3.5, 0.)
+    plan[i, :, 11], plan[i, :, 14] = .002*plan[i, :, 0], .002*plan[i, :, 3]
+  tape.update(rdf_plan=plan, rdf_position=plan[:, :, :3].copy(), rdf_acceleration=plan[:, :, 6:9].copy())
+  for model, features, delta in ((moving, 14, [-.001, .0001, 0.]), (hold, 24, [.0002, .00001, 0.])):
+    model.update(opendbc_gitlink=stop.joint.lateral.OPENDBC_PIN, static_identity_sha256=env["static_identity_sha256"],
+                 edges=[[] for _ in range(features)], production_enabled=False, candidate=None,
+                 fixture_scope="Constructed median cells/support labels only; no empirical fit or physical validation")
+    keys = [":".join(["0"]*14)] if features == 14 else [pattern+"|"+":".join(["0"]*24) for pattern in model["patterns"]]
+    model["cells"] = {key: {"supported": True, "samples": 100, "routes": report["split"]["train"],
+                            "feature_min": [-500.]*features, "feature_max": [500.]*features, "joint_delta_median": delta} for key in keys}
+    model["supported_cells"] = len(keys)
+    model["model_sha256"] = stop.hold.identity_hash({key: value for key, value in model.items() if key != "model_sha256"})
+  args[4:6] = [lr, lat]
+  assumptions.update(cp_sha256=stop.long.value_hash(window["cp"]), sp_sha256=stop.long.value_hash(window["sp"]),
+                     hold_model_sha256=stop.long.value_hash(hold))
+  window["stop_target_uncertainty"] = uncertainty(window)  # Synthetic20-outcome fixture bound to the final full CP/SP.
+  assert Path(inspect.getfile(stop.joint.plant.predict_macro)).resolve() == Path(stop.joint.plant.__file__).resolve()
+  assert Path(inspect.getfile(stop.hold.predict_macro)).resolve() == Path(stop.hold.__file__).resolve()
+  result = evaluate(fixture)
+  assert lr.actual_native and lat.bindings.actual_native and result["long_result"]["evidence"] == "actual native class"
+  assert result["status"] == "complete" and result["used_steps"] == result["supported_steps"] == 200
+  assert len(result["macro_indices"]) == 40 and len(handles) == 1
+  handle = handles[0]
+  assert handle.last_t == tape["t"][-1] and handle.limits.STEER_MAX == 409
+  assert Path(inspect.getfile(type(handle.controller))).resolve() == repo/stop.joint.lateral.V0_PATH
+  assert Path(inspect.getfile(lr.controller_type)).resolve() == repo/stop.long.LONG_SOURCE
+  trace, long_trace = result["trace"], result["long_result"]["trace"]
+  np.testing.assert_array_equal(trace["v"], long_trace["v"])
+  np.testing.assert_array_equal(trace["a"], long_trace["a"])
+  origin = result["stop_request_index"]
+  assert np.any(long_trace["native_state"][:origin] == 1) and (long_trace["native_state"][origin:] == 2).all()
+  active, counts = trace["effective_active"], trace["can_torque"]
+  assert active[0] and (~active).any() and not active[-1]
+  assert not trace["request"][~active].any() and (counts[~active] == 0).all()
+  assert np.max(np.abs(counts)) <= 409 and np.max(np.abs(np.diff(np.r_[0., counts])[active])) <= 7
+  assert result["hold_motion"]["supported_zero_speed_s"] >= .5
+  assert np.ptp(trace["angle"][trace["v"] == 0]) > 0 and np.ptp(trace["yaw"][trace["v"] == 0]) > 0
+  assert window["cp"]["carFw"][0]["fwVersion"] == b"\x00\xff\x80"
+  assert result["complete_controller_candidate"] is None and not result["production_enabled"] and not result["selection_eligible"]
+  assert "contact_and_hold_unvalidated" in result["selection_rejections"]
+  assert "simulated_carState_standstill_equals_zero_unvalidated" in result["selection_rejections"]
