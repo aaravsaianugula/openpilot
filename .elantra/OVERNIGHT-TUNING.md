@@ -402,3 +402,29 @@ ambiguous frame identity, actual NN constructor asset binding and preparation/
 runtime adapter identity. `rdf-v2/recent-turning-native-lateral-transfer.json`
 records exact commands, exits, sources, hashes and limitations. No physical
 controller improvement, actuation or deployment follows from this diagnostic.
+
+The selected b1--24/25 stop cameras were subsequently found absent on the device
+and at exact checked desktop archive paths; their rlogs remain preserved. No
+camera transfer, packet build or new stop inference was fabricated. The initial
+2GiB-only device reserve missed the active deleter's10%/5GiB thresholds. Exact
+camera deletion timing/causality is unknown. Only four newly generated, freshly
+hash-verified recent replay buffers were removed:6,218,055,680bytes, restoring
+15.717GB free. Compressed packets/results, older buffers, raw logs, code, Params
+and services were preserved; exact path/inode/hash receipts record the cleanup.
+
+`device_storage_guard.py` must pass BEFORE every device copy/expansion phase,
+counting all simultaneous compressed/raw/temp/output allocations. It reads the
+actual hash-pinned native deleter policy without importing it and requires
+`max(native MIN_BYTES, ceil(total*MIN_PERCENT/100)) + 2GiB` free AFTER allocation.
+It is admission arithmetic, not a reservation. Launchers must block on nonzero
+exit and recheck before each serialized phase. Nineteen tests and Ruff passed;
+the actual POSIX zero-allocation check exited0, while requesting the earlier
+6.218GB allocation exited2 without allocating anything. The frozen RDF adapter
+is unchanged. See `recent-clips/storage-guard-livecheck.json`.
+
+`rdf_route_frames.py` implements exact two-source compressed packets with plural
+log/camera proof and per-frame source/local-index mapping. Thirty-six tests and
+Ruff passed; actual read-only two-log preflight confirmed276 causal inputs and
+identical FULL CP/SP snapshots, including fields omitted from old sidecars. Its
+real-camera path remains unexercised because selected footage is unavailable.
+Single-source consumers must explicitly bind both sources or reject the packet.
