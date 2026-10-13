@@ -272,3 +272,80 @@ Keep one owner per check. Inspect current processes/leases before heavy GPU,
 Unreal/Blender, device inference or concurrent data jobs; other projects are
 active on this host. The owner is asleep: execute routine choices autonomously,
 finish independent work before surfacing a concrete blocker, and preserve data.
+
+## October 13 recent-data checkpoint
+
+The 395-log pull completed: all 4,193,979,510 bytes verified against source hashes,
+zero failures. `device-recent-log-transfer/receipt.json` is authoritative; do not
+restart that completed transfer. `dataset-recent` now contains 390 decoded logs.
+Five named failures remain: four have no carState and one has truncated zstd.
+The initial 74 newer-schema failures were investigated using exact committed
+schemas from retained `/data/iqpilot`; 71 recovered, three had no state. Original
+manifests, failures, metadata and decoded NPZs are preserved by recovery receipts.
+
+IQ.Pilot's selector can relabel held model plans with a current frameId. Exact
+EncodeIdx ID matching therefore cannot establish those plans' capture time.
+`model_capture_times(data, metadata)` rejects all IQ paths until actual source
+exposure is established; frameAge0/nonBIG alone cannot override this gate. New
+extraction retains frameAge/BIG/trust fields. Real consumers pass metadata.
+`recent-recovery/capture-protection-receipt.json` records additive annotations to
+71 metadata files, original snapshots and unchanged NPZs/splits. IQ yaw/roll and
+frame-level active-model provenance remain unavailable. Its small source/config
+cohorts are kept separate, including recorded incompatible vehicle fingerprints.
+
+Recent Sunnypilot cohort `f9c0b765b31b` has 319 segments / 27 routes, dirty source
+`e748a4dda814dd0dd171fe76f2feab2399bd429d` and unknown opendbc identity. The original
+16/5/6 chronological route reservation is frozen: 187 training, 28 validation and
+104 test segments. `experiment-recent/f9c0b765b31b` identified long delay0.1s and
+tau1.2s from training only, interior to the expanded training grid. The 63
+training candidates retain support/rejection traces; 131/180 common windows
+support this estimate. Validation admits only13/18 windows (MAE0.0885m/s²), below
+the20-window threshold. Lateral steady and transient support fail. No axis is
+admitted for gain optimization, and an audit hook records **zero opens of all104
+held-out NPZs**. This is diagnostic identification, not a new tune or RDF result.
+
+The training search now excludes individually unsupported dynamic candidates
+before freezing common comparison windows. Delay/tau endpoints remain explicit
+boundary optima. Joint gain search propagates simulated longitudinal speed into
+lateral demand and response, constrains speed/path regressions and retains all216
+finite combinations. Reference and simulated speed share per-step zero clamping.
+Even an admitted moving candidate cannot become a complete controller without
+native low-speed stopping evidence. Previously inspected historical test results
+remain closed; no old gain selection was retuned against them.
+
+`controller_native_replay.py` executes actual current-master LongControl and native
+Hyundai acceleration bounds on a synthetic100Hz causal grid, without actuation.
+The completed old0c stop diagnostic admits1736ticks:1030PID and706stopping. Every
+stopping tick has a positive raw RDF target but negative native brake command;
+shouldStop is preserved. All admitted ticks retain uncertain initialization,
+because no observed disengagement resets the recorded controller state. It holds
+recorded vehicle motion fixed and proves command semantics, not physical outcome.
+The optional native video overlay binds raw log/RDF/native hashes and exposes state,
+shouldStop, commands and initialization uncertainty. Original videos are retained.
+The real overlay also retains brief PID/stopping switches around segment49s;
+positive commands during those PID intervals are a separate discontinuity to
+evaluate, rather than assuming all positive raw model targets imply release.
+
+`controller_clip_selection.py` selects32s camera-contiguous windows from training
+routes only, excluding overrides and requiring all post-history axis telemetry
+valid/active. `recent-clips/selection-strict.json` selected acceleration b7--26
+and turning b8--8 on distinct routes. A training-only stopping census found65
+episodes, five initially long-active and only one uninterrupted completion.
+That b1--25 episode crosses the camera-segment boundary for genuine history;
+no32s single-segment uninterrupted stop was invented. Cameras are fetched only
+for selected clips through a sole owned integrity-checked transfer.
+
+New checks have separate owners/receipts: tune26, search20, clip selection8,
+extractor/metrics/stops81, renderer32 tests passed; native replay13 passed on the
+actual POSIX device runtime (host had nine passes/four platform skips). Ruff and
+diff checks are recorded per owned change. These are checkpoint checks, never a
+road test, deployment, safety reflash or a complete controller-performance gate.
+
+New recent-camera preparation exposed Windows raw-frame pipe stalls. The packet
+decoder now uses headless FFmpeg with explicit thread limits and a120s bound,
+temporary compact files, file-backed error capture and exact decoded byte counts
+before native padding. It fails on decoding errors and retains failed attempts.
+Sixteen packet tests pass, including large stderr, actual exit preservation,
+short/extra frame rejection and timeout. Clip intervals are cut by exact frozen
+first/last frame IDs; a nominal32s duration can otherwise include641 frames due
+to the real camera clock, so preparation uses the measured midpoint end boundary.

@@ -121,6 +121,86 @@ def test_truncated_capnp_is_not_a_partial_success(tmp_path, tiny_schema):
     decode_log(path, tiny_schema)
 
 
+def test_unknown_event_requires_matching_schema_instead_of_skipping(tmp_path, tiny_schema):
+  import capnp
+  import zstandard
+  from controller_extract import decode_log
+
+  source = tmp_path / "newer.capnp"
+  source.write_text("""@0x9cad7421e032847b;
+struct Event {
+  logMonoTime @0 :UInt64; valid @1 :Bool = true;
+  union { carState @2 :CarState; reserved @3 :Void; newAncillary @4 :Void; }
+}
+struct CarState {
+  vEgo @0 :Float32; aEgo @1 :Float32;
+  steeringPressed @2 :Bool; brakePressed @3 :Bool; gasPressed @4 :Bool;
+  steeringTorque @5 :Float32; steeringAngleDeg @6 :Float32;
+}
+""", encoding="utf-8")
+  newer = capnp.load(str(source))
+  state_event = newer.Event.new_message(logMonoTime=1_000_000_000)
+  state_event.init("carState").vEgo = 8.0
+  ancillary = newer.Event.new_message(logMonoTime=1_010_000_000)
+  ancillary.newAncillary = None
+  path = tmp_path / "rlog.zst"
+  path.write_bytes(zstandard.ZstdCompressor().compress(state_event.to_bytes() + ancillary.to_bytes()))
+  with pytest.raises(ExtractionError, match="Event union/schema mismatch at message 1"):
+    decode_log(path, tiny_schema)
+  samples, metadata = decode_log(path, newer)
+  assert len(samples) == 1
+  assert metadata["message_counts"] == {"carState": 1, "newAncillary": 1}
+
+
+def test_iq_camera_aliases_require_original_ordinals_and_preserve_raw_counts(tmp_path):
+  import capnp
+  import zstandard
+  from controller_extract import decode_log
+
+  def make_schema(path, schema_id, road_ordinal):
+    named = {road_ordinal: "roadCameraState :FrameData", 15: "roadEncodeIdx :EncodeIndex", 22: "carState :CarState"}
+    fields = [f"{named[i].split(' :')[0]} @{i} :{named[i].split(' :')[1]};" if i in named
+              else f"reserved{i} @{i} :Void;" for i in range(1, 67)]
+    path.write_text(f"@{schema_id};\nstruct Event {{ logMonoTime @0 :UInt64; valid @67 :Bool = true; union {{ " +
+                   " ".join(fields) + " } }\n" + """
+struct CarState {
+  vEgo @0 :Float32; aEgo @1 :Float32; steeringPressed @2 :Bool;
+  brakePressed @3 :Bool; gasPressed @4 :Bool; steeringTorque @5 :Float32; steeringAngleDeg @6 :Float32;
+}
+struct FrameData { frameId @0 :UInt32; timestampEof @1 :UInt64; sensor @2 :Text; }
+struct EncodeIndex {
+  frameId @0 :UInt32; timestampEof @1 :UInt64; segmentNum @2 :Int32;
+  segmentId @3 :UInt32; segmentIdEncode @4 :UInt32; encodeId @5 :UInt32;
+}
+""", encoding="utf-8")
+    return capnp.load(str(path))
+
+  schema = make_schema(tmp_path / "iq.capnp", "0xc9ad7421e032847b", 2)
+  events = []
+  for name in ("carState", "roadCameraState", "roadEncodeIdx"):
+    event = schema.Event.new_message(logMonoTime=1_000_000_000)
+    d = event.init(name)
+    if name == "carState":
+      d.vEgo = 8.0
+    else:
+      d.frameId, d.timestampEof = 123, 990_000_000
+    events.append(event.to_bytes())
+  path = tmp_path / "rlog.zst"
+  path.write_bytes(zstandard.ZstdCompressor().compress(b"".join(events)))
+  samples, metadata = decode_log(path, schema)
+  arrays, summary = align_samples(samples)
+  assert metadata["service_aliases"] == {"roadCameraState": "narrowRoadCameraState", "roadEncodeIdx": "narrowRoadEncodeIdx"}
+  assert metadata["message_counts"]["roadCameraState"] == 1
+  assert "narrowRoadCameraState" not in metadata["message_counts"]
+  assert arrays["camera_frame_id"][0] == 123
+  assert arrays["raw_encode_frame_id"][0] == 123
+  assert "liveLocationKalman" in summary["missing_services"]
+  assert not arrays["valid_lat"].any()
+  wrong = make_schema(tmp_path / "wrong.capnp", "0xb9ad7421e032847b", 3)
+  with pytest.raises(ExtractionError, match="roadCameraState.*ordinal"):
+    decode_log(path, wrong)
+
+
 def test_missing_log_is_an_error(tmp_path):
   with pytest.raises(ExtractionError, match="missing"):
     decompress_log(tmp_path / "missing.zst")
@@ -270,13 +350,74 @@ def test_calibration_hold_rejects_missing_age_contract():
     hold_calibration(raw)
 
 
+CAPTURE_PROVENANCE = {"model_capture_identity_status": "recorded_narrow_frame_id"}
+
+
+def test_model_capture_requires_identity_proof_and_rejects_iq_rewritten_ids():
+  from controller_extract import model_capture_times
+
+  data = {"t": np.array([2.]), "model_t": np.array([1.9]), "model_frame_id": np.array([123.]),
+          "raw_encode_frame_id": np.array([123.]), "raw_encode_t": np.array([1.8])}
+  assert np.isnan(model_capture_times(data)).all()
+  assert model_capture_times(data, CAPTURE_PROVENANCE)[0] == 1.8
+  # IQ source can relabel an older BIG path as frame123, so exact123 is not exposure proof.
+  data.update(model_frame_id_trusted=np.ones(1), model_frame_age=np.zeros(1), model_big=np.zeros(1))
+  assert np.isnan(model_capture_times(data, {"recorded_software_family": "IQ.Pilot"})).all()
+  assert np.isnan(model_capture_times(data, {"init_data": {"version": "IQ.Pilot 1.0c"}})).all()
+  assert np.isnan(model_capture_times(data, {"message_counts": {"iqDriveModelData": 1}})).all()
+  data["model_frame_id_trusted"] = np.ones(2)
+  assert np.isnan(model_capture_times(data, CAPTURE_PROVENANCE)).all()
+
+
+def test_model_capture_legacy_sunnypilot_provenance_remains_available():
+  from controller_extract import model_capture_times
+
+  data = {"t": np.array([2.]), "model_t": np.array([1.9]), "model_frame_id": np.array([1.]),
+          "raw_encode_frame_id": np.array([1.]), "raw_encode_t": np.array([1.8])}
+  metadata = {"message_counts": {"modelV2": 1, "narrowRoadCameraState": 1, "narrowRoadEncodeIdx": 1},
+              "source_log_sha256": "a" * 64, "schema_sha256": {"log.capnp": "b" * 64}}
+  assert model_capture_times(data, metadata)[0] == 1.8
+  del metadata["schema_sha256"]
+  assert np.isnan(model_capture_times(data, metadata)).all()
+
+
+def test_new_iq_extraction_records_age_and_big_but_never_invents_capture_trust(tmp_path):
+  import capnp
+  import zstandard
+  from controller_extract import decode_log, model_capture_times
+
+  source = tmp_path / "iq_capture.capnp"
+  source.write_text("""@0xdba7b32f08ea509c;
+struct Event {
+  logMonoTime @0 :UInt64; valid @1 :Bool = true;
+  union { modelV2 @2 :Model; iqDriveModelData @3 :Void; }
+}
+struct Model { frameId @0 :UInt32; position @1 :Position; frameAge @2 :UInt32; big @3 :Bool; }
+struct Position { x @0 :List(Float32); y @1 :List(Float32); z @2 :List(Float32); t @3 :List(Float32); }
+""", encoding="utf-8")
+  schema = capnp.load(str(source))
+  event = schema.Event.new_message(logMonoTime=1_000_000_000)
+  d = event.init("modelV2")
+  d.frameId, d.frameAge, d.big = 123, 0, False
+  path = tmp_path / "rlog.zst"
+  path.write_bytes(zstandard.ZstdCompressor().compress(event.to_bytes()))
+  samples, metadata = decode_log(path, schema)
+  arrays, _ = align_samples([state(1), *samples])
+  assert metadata["model_capture_identity_status"] == "untrusted_selector_frame_id"
+  assert arrays["model_frame_age"][0] == 0
+  assert arrays["model_big"][0] == 0
+  assert arrays["model_frame_id_trusted"][0] == 0
+  arrays.update(raw_encode_frame_id=np.array([123]), raw_encode_t=np.array([.9]))
+  assert np.isnan(model_capture_times(arrays, metadata)).all()
+
+
 def test_model_capture_time_matches_exact_frame_id_not_nearest_or_publication():
   from controller_extract import model_capture_times
 
   data = {"t": np.array([2., 3., 4., 5.]), "model_t": np.array([1.9, 2.9, 3.9, 4.9]),
           "model_frame_id": np.array([9., 8., 10., 11.]),
           "raw_encode_frame_id": np.array([8., 9., 10.]), "raw_encode_t": np.array([2.5, 1.5, 3.5])}
-  result = model_capture_times(data)
+  result = model_capture_times(data, CAPTURE_PROVENANCE)
   np.testing.assert_array_equal(result[:3], [1.5, 2.5, 3.5])
   assert np.isnan(result[3])
   np.testing.assert_array_equal(data["model_t"], [1.9, 2.9, 3.9, 4.9])
@@ -288,7 +429,7 @@ def test_model_capture_rejects_future_exposure_or_unpublished_model():
   data = {"t": np.array([2., 2., 2.]), "model_t": np.array([1.9, 2., 2.1]),
           "model_frame_id": np.array([1., 2., 3.]), "raw_encode_frame_id": np.array([1., 2., 3.]),
           "raw_encode_t": np.array([1.95, 2.01, 1.9])}
-  assert np.isnan(model_capture_times(data)).all()
+  assert np.isnan(model_capture_times(data, CAPTURE_PROVENANCE)).all()
 
 
 def test_model_capture_conflicting_duplicates_are_ambiguous_but_identical_duplicates_are_safe():
@@ -297,7 +438,7 @@ def test_model_capture_conflicting_duplicates_are_ambiguous_but_identical_duplic
   data = {"t": np.full(3, 2.), "model_t": np.full(3, 1.9), "model_frame_id": np.array([7., 8., 9.]),
           "raw_encode_frame_id": np.array([7., 7., 8., 8., 9., 9.]),
           "raw_encode_t": np.array([1., 1., 1.2, 1.3, 1.4, np.nan])}
-  result = model_capture_times(data)
+  result = model_capture_times(data, CAPTURE_PROVENANCE)
   assert result[0] == 1.
   assert np.isnan(result[1:]).all()
 
@@ -306,10 +447,10 @@ def test_model_capture_missing_encode_metadata_never_uses_publication_as_exposur
   from controller_extract import model_capture_times
 
   data = {"t": np.array([2., 3.]), "model_t": np.array([1.9, 2.9]), "model_frame_id": np.array([1., 2.])}
-  assert np.isnan(model_capture_times(data)).all()
+  assert np.isnan(model_capture_times(data, CAPTURE_PROVENANCE)).all()
   data.update(raw_encode_frame_id=np.array([1., 2.]), raw_encode_t=np.array([1., 2.]))
   del data["model_t"]
-  assert np.isnan(model_capture_times(data)).all()
+  assert np.isnan(model_capture_times(data, CAPTURE_PROVENANCE)).all()
 
 
 def test_model_capture_noninteger_ids_are_rejected_and_integer_64bit_ids_are_exact():
@@ -318,11 +459,11 @@ def test_model_capture_noninteger_ids_are_rejected_and_integer_64bit_ids_are_exa
   data = {"t": np.full(3, 2.), "model_t": np.full(3, 1.9),
           "model_frame_id": np.array([1.5, np.nan, float(2**53)]),
           "raw_encode_frame_id": np.array([1.5, 2., float(2**53)]), "raw_encode_t": np.ones(3)}
-  assert np.isnan(model_capture_times(data)).all()
+  assert np.isnan(model_capture_times(data, CAPTURE_PROVENANCE)).all()
   ids = np.array([2**63 + 7, 2**63 + 9], dtype=np.uint64)
   data = {"t": np.full(2, 2.), "model_t": np.full(2, 1.9), "model_frame_id": ids,
           "raw_encode_frame_id": ids[::-1], "raw_encode_t": np.array([1.2, 1.1])}
-  np.testing.assert_array_equal(model_capture_times(data), [1.1, 1.2])
+  np.testing.assert_array_equal(model_capture_times(data, CAPTURE_PROVENANCE), [1.1, 1.2])
 
 
 def test_model_capture_stale_exact_match_reports_actual_age_without_inventing_freshness():
@@ -330,5 +471,5 @@ def test_model_capture_stale_exact_match_reports_actual_age_without_inventing_fr
 
   data = {"t": np.array([10.]), "model_t": np.array([9.99]), "model_frame_id": np.array([1.]),
           "raw_encode_frame_id": np.array([1.]), "raw_encode_t": np.array([1.])}
-  assert model_capture_times(data)[0] == 1.
-  assert data["t"][0] - model_capture_times(data)[0] == 9.
+  assert model_capture_times(data, CAPTURE_PROVENANCE)[0] == 1.
+  assert data["t"][0] - model_capture_times(data, CAPTURE_PROVENANCE)[0] == 9.

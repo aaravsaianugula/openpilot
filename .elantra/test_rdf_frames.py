@@ -2,6 +2,7 @@
 import numpy as np
 import pytest
 from collections import defaultdict
+from pathlib import Path
 
 import rdf_frames as rf
 
@@ -125,3 +126,56 @@ def test_output_directory_cannot_alias_or_overwrite_source(tmp_path):
   with pytest.raises(rf.PacketError, match="empty"):
     rf.prepare_output(target, segment)
   assert (target / "existing.txt").read_text() == "preserve"
+
+
+def test_decoder_drains_large_error_output_and_preserves_real_exit(tmp_path, monkeypatch):
+  import subprocess
+  import sys
+
+  original = subprocess.Popen
+
+  def failing_decoder(_command, **kwargs):
+    assert kwargs["stderr"] != subprocess.PIPE, "undrained stderr can deadlock frame reads"
+    return original([sys.executable, "-c", "import sys; sys.stderr.write('baddecode' * 40000); sys.exit(7)"], **kwargs)
+
+  monkeypatch.setattr(rf.shutil, "which", lambda _name: sys.executable)
+  monkeypatch.setattr(rf.subprocess, "Popen", failing_decoder)
+  with pytest.raises(rf.PacketError, match="exit7.*baddecode"):
+    rf.decode_camera(tmp_path / "input.hevc", np.array([0]), tmp_path / "output.nv12")
+
+
+@pytest.mark.parametrize("bytes_written", [12, 11, 13])
+def test_decoder_uses_bounded_compact_file_and_exact_frame_count(tmp_path, monkeypatch, bytes_written):
+  import subprocess
+
+  def decode(command, **kwargs):
+    assert command[-1] != "pipe:1"
+    assert kwargs["stdout"] == subprocess.DEVNULL and 0 < kwargs["timeout"] <= 120
+    Path(command[-1]).write_bytes(bytes(range(bytes_written)))
+    return subprocess.CompletedProcess(command, 0)
+
+  monkeypatch.setattr(rf, "WIDTH", 2)
+  monkeypatch.setattr(rf, "HEIGHT", 2)
+  monkeypatch.setattr(rf, "pack_nv12", lambda raw: b"p" + raw)
+  monkeypatch.setattr(rf.subprocess, "run", decode)
+  target = tmp_path / "output.nv12"
+  if bytes_written == 12:
+    rf.decode_camera(tmp_path / "input.hevc", np.array([7, 8]), target)
+    assert target.read_bytes() == b"p" + bytes(range(6)) + b"p" + bytes(range(6, 12))
+  else:
+    with pytest.raises(rf.PacketError, match="byte count"):
+      rf.decode_camera(tmp_path / "input.hevc", np.array([7, 8]), target)
+    assert not target.exists()
+
+
+def test_decoder_timeout_cannot_produce_a_completed_packet(tmp_path, monkeypatch):
+  import subprocess
+
+  def timeout(command, **kwargs):
+    raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+  monkeypatch.setattr(rf.subprocess, "run", timeout)
+  target = tmp_path / "output.nv12"
+  with pytest.raises(rf.PacketError, match="120s bound"):
+    rf.decode_camera(tmp_path / "input.hevc", np.array([0]), target)
+  assert not target.exists()

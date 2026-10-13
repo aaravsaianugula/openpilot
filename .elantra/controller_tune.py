@@ -23,6 +23,11 @@ STEER_MAX = 409
 MIN_CELL = 100
 LAT_EDGES = np.array([-410, -330, -250, -170, -90, -30, 30, 90, 170, 250, 330, 410])
 LONG_EDGES = np.array([-3.51, -2.5, -1.5, -.8, -.3, .1, .5, 1., 1.5, 2.01])
+DYNAMIC_DELAY_GRID = (0., .1, .2, .3, .4, .5, .6)
+DYNAMIC_TAU_GRID = (.05, .1, .2, .35, .5, .8, 1.2, 2., 3.)
+TRANSIENT_DELAY_GRID = (0., .05, .1, .2, .3, .4, .5, .6)
+TRAIN_DYNAMIC_MIN_WINDOWS = 10
+TRAIN_DYNAMIC_MIN_COVERAGE = .1
 
 
 def route_split(routes):
@@ -295,49 +300,122 @@ def acceptance(baseline, candidate, identified):
                 and candidate["mae"] < baseline["mae"] * .95 and candidate["p95"] <= baseline["p95"])
 
 
+def training_dynamic_scores(raw_scores, rejection_reasons=None):
+    """Filter individual training support before freezing the comparison windows.
+
+    The 10-window/10% minima only select training dynamics. They do not relax the
+    separate held-out identification or acceptance gates. All eligible candidates
+    share one intersection and the largest attempted-window denominator; a sparse
+    candidate cannot claim higher coverage by reporting fewer attempts. A small
+    intersection rejects the entire eligible comparison, with no subset search.
+    """
+    attempted = max((score["attempted_windows"] for score in raw_scores), default=0)
+    reasons = ([list(value) for value in rejection_reasons] if rejection_reasons is not None
+               else [[] for _ in raw_scores])
+    if len(reasons) != len(raw_scores):
+        raise ValueError("one rejection-reason list per training candidate is required")
+    normalized = []
+    for score in raw_scores:
+        if score["attempted_windows"] < len(score["window_scores"]):
+            raise ValueError("supported training windows exceed attempted windows")
+        normalized.append({**score, "attempted_windows": attempted})
+    individual = [paired_scores([score])[0] for score in normalized]
+    eligible = []
+    for i, score in enumerate(individual):
+        if score["used_windows"] < TRAIN_DYNAMIC_MIN_WINDOWS:
+            reasons[i].append("insufficient_individual_windows")
+        if score["coverage"] < TRAIN_DYNAMIC_MIN_COVERAGE:
+            reasons[i].append("insufficient_individual_coverage")
+        if not reasons[i]:
+            eligible.append(i)
+    common = set.intersection(*(set(normalized[i]["window_scores"]) for i in eligible)) if eligible else set()
+    paired = dict(zip(eligible, paired_scores([normalized[i] for i in eligible]), strict=True)) if eligible else {}
+    empty = {"attempted_windows": attempted, "used_windows": 0, "coverage": 0.,
+             "mae": None, "p95": None, "target_mae": None, "endpoint_p95": None, "window_ids": []}
+    results = []
+    for i, score in enumerate(individual):
+        comparison = paired.get(i, empty)
+        if i in paired:
+            if comparison["used_windows"] < TRAIN_DYNAMIC_MIN_WINDOWS:
+                reasons[i].append("insufficient_common_windows")
+            if comparison["coverage"] < TRAIN_DYNAMIC_MIN_COVERAGE:
+                reasons[i].append("insufficient_common_coverage")
+        common_supported = len(common & set(normalized[i]["window_scores"]))
+        results.append({**comparison, "reported_attempted_windows": raw_scores[i]["attempted_windows"],
+                        "individual_used_windows": score["used_windows"], "individual_coverage": score["coverage"],
+                        "individual_prediction": score, "common_supported_windows": common_supported,
+                        "common_coverage": common_supported / max(1, attempted),
+                        "individually_eligible": i in paired, "eligible": not reasons[i],
+                        "rejection_reasons": reasons[i]})
+    support = {"data_partition": "training_only", "attempted_windows": attempted,
+               "minimum_individual_windows": TRAIN_DYNAMIC_MIN_WINDOWS,
+               "minimum_individual_coverage": TRAIN_DYNAMIC_MIN_COVERAGE,
+               "minimum_common_windows": TRAIN_DYNAMIC_MIN_WINDOWS,
+               "minimum_common_coverage": TRAIN_DYNAMIC_MIN_COVERAGE,
+               "individually_eligible_candidates": len(eligible),
+               "eligible_candidates": sum(score["eligible"] for score in results),
+               "common_population_windows": len(common), "common_population_coverage": len(common) / max(1, attempted),
+               "held_out_gates": "Separate and unchanged; these minima do not establish plant acceptance."}
+    return results, support
+
+
+def dynamic_boundaries(delay, delay_grid, tau=None):
+    boundaries = {}
+    for name, value, grid in (("delay_s", delay, delay_grid), ("tau_s", tau, DYNAMIC_TAU_GRID)):
+        if value is not None and value in (min(grid), max(grid)):
+            boundaries[name] = "minimum" if value == min(grid) else "maximum"
+    return boundaries
+
+
 def identify(records, axis):
     table, support = fit_table(records, axis)
-    if not table:
-        return None, support
-    grid, raw_scores = [], []
-    for delay in (0., .1, .2, .3, .4, .5, .6):
-        for tau in (.1, .2, .35, .5, .8):
+    grid, raw_scores, rejections = [], [], []
+    for delay in DYNAMIC_DELAY_GRID:
+        for tau in DYNAMIC_TAU_GRID:
             model = {"table": table, "delay_s": delay, "tau_s": tau}
-            score = score_model(records, model, axis, stride=120)
+            score = (score_model(records, model, axis, stride=120) if table
+                     else {"attempted_windows": 0, "window_scores": {}})
             grid.append((delay, tau))
             raw_scores.append(score)
-    scores = [(s["mae"], d, t, s) for (d, t), s in zip(grid, paired_scores(raw_scores), strict=True)
-              if s["used_windows"] >= 10 and s["coverage"] >= .1]
-    support["dynamic_grid"] = [{"delay_s": d, "tau_s": t, **s} for _, d, t, s in scores]
+            rejections.append([] if table else ["no_supported_steady_table"])
+    summaries, support["dynamic_selection"] = training_dynamic_scores(raw_scores, rejections)
+    support["dynamic_grid"] = [{"delay_s": d, "tau_s": t, **s} for (d, t), s in zip(grid, summaries, strict=True)]
+    support["dynamic_grid_bounds"] = {"delay_s": [min(DYNAMIC_DELAY_GRID), max(DYNAMIC_DELAY_GRID)],
+                                      "tau_s": [min(DYNAMIC_TAU_GRID), max(DYNAMIC_TAU_GRID)]}
+    scores = [(s["mae"], d, t, s) for (d, t), s in zip(grid, summaries, strict=True) if s["eligible"]]
     if not scores:
         return None, support
     _, delay, tau, score = min(scores)
-    boundary = delay == .6 or tau in (.1, .8)
-    return {"table": table, "delay_s": delay, "tau_s": tau, "boundary_optimum": boundary,
+    boundaries = dynamic_boundaries(delay, DYNAMIC_DELAY_GRID, tau)
+    return {"table": table, "delay_s": delay, "tau_s": tau, "boundary_optimum": bool(boundaries),
+            "boundary_parameters": boundaries, "search_status": "finite_training_grid_optimum_not_convergence",
             "training_prediction": score}, support
 
 
 def identify_transient(records):
     from controller_dynamics import fit
 
-    candidates, raw = [], []
-    for delay in (0., .05, .1, .2, .3, .4, .5, .6):
+    candidates, raw, rejections = [], [], []
+    for delay in TRANSIENT_DELAY_GRID:
         model = fit(records, delay)
-        if model["cells"]:
-            candidates.append(model)
-            raw.append(score_model(records, model, "lat", stride=120))
-    if not candidates:
-        return None, {"status": "no_supported_transient_cells"}
-    summaries = paired_scores(raw)
-    eligible = [(s["mae"], i) for i, s in enumerate(summaries)
-                if s["used_windows"] >= 10 and s["coverage"] >= .1]
+        candidates.append(model)
+        raw.append(score_model(records, model, "lat", stride=120) if model["cells"]
+                   else {"attempted_windows": 0, "window_scores": {}})
+        rejections.append([] if model["cells"] else ["no_supported_transient_cells"])
+    summaries, selection = training_dynamic_scores(raw, rejections)
+    eligible = [(s["mae"], i) for i, s in enumerate(summaries) if s["eligible"]]
     support = {"dynamic_grid": [{"delay_s": m["delay_s"], **s} for m, s in zip(candidates, summaries, strict=True)],
-               "cell_support": [m["support"] for m in candidates]}
+               "cell_support": [m["support"] for m in candidates], "dynamic_selection": selection,
+               "dynamic_grid_bounds": {"delay_s": [min(TRANSIENT_DELAY_GRID), max(TRANSIENT_DELAY_GRID)]}}
+    if not any(model["cells"] for model in candidates):
+        support["status"] = "no_supported_transient_cells"
     if not eligible:
         return None, support
     _, i = min(eligible)
     model = candidates[i]
-    model.update(boundary_optimum=model["delay_s"] == .6, training_prediction=summaries[i])
+    boundaries = dynamic_boundaries(model["delay_s"], TRANSIENT_DELAY_GRID)
+    model.update(boundary_optimum=bool(boundaries), boundary_parameters=boundaries,
+                 search_status="finite_training_grid_optimum_not_convergence", training_prediction=summaries[i])
     return model, support
 
 

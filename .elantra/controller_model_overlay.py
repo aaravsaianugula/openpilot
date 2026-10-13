@@ -142,3 +142,52 @@ def rdf_path(rdf, data, timestamp):
   path = capture_path(data, contiguous_path(rdf["position"][i, :, :2]), rdf["horizon"],
                       float(rdf["narrow_t"][i]), timestamp)
   return path, i if len(path) else None
+
+
+def validate_native_output(native, receipt, rdf, rdf_sha, log_sha, output_sha):
+  """Bind native commands to this exact model output/log and reject inadmissible rows."""
+  for key, actual in (("rdf_output_sha256", rdf_sha), ("source_log_sha256", log_sha), ("output_npz_sha256", output_sha)):
+    if receipt.get(key) != actual:
+      raise RenderError(f"native evidence hash mismatch: {key}")
+  if (receipt.get("mode") != "native_replay" or receipt.get("dt") != .01
+      or receipt.get("no_actuation") is not True or receipt.get("no_params_writes") is not True
+      or not isinstance(receipt.get("initialization"), str) or not receipt["initialization"]):
+    raise RenderError("native evidence requires the diagnostic 100 Hz replay contract")
+  required = ("t", "admitted", "initialization_uncertain", "native_accel", "native_state", "should_stop",
+              "rdf_index", "rdf_accel_target", "rdf_capture_age_s")
+  if any(key not in native for key in required):
+    raise RenderError("missing native evidence arrays")
+  n = len(native["t"])
+  if n < 2 or receipt.get("rows") != n or any(np.asarray(native[key]).shape != (n,) for key in required):
+    raise RenderError("native evidence shapes/count must match the receipt")
+  numeric = ("t", "native_accel", "native_state", "rdf_accel_target", "rdf_capture_age_s")
+  if any(np.asarray(native[key]).dtype.kind not in "fi" for key in numeric):
+    raise RenderError("native evidence clocks/commands must be real numeric arrays")
+  if not np.isfinite(native["t"]).all() or not np.allclose(np.diff(native["t"]), .01, atol=1e-8, rtol=0):
+    raise RenderError("native evidence clocks must be continuous and increasing at 100 Hz")
+  if any(np.asarray(native[key]).dtype.kind != "b" for key in ("admitted", "initialization_uncertain", "should_stop")):
+    raise RenderError("native evidence flags must be explicit booleans")
+  admitted = native["admitted"]
+  for key in ("native_accel", "native_state", "rdf_accel_target", "rdf_capture_age_s"):
+    if not np.isfinite(native[key][admitted]).all() or not np.isnan(native[key][~admitted]).all():
+      raise RenderError("native commands/states must be finite only on admitted rows")
+  if not np.isin(native["native_state"][admitted], (0, 1, 2)).all() or np.asarray(native["rdf_index"]).dtype.kind != "i":
+    raise RenderError("invalid native state or RDF index")
+  if "should_stop" not in rdf or np.asarray(rdf["should_stop"]).dtype.kind != "b":
+    raise RenderError("native evidence requires exact boolean RDF shouldStop outputs")
+  indices = native["rdf_index"][admitted]
+  expected = np.searchsorted(rdf["output_ready_t"], native["t"][admitted], side="right") - 1
+  if (np.any(indices < 0) or np.any(indices >= len(rdf["input_t"])) or not np.array_equal(indices, expected)):
+    raise RenderError("native evidence used future or mismatched RDF outputs")
+  age = native["t"][admitted] - rdf["narrow_t"][indices]
+  if (not rdf["scored_mask"][indices].all() or np.any(age < 0) or np.any(age > .2 + 1e-8)
+      or not np.allclose(age, native["rdf_capture_age_s"][admitted], atol=1e-8, rtol=0)
+      or not np.array_equal(native["rdf_accel_target"][admitted], rdf["desired_acceleration"][indices])
+      or not np.array_equal(native["should_stop"][admitted], rdf["should_stop"][indices])):
+    raise RenderError("native evidence violated RDF warmup, freshness, target or shouldStop identity")
+
+
+def native_index(native, timestamp):
+  """Select only the latest native tick; never substitute a prior admitted row."""
+  index = causal_index(native["t"], timestamp, .01000001)
+  return index if index is not None and native["admitted"][index] else None

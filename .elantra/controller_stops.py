@@ -85,11 +85,11 @@ def motion_valid(d):
 def stitch_route(paths, calibration_hold=True):
   """Stitch only chronological contiguous segment boundaries, then break invalid motion."""
   pieces, coverage = [], Counter()
-  for path, _meta in paths:
+  for path, meta in paths:
     with np.load(path, allow_pickle=False) as archive:
       raw = {key: archive[key] for key in archive.files}
     data = hold_calibration(raw) if calibration_hold else raw
-    data["model_capture_t"] = model_capture_times(raw)
+    data["model_capture_t"] = model_capture_times(raw, meta)
     t = data["t"]
     if not len(t) or not np.isfinite(t).all() or np.any(np.diff(t) <= 0):
       raise ValueError(f"nonempty strictly monotonic extracted timestamps required: {path}")

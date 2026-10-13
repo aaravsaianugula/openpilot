@@ -126,9 +126,9 @@ def model_endpoint(data, i, h):
                    np.interp(h, horizon, y) - np.interp(0, horizon, y)])
 
 
-def segment_metrics(data):
+def segment_metrics(data, metadata=None):
   modes = mode_indices(data)
-  captures = model_capture_times(data)
+  captures = model_capture_times(data, metadata)
   result = {name: empty_mode() for name in MODES if np.any(modes == MODES.index(name))}
   clean_lat, clean_long = clean_mask(data, "lat"), clean_mask(data, "long")
   for mode, value in result.items():
@@ -284,7 +284,7 @@ def analyze(paths):
     cohort = cohorts[key]
     with np.load(path, allow_pickle=False) as archive:
       data = hold_calibration({k: archive[k] for k in archive.files})
-    for mode, values in segment_metrics(data).items():
+    for mode, values in segment_metrics(data, meta).items():
       merge_mode(cohort["modes"].setdefault(mode, empty_mode()), values)
     cohort["segments"] += 1
     cohort["routes"].add(meta["route"])

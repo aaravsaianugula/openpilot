@@ -144,3 +144,135 @@ def test_rollout_gain_series_matches_scalar_and_applies_current_sample_gain():
     for invalid in ([.1], np.full((11, 1), .1), np.full(11, np.nan), -.1):
         with pytest.raises(ValueError, match="gain"):
             ct.rollout(d, 12, model, "lat", invalid, seconds=.5)
+
+
+def dynamic_score(ids, error=1., attempted=100):
+    return {"attempted_windows": attempted, "window_scores": {
+        str(i): {"absolute": [error], "target": [error], "endpoint": error} for i in ids}}
+
+
+def test_training_dynamics_rejects_unsupported_before_fixing_common_population():
+    raw = [dynamic_score(range(20)), dynamic_score(range(5, 20), .5),
+           dynamic_score([], 0.), dynamic_score(range(9), 0.)]
+    scores, support = ct.training_dynamic_scores(raw)
+    assert support["data_partition"] == "training_only"
+    assert support["common_population_windows"] == 15
+    assert [score["eligible"] for score in scores] == [True, True, False, False]
+    assert scores[0]["individual_used_windows"] == 20
+    assert scores[0]["used_windows"] == scores[1]["used_windows"] == 15
+    assert scores[0]["window_ids"] == scores[1]["window_ids"]
+    assert scores[1]["coverage"] == pytest.approx(.15)
+    assert scores[2]["individual_coverage"] == scores[2]["common_coverage"] == 0
+    assert "insufficient_individual_windows" in scores[2]["rejection_reasons"]
+    assert scores[3]["individual_used_windows"] == 9
+    assert scores[3]["common_supported_windows"] == 4
+    assert scores[3]["mae"] is None
+
+
+def test_training_dynamics_cannot_shrink_denominator_or_cherry_pick_common_support():
+    scores, support = ct.training_dynamic_scores([
+        dynamic_score(range(100), attempted=1000), dynamic_score(range(10), 0., attempted=10)])
+    assert support["attempted_windows"] == 1000
+    assert scores[1]["reported_attempted_windows"] == 10
+    assert scores[1]["individual_coverage"] == pytest.approx(.01)
+    assert not scores[1]["eligible"]
+    assert "insufficient_individual_coverage" in scores[1]["rejection_reasons"]
+    assert scores[0]["eligible"] and scores[0]["used_windows"] == 100
+    scores, support = ct.training_dynamic_scores([
+        dynamic_score(range(20)), dynamic_score(range(15, 35), 0.)])
+    assert support["individually_eligible_candidates"] == 2
+    assert support["common_population_windows"] == 5
+    assert all(not score["eligible"] for score in scores)
+    assert all("insufficient_common_windows" in score["rejection_reasons"] for score in scores)
+    assert all(score["coverage"] == pytest.approx(.05) for score in scores)
+
+
+def test_identify_recovers_interior_response_slower_than_old_tau_grid(monkeypatch):
+    table = {"3-7": {"command": [-250., 0., 250.], "response": [1.25, 0., -1.25]}}
+    monkeypatch.setattr(ct, "fit_table", lambda records, axis: (table, {}))
+    records = []
+    for route in ("training-a", "training-b"):
+        n = 900
+        d = {key: np.zeros(n) for key in ("a", "yaw", "roll", "desired_curvature",
+             "steering_pressed", "brake_pressed", "gas_pressed")}
+        d.update(t=np.arange(n) * ct.DT, v=np.full(n, 5.), lat_active=np.ones(n),
+                 calibrated=np.ones(n), valid_lat=np.ones(n))
+        d["torque"] = 150 * np.sin(d["t"] * 1.1) + 40 * np.sin(d["t"] * 3.2)
+        state = np.zeros(n)
+        for i in range(n - 1):
+            command = d["torque"][i - 6] if i >= 6 else 0.
+            state[i + 1] = state[i] + ct.DT / (1.2 + ct.DT) * (-command * .005 - state[i])
+        d["yaw"] = state / d["v"]
+        records.append(({"route": route, "segment": route + "--0"}, d))
+    model, support = ct.identify(records, "lat")
+    assert model["tau_s"] == 1.2 and model["delay_s"] == .3
+    assert model["training_prediction"]["mae"] < 1e-12
+    assert not model["boundary_optimum"] and model["boundary_parameters"] == {}
+    assert model["search_status"] == "finite_training_grid_optimum_not_convergence"
+    assert len(support["dynamic_grid"]) == 63
+    assert {row["tau_s"] for row in support["dynamic_grid"]} == {.05, .1, .2, .35, .5, .8, 1.2, 2., 3.}
+
+
+def test_identify_retains_failed_candidate_without_erasing_supported_training(monkeypatch):
+    monkeypatch.setattr(ct, "fit_table", lambda records, axis: ({"known": {}}, {}))
+    def score(records, model, axis, stride):
+        if model["tau_s"] == .05 and model["delay_s"] == .6:
+            return dynamic_score([])
+        return dynamic_score(range(20), abs(model["tau_s"] - 1.2) + abs(model["delay_s"] - .3))
+    monkeypatch.setattr(ct, "score_model", score)
+    model, support = ct.identify(["training-only"], "lat")
+    assert (model["delay_s"], model["tau_s"]) == (.3, 1.2)
+    assert model["training_prediction"]["used_windows"] == 20
+    rejected = [row for row in support["dynamic_grid"] if not row["eligible"]]
+    assert len(support["dynamic_grid"]) == 63 and len(rejected) == 1
+    assert rejected[0]["individual_used_windows"] == 0
+    assert "insufficient_individual_windows" in rejected[0]["rejection_reasons"]
+
+
+@pytest.mark.parametrize(("delay", "tau", "boundaries"), [
+    (0., 1.2, {"delay_s": "minimum"}), (.6, 1.2, {"delay_s": "maximum"}),
+    (.3, .05, {"tau_s": "minimum"}), (.3, 3., {"tau_s": "maximum"}), (.3, .1, {})])
+def test_identify_marks_actual_grid_boundaries(monkeypatch, delay, tau, boundaries):
+    monkeypatch.setattr(ct, "fit_table", lambda records, axis: ({"known": {}}, {}))
+    monkeypatch.setattr(ct, "score_model", lambda records, model, axis, stride: dynamic_score(
+        range(20), abs(model["delay_s"] - delay) + abs(model["tau_s"] - tau)))
+    model, _ = ct.identify(["training-only"], "long")
+    assert model["boundary_parameters"] == boundaries
+    assert model["boundary_optimum"] == bool(boundaries)
+
+
+def test_transient_keeps_empty_cells_and_unsupported_candidates(monkeypatch):
+    import controller_dynamics
+
+    monkeypatch.setattr(controller_dynamics, "fit", lambda records, delay: {
+        "delay_s": delay, "cells": {} if delay == .6 else {"known": {}}, "support": {"delay_s": delay}})
+    monkeypatch.setattr(ct, "score_model", lambda records, model, axis, stride: dynamic_score(
+        [] if model["delay_s"] == .05 else range(20), abs(model["delay_s"] - .3)))
+    model, support = ct.identify_transient(["training-only"])
+    assert model["delay_s"] == .3 and not model["boundary_optimum"]
+    assert len(support["dynamic_grid"]) == len(support["cell_support"]) == 8
+    empty = next(row for row in support["dynamic_grid"] if row["delay_s"] == .6)
+    assert not empty["eligible"] and "no_supported_transient_cells" in empty["rejection_reasons"]
+    unsupported = next(row for row in support["dynamic_grid"] if row["delay_s"] == .05)
+    assert not unsupported["eligible"] and unsupported["individual_used_windows"] == 0
+    assert model["training_prediction"]["used_windows"] == 20
+
+
+def test_no_supported_table_retains_declared_grid_and_reasons(monkeypatch):
+    monkeypatch.setattr(ct, "fit_table", lambda records, axis: ({}, {"cells": []}))
+    model, support = ct.identify([], "lat")
+    assert model is None and len(support["dynamic_grid"]) == 63
+    assert all("no_supported_steady_table" in row["rejection_reasons"] for row in support["dynamic_grid"])
+
+
+@pytest.mark.parametrize("delay", [0., .6])
+def test_transient_marks_both_delay_grid_boundaries(monkeypatch, delay):
+    import controller_dynamics
+
+    monkeypatch.setattr(controller_dynamics, "fit", lambda records, value: {
+        "delay_s": value, "cells": {"known": {}}, "support": {}})
+    monkeypatch.setattr(ct, "score_model", lambda records, model, axis, stride: dynamic_score(
+        range(20), abs(model["delay_s"] - delay)))
+    model, _ = ct.identify_transient(["training-only"])
+    assert model["boundary_optimum"]
+    assert model["boundary_parameters"] == {"delay_s": "minimum" if delay == 0 else "maximum"}

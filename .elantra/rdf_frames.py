@@ -16,6 +16,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 
 import numpy as np
 
@@ -257,32 +258,31 @@ def decode_camera(source, indices, target):
   if any(b != a + 1 for a, b in zip(indices[:-1], indices[1:], strict=True)):
     raise PacketError("decoder requires contiguous source presentation indices")
   first, last = int(indices[0]), int(indices[-1])
-  command = [ffmpeg, "-v", "error", "-threads", "2", "-i", str(source), "-vf", f"select=between(n\\,{first}\\,{last})",
-             "-fps_mode", "passthrough", "-frames:v", str(len(indices)), "-pix_fmt", "nv12", "-f", "rawvideo", "pipe:1"]
-  process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-  frame_bytes = WIDTH * HEIGHT * 3 // 2
-  try:
-    with target.open("xb") as output:
+  # Avoid both Windows raw-frame pipe stalls and unread-stderr pipe deadlocks.
+  # Temporary compact pixels are bounded by the requested exact frame count.
+  with tempfile.TemporaryDirectory(prefix="decode-", dir=target.parent) as temporary:
+    directory = Path(temporary).resolve()
+    if not directory.is_relative_to(target.parent.resolve()):
+      raise PacketError("temporary decoder directory escaped packet output")
+    compact = directory / "compact.nv12"
+    command = [ffmpeg, "-nostdin", "-v", "error", "-xerror", "-threads", "2", "-filter_threads", "1", "-i", str(source),
+               "-vf", f"select=between(n\\,{first}\\,{last})", "-fps_mode", "passthrough", "-frames:v", str(len(indices)),
+               "-threads:v", "1", "-pix_fmt", "nv12", "-f", "rawvideo", str(compact)]
+    with tempfile.TemporaryFile() as errors:
+      try:
+        process = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=errors, timeout=120)
+      except subprocess.TimeoutExpired as exc:
+        raise PacketError("ffmpeg decode exceeded the 120s bound") from exc
+      errors.seek(0)
+      detail = errors.read(600).decode("utf-8", "replace")
+      if process.returncode != 0:
+        raise PacketError(f"ffmpeg decode failed exit{process.returncode}: {detail}")
+    frame_bytes = WIDTH * HEIGHT * 3 // 2
+    if not compact.is_file() or compact.stat().st_size != len(indices) * frame_bytes:
+      raise PacketError("ffmpeg compact byte count differs from exact selected frames")
+    with compact.open("rb") as pixels, target.open("xb") as output:
       for _ in indices:
-        chunks, remaining = [], frame_bytes
-        while remaining:
-          chunk = process.stdout.read(remaining)
-          if not chunk:
-            raise PacketError("ffmpeg ended before every recorded presentation frame was decoded")
-          chunks.append(chunk)
-          remaining -= len(chunk)
-        output.write(pack_nv12(b"".join(chunks)))
-    extra = process.stdout.read(1)
-    stderr = process.stderr.read().decode("utf-8", "replace")
-    code = process.wait()
-    if code != 0 or extra:
-      raise PacketError(f"ffmpeg decode failed exit{code}: {stderr[:600]}")
-  finally:
-    if process.poll() is None:
-      process.terminate()
-      process.wait()
-    process.stdout.close()
-    process.stderr.close()
+        output.write(pack_nv12(pixels.read(frame_bytes)))
   return command
 
 

@@ -7,7 +7,9 @@ from controller_video import (
   RenderError, calibration_at, camera_mapping, contiguous_path, forecast_paths,
   frame_schedule, project_ground, projection_config, reanchor_paths, validate_output_path,
 )
-from controller_model_overlay import capture_path, measured_forecasts, model_path, rdf_path, validate_rdf_output
+from controller_model_overlay import (
+  capture_path, measured_forecasts, model_path, native_index, rdf_path, validate_native_output, validate_rdf_output,
+)
 
 
 def test_nonuniform_camera_timestamps_choose_logged_frames_not_container_rate():
@@ -229,3 +231,69 @@ def test_fresh_rdf_identity_warmup_availability_and_source_match():
   rdf["model_sha256"] = np.asarray("wrong")
   with pytest.raises(RenderError, match="identity"):
     validate_rdf_output(rdf, d)
+
+
+def native_evidence():
+  rdf_t = np.arange(150) * .05
+  rdf = {"input_t": rdf_t, "narrow_t": rdf_t, "output_ready_t": rdf_t + .04,
+         "scored_mask": np.arange(150) >= 132, "desired_acceleration": np.ones(150) * .1,
+         "should_stop": np.ones(150, dtype=bool)}
+  t = 6.6 + np.arange(100) * .01
+  indices = np.searchsorted(rdf["output_ready_t"], t, side="right") - 1
+  admitted = rdf["scored_mask"][indices]
+  native = {"t": t, "admitted": admitted, "initialization_uncertain": np.ones(100, dtype=bool),
+            "native_accel": np.where(admitted, -.52, np.nan), "native_state": np.where(admitted, 2., np.nan),
+            "should_stop": admitted.copy(), "rdf_index": np.where(admitted, indices, -1),
+            "rdf_accel_target": np.where(admitted, .1, np.nan),
+            "rdf_capture_age_s": np.where(admitted, t-rdf_t[indices], np.nan)}
+  receipt = {"mode": "native_replay", "rows": 100, "dt": .01, "no_actuation": True, "no_params_writes": True,
+             "initialization": "cold/reset; uncertain until recorded disengagement",
+             "rdf_output_sha256": "a"*64, "source_log_sha256": "b"*64, "output_npz_sha256": "c"*64}
+  return native, receipt, rdf
+
+
+def test_native_binding_rejects_wrong_rdf_log_or_npz():
+  native, receipt, rdf = native_evidence()
+  validate_native_output(native, receipt, rdf, "a"*64, "b"*64, "c"*64)
+  for key in ("rdf_output_sha256", "source_log_sha256", "output_npz_sha256"):
+    changed = {**receipt, key: "0"*64}
+    with pytest.raises(RenderError, match="hash"):
+      validate_native_output(native, changed, rdf, "a"*64, "b"*64, "c"*64)
+
+
+@pytest.mark.parametrize("change", ["clock", "shape", "flags", "state", "future", "warmup", "stop"])
+def test_native_malformed_or_lookahead_evidence_rejected(change):
+  native, receipt, rdf = native_evidence()
+  if change == "clock":
+    native["t"][10] += .001
+  elif change == "shape":
+    native["native_accel"] = native["native_accel"][:-1]
+  elif change == "flags":
+    native["admitted"] = native["admitted"].astype(float)
+  elif change == "state":
+    native["native_state"][20] = 3
+  elif change == "future":
+    native["rdf_index"][20] += 1
+  elif change == "warmup":
+    native["admitted"][0] = True
+  elif change == "stop":
+    native["should_stop"][20] = False
+  with pytest.raises(RenderError):
+    validate_native_output(native, receipt, rdf, "a"*64, "b"*64, "c"*64)
+
+
+def test_native_selection_never_backfills_unavailable_or_future_rows():
+  native, _, _ = native_evidence()
+  assert native_index(native, 6.59) is None
+  assert native_index(native, native["t"][0]) is None
+  assert native_index(native, native["t"][20] + .001) == 20
+  native["admitted"][21] = False
+  assert native_index(native, native["t"][21] + .001) is None
+  assert native_index(native, native["t"][-1] + .02) is None
+
+
+def test_render_cannot_overwrite_native_evidence_or_receipt(tmp_path):
+  native = tmp_path / "native.npz"
+  with pytest.raises(RenderError, match="collision"):
+    validate_output_path(tmp_path / "native.mp4", tmp_path / "raw--0", tmp_path / "data.npz", tmp_path / "replay.npz",
+                         (native, native.with_suffix(".json")))

@@ -18,7 +18,7 @@ def record(seconds=4, speed=10., yaw=0.):
           "accel_target": np.zeros(n), "model_t": t.copy(), "model_horizon": np.tile(horizon, (n, 1)),
           "model_x": np.tile(speed * horizon, (n, 1)), "model_y": np.zeros((n, 33)),
           "model_frame_id": np.arange(n, dtype=np.int64), "raw_encode_frame_id": np.arange(n, dtype=np.int64),
-          "raw_encode_t": t.copy(),
+          "raw_encode_t": t.copy(), "model_frame_id_trusted": np.ones(n),
           "lat_active": np.ones(n), "long_active": np.ones(n)}
   for key in ("calibrated", "calibration_valid", "model_valid", "car_state_valid", "car_control_valid",
               "car_output_valid", "controls_valid", "planner_valid", "location_valid", "location_measurement_valid",
@@ -42,6 +42,12 @@ def test_nonuniform_horizon_uses_timestamps_and_measured_speed():
   assert cm.summarize(result["both"]["model_vs_measured"]["3"]["endpoint_l2_m"])["max"] < 1e-10
   # An index-based 33-point horizon would put this endpoint elsewhere.
   assert data["model_horizon"][0, 3] != pytest.approx(1)
+
+
+def test_iq_selector_exact_frame_match_is_not_model_capture_proof():
+  result = cm.segment_metrics(record(), {"recorded_software_family": "IQ.Pilot"})["both"]["model_vs_measured"]["1"]
+  assert result["used"] == 0
+  assert result["excluded"] == {"unknown_model_capture": 5}
 
 
 def test_right_positive_yaw_and_model_origin_are_preserved():

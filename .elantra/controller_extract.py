@@ -45,7 +45,8 @@ SERVICE_FIELDS = {
   "liveLocationKalman": ("yaw", "roll", "location_measurement_valid"),
   "extrinsicsCalibration": ("calibrated", "rpy_calib", "calibration_t", "calibration_height"),
   "longitudinalPlan": ("accel_target", "planner_model_t"),
-  "modelV2": ("model_t", "model_frame_id", "model_x", "model_y", "model_z", "model_horizon"),
+  "modelV2": ("model_t", "model_frame_id", "model_x", "model_y", "model_z", "model_horizon",
+              "model_frame_age", "model_big", "model_frame_id_trusted"),
   "narrowRoadCameraState": ("camera_t", "camera_frame_id"),
   "narrowRoadEncodeIdx": ("encode_t", "encode_event_t", "encode_frame_id", "encode_segment_num",
                           "encode_segment_id", "encode_segment_id_encode", "encode_id"),
@@ -346,7 +347,31 @@ def _exact_frame_id(value):
   return None
 
 
-def model_capture_times(data: dict) -> np.ndarray:
+def _model_frame_trust(data: dict, metadata: dict | None, shape: tuple) -> np.ndarray:
+  """IQ selectors rewrite frame IDs; no current IQ path has proven exposure identity."""
+  unknown = np.zeros(shape, dtype=bool)
+  meta = metadata or {}
+  counts = meta.get("message_counts", {})
+  status = meta.get("model_capture_identity_status")
+  iq = (meta.get("recorded_software_family") == "IQ.Pilot" or
+        str(meta.get("init_data", {}).get("version", "")).startswith("IQ.Pilot") or
+        any(counts.get(name, 0) for name in ("iqDriveModelData", "iqLiveLocation", "iqCarParams")))
+  if iq or (status is not None and status != "recorded_narrow_frame_id"):
+    return unknown
+  if "model_frame_id_trusted" in data:
+    trusted = np.asarray(data["model_frame_id_trusted"])
+    if trusted.shape != shape or trusted.dtype.kind not in "biuf":
+      return unknown
+    return np.isfinite(trusted) & (trusted == 1)
+  # Legacy archived Sunnypilot NPZs predate the trust array. Require their source
+  # and schema receipt plus original raw narrow-service names, never an IQ alias.
+  legacy = (all(counts.get(name, 0) for name in ("modelV2", "narrowRoadCameraState", "narrowRoadEncodeIdx")) and
+            len(str(meta.get("source_log_sha256", ""))) == 64 and
+            len(str(meta.get("schema_sha256", {}).get("log.capnp", ""))) == 64)
+  return np.ones(shape, dtype=bool) if status == "recorded_narrow_frame_id" or legacy else unknown
+
+
+def model_capture_times(data: dict, metadata: dict | None = None) -> np.ndarray:
   """Match each model's exact frame ID to its narrow-camera exposure timestamp.
 
   ``model_t`` is Event.logMonoTime publication time, never exposure time. This
@@ -357,14 +382,22 @@ def model_capture_times(data: dict) -> np.ndarray:
   return NaN. Identical duplicate mappings are allowed. Integer 64-bit IDs retain
   their exact values; float IDs outside the exact-integer range are rejected.
 
+  Exact IDs alone are insufficient: production consumers must pass their segment
+  metadata. IQ.Pilot selectors can relabel held BIG outputs, so all IQ paths remain
+  untrusted even with frameAge0/nonBIG until producer exposure identity is proven.
+  Unknown provenance without an explicit trusted-row array returns NaN. Legacy
+  Sunnypilot outputs require original raw narrow-service names and schema/source
+  receipts. Neither frameAge0 nor a caller-provided flag overrides IQ metadata.
+
   An old but exact exposure is returned unchanged: consumers must measure and gate
   capture age themselves. A publication-age limit cannot bound capture-to-GT age.
-  Inputs and the archived extraction format are unchanged.
+  Existing archived NPZs are not rewritten; new extraction records trust/age/BIG.
   """
   t = np.asarray(data.get("t", []))
   if t.ndim != 1:
     raise ExtractionError("model capture alignment requires a 1D timestamp grid")
   result = np.full(len(t), np.nan)
+  trusted = _model_frame_trust(data, metadata, t.shape)
   required = ("model_t", "model_frame_id", "raw_encode_frame_id", "raw_encode_t")
   if any(key not in data for key in required):
     return result
@@ -385,6 +418,8 @@ def model_capture_times(data: dict) -> np.ndarray:
     else:
       mapping[frame_id] = float(capture)
   for i, raw_id in enumerate(model_ids):
+    if not trusted[i]:
+      continue
     frame_id = _exact_frame_id(raw_id)
     if frame_id is None or frame_id in ambiguous or frame_id not in mapping:
       continue
@@ -416,18 +451,52 @@ def _measurement(message, index: int) -> float:
   return float(message.value[index]) if len(message.value) > index else np.nan
 
 
+def _schema_service_aliases(schema) -> dict:
+  """Normalize only verified original narrow-camera Event ordinals.
+
+  IQ.Pilot uses the original names at @2/@15; sunnypilot calls those same
+  services narrowRoad*. Raw message counts retain the source names. This does
+  not map IQ location/model services onto unrelated vehicle-pose contracts.
+  """
+  aliases = {}
+  for source, target, ordinal, fields in (
+      ("roadCameraState", "narrowRoadCameraState", 2, ("frameId", "timestampEof", "sensor")),
+      ("roadEncodeIdx", "narrowRoadEncodeIdx", 15,
+       ("frameId", "timestampEof", "segmentNum", "segmentId", "segmentIdEncode", "encodeId"))):
+    field = schema.Event.schema.fields.get(source)
+    if field is None:
+      continue
+    if field.proto.ordinal.which() != "explicit" or field.proto.ordinal.explicit != ordinal:
+      raise ExtractionError(f"unsupported {source} Event ordinal; expected @{ordinal}")
+    if target in schema.Event.schema.fields or any(name not in field.schema.fields for name in fields):
+      raise ExtractionError(f"ambiguous or incomplete {source} camera service contract")
+    aliases[source] = target
+  return aliases
+
+
 def decode_log(path: Path, schema) -> tuple[list[Sample], dict]:
   raw = decompress_log(path)
+  aliases = _schema_service_aliases(schema)
   samples = []
+  schema_fields = schema.Event.schema.fields
+  frame_contract = ("untrusted_selector_frame_id" if "iqDriveModelData" in schema_fields else
+                    "recorded_narrow_frame_id" if all(k in schema_fields for k in
+                      ("narrowRoadCameraState", "narrowRoadEncodeIdx")) else "unknown")
   metadata = {"car_params": {}, "init_data": {}, "model_identity": {}, "can_counts": Counter(),
               "message_counts": Counter(), "invalid_message_counts": Counter(), "source_log": str(path.resolve()),
-              "source_log_sha256": sha256(path), "camera_sensor": None, "params": {}}
+              "source_log_sha256": sha256(path), "camera_sensor": None, "params": {}, "service_aliases": aliases,
+              "model_capture_identity_status": frame_contract}
   try:
-    for event in schema.Event.read_multiple_bytes(raw, traversal_limit_in_words=2**31):
-      name = event.which()
-      metadata["message_counts"][name] += 1
+    for index, event in enumerate(schema.Event.read_multiple_bytes(raw, traversal_limit_in_words=2**31)):
+      try:
+        source_name = event.which()
+      except Exception as exc:
+        raise ExtractionError(f"Event union/schema mismatch at message {index} in {path}; " +
+                              "decode with the recorded build's explicit schema snapshot") from exc
+      name = aliases.get(source_name, source_name)
+      metadata["message_counts"][source_name] += 1
       if not event.valid:
-        metadata["invalid_message_counts"][name] += 1
+        metadata["invalid_message_counts"][source_name] += 1
       t, valid = int(event.logMonoTime) * 1e-9, bool(event.valid)
       values = None
       if name == "carState":
@@ -471,14 +540,18 @@ def decode_log(path: Path, schema) -> tuple[list[Sample], dict]:
         values = {"accel_target": float(d.aTarget), "planner_model_t": int(d.modelMonoTime) * 1e-9}
       elif name == "modelV2":
         d = event.modelV2
+        fields = d.schema.fields
         values = {"model_t": t, "model_frame_id": float(d.frameId), "model_x": list(d.position.x),
-                  "model_y": list(d.position.y), "model_z": list(d.position.z), "model_horizon": list(d.position.t)}
+                  "model_y": list(d.position.y), "model_z": list(d.position.z), "model_horizon": list(d.position.t),
+                  "model_frame_age": float(d.frameAge) if "frameAge" in fields else np.nan,
+                  "model_big": float(d.big) if "big" in fields else np.nan,
+                  "model_frame_id_trusted": float(metadata["model_capture_identity_status"] == "recorded_narrow_frame_id")}
       elif name == "narrowRoadCameraState":
-        d = event.narrowRoadCameraState
+        d = getattr(event, source_name)
         values = {"camera_t": int(d.timestampEof) * 1e-9, "camera_frame_id": float(d.frameId)}
         metadata["camera_sensor"] = str(d.sensor)
       elif name == "narrowRoadEncodeIdx":
-        d = event.narrowRoadEncodeIdx
+        d = getattr(event, source_name)
         values = {"encode_t": int(d.timestampEof) * 1e-9, "encode_event_t": t, "encode_frame_id": float(d.frameId),
                   "encode_segment_num": float(d.segmentNum), "encode_segment_id": float(d.segmentId),
                   "encode_segment_id_encode": float(d.segmentIdEncode), "encode_id": float(d.encodeId)}
@@ -499,6 +572,8 @@ def decode_log(path: Path, schema) -> tuple[list[Sample], dict]:
         metadata["init_data"] = {"gitCommit": str(d.gitCommit), "gitSrcCommit": str(d.gitSrcCommit),
                                  "gitBranch": str(d.gitBranch), "dirty": bool(d.dirty), "version": str(d.version),
                                  "deviceType": str(d.deviceType), "wallTimeNanos": int(d.wallTimeNanos)}
+        if str(d.version).startswith("IQ.Pilot"):
+          metadata["model_capture_identity_status"] = "untrusted_selector_frame_id"
         safe_params = ("NeuralNetworkLateralControl", "CustomTorqueParams", "LiveTorqueParamsToggle", "TorqueControlTune",
                        "LateralJerkTorqueController", "EnforceTorqueControl", "LiveTorqueParamsRelaxedToggle",
                        "TorqueParamsOverrideEnabled", "TorqueParamsOverrideLatAccelFactor", "TorqueParamsOverrideFriction")
@@ -516,6 +591,8 @@ def decode_log(path: Path, schema) -> tuple[list[Sample], dict]:
         metadata["car_params_sp"] = event.carParamsSP.to_dict()
       if values is not None:
         samples.append(Sample(name, t, values, valid))
+  except ExtractionError:
+    raise
   except Exception as exc:
     raise ExtractionError(f"corrupt/incompatible rlog {path}: {type(exc).__name__}: {exc}") from exc
   if not samples:
@@ -549,7 +626,7 @@ def extract_one(row: dict, schema_dir_text: str, schema_hashes: dict, out_text: 
                    "source_segment": row["path"], "source_files": row["files"], "schema_dir": str(schema_dir),
                    "schema_sha256": schema_hashes,
                    "schema_hash": hashlib.sha256(json.dumps(schema_hashes, sort_keys=True).encode()).hexdigest(),
-                   "extractor_format_version": 1, "summary": summary,
+                   "extractor_format_version": 2, "summary": summary,
                    "contract": {"rate_hz": 20, "max_age_s": 0.2, "join": "causal as-of logMonoTime; sorted before alignment",
                                 "torque": "carOutput.actuatorsOutput.torqueOutputCan; signed CAN counts; never substituted",
                                 "torque_request": "carControl torque times normalization reference409; actual historical limit unverified",
@@ -561,6 +638,8 @@ def extract_one(row: dict, schema_dir_text: str, schema_hashes: dict, out_text: 
                                 "model_coordinates": "recorded modelV2.position device frame; x forward,y right,z down; meters",
                                 "model_t": "modelV2 Event.logMonoTime publication time; not camera exposure time",
                                 "model_capture_alignment": "analysis model_capture_times matches exact frame ID to EncodeIdx.timestampEof; unknown stays NaN",
+                                "model_frame_identity": "metadata trust gate required; IQ selector rewrites frameId, so IQ capture remains blocked",
+                                "model_frame_age_big": "recorded modelV2.frameAge/big when fields exist; zero/nonBIG alone do not prove IQ exposure identity",
                                 "model_horizon": "recorded modelV2.position.t; seconds; no synthetic horizon padding",
                                 "valid_lat": "fresh valid lat telemetry, location measurements, calibration and model; overrides not excluded",
                                 "valid_long": "fresh valid carState/control/output, planner, calibration and model; overrides not excluded",
@@ -578,7 +657,7 @@ def extract(args: argparse.Namespace) -> int:
   out = Path(args.out).resolve()
   out.mkdir(parents=True, exist_ok=True)
   manifest = inventory([Path(root) for root in args.root])
-  manifest.update({"format_version": 1, "rate_hz": 20, "max_age_s": 0.2,
+  manifest.update({"format_version": 2, "rate_hz": 20, "max_age_s": 0.2,
                    "selection_policy": "route-disjoint representative route pairs: segment0 plus first nonzero; evenly spread route names",
                    "selected": [], "extracted": [], "extraction_errors": [], "status": "inventory"})
   write_json(out / "manifest.json", manifest)

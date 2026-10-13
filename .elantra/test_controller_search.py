@@ -145,7 +145,8 @@ def test_both_trusted_axis_winners_cannot_claim_a_complete_controller_without_jo
 
 def test_canonical_source_hashes_and_runtime_versions_are_recorded():
   evidence = search.source_runtime_evidence()
-  assert set(evidence["canonical_source_sha256"]) == {"controller_tune.py", "controller_extract.py", "controller_metrics.py"}
+  assert set(evidence["canonical_source_sha256"]) == {
+    "controller_tune.py", "controller_extract.py", "controller_metrics.py", "controller_dynamics.py", "lateral_report.py"}
   assert all(len(value) == 64 for value in evidence["canonical_source_sha256"].values())
   assert evidence["numpy_version"] == np.__version__
   assert evidence["python_version"] and evidence["python_executable"]
@@ -174,3 +175,83 @@ def test_output_cannot_alias_dataset_or_plant_report(tmp_path):
   os.link(report, out / "manifest.json")
   with pytest.raises(ValueError, match="input"):
     search.validate_output(dataset, report, out)
+
+
+def joint_raw(params, ids=("a", "b"), error=.1, speed=.1, endpoint=.2):
+  long = raw_result(params, ids=ids, error=error)
+  windows = {}
+  for name, metrics in long["windows"].items():
+    lat = deepcopy(metrics)
+    lat["tracking"] = {"lateral": {"errors": [error] * 60, "points": 60}}
+    windows[name] = {"lat": lat, "long": metrics, "speed_errors": [speed] * 60, "path_endpoint_error": endpoint}
+  return {"parameters": params, "windows": windows, "attempted": 2}
+
+
+def test_joint_simulation_passes_longitudinal_speed_to_lateral_response(monkeypatch):
+  n = 80
+  d = {"v": np.full(n, 5.), "a": np.zeros(n), "yaw": np.zeros(n),
+       "accel_target": np.full(n, .4), "desired_curvature": np.full(n, .01)}
+  passed = []
+  monkeypatch.setattr(search.tune, "window_indices", lambda *_args, **_kwargs: np.array([12]))
+
+  def rollout(data, start, _model, axis, gain, speed_override=None):
+    if axis == "long":
+      return np.full(61, .4), np.full(61, .2)
+    passed.append(speed_override.copy())
+    return data["desired_curvature"][start:start+61] * speed_override**2, np.zeros(61)
+
+  monkeypatch.setattr(search.tune, "rollout", rollout)
+  params = {"lateral_gain": .1, "acceleration_gain": .2, "braking_gain": .4}
+  result = search.evaluate_joint([({"route": "r", "segment": "r--0"}, d)], {"long": {}, "lat": {}}, params)
+  np.testing.assert_allclose(passed[0], 5 + np.arange(61) * .4 * .05)
+  window = result["windows"]["r--0:12"]
+  assert max(window["speed_errors"]) < 1e-10
+  assert max(window["lat"]["tracking"]["lateral"]["errors"]) < 1e-10
+  assert window["path_endpoint_error"] < 1e-10
+
+
+def test_joint_constraints_cannot_buy_target_gain_with_speed_or_path_regression():
+  baseline = joint_raw(None)
+  params = {"lateral_gain": .1, "acceleration_gain": .2, "braking_gain": .2}
+  for speed, endpoint, reason in ((2., .1, "speed_error_p95_regression"), (.05, 2., "path_endpoint_p95_regression")):
+    candidate = joint_raw(params, error=.02, speed=speed, endpoint=endpoint)
+    result = search.select_joint([candidate], baseline, min_windows=2)
+    assert result["winner"] is None
+    assert reason in result["trace"][0]["rejections"]
+
+
+def test_joint_reference_speed_restarts_without_negative_speed_debt(monkeypatch):
+  target = np.r_[np.full(10, -1.), np.full(51, 1.)]
+  data = {"v": np.full(61, .1), "a": target, "yaw": np.zeros(61),
+          "accel_target": target, "desired_curvature": np.zeros(61)}
+  monkeypatch.setattr(search.tune, "window_indices", lambda *_args, **_kwargs: np.array([0]))
+
+  def rollout(_data, _start, _model, axis, _gain, speed_override=None):
+    if axis == "long":
+      return target.copy(), target.copy()
+    return np.zeros(61), np.zeros(61)
+
+  monkeypatch.setattr(search.tune, "rollout", rollout)
+  result = search.evaluate_joint([({"route": "r", "segment": "r--0"}, data)], {"long": {}, "lat": {}}, None)
+  window = result["windows"]["r--0:0"]
+  assert max(window["speed_errors"]) < 1e-10
+  assert window["path_endpoint_error"] < 1e-10
+
+
+def test_joint_population_excludes_support_cheating_before_ranking():
+  good = joint_raw({"lateral_gain": .1, "acceleration_gain": .2, "braking_gain": .2}, error=.02, speed=.05, endpoint=.1)
+  cheating = joint_raw({"lateral_gain": .4, "acceleration_gain": .4, "braking_gain": .4}, ids=("a",), error=0.)
+  result = search.select_joint([cheating, good], joint_raw(None), min_windows=2)
+  assert result["winner"]["parameters"] == good["parameters"]
+  assert result["common_window_ids"] == ["a", "b"]
+  assert result["trace"][0]["rejections"] == ["insufficient_individual_joint_support"]
+
+
+def test_heldout_joint_failure_never_reselects_or_mutates_frozen_parameters(monkeypatch):
+  selected = {"lateral_gain": .1, "acceleration_gain": .2, "braking_gain": .2}
+  original = selected.copy()
+  monkeypatch.setattr(search, "evaluate_joint", lambda _r, _m, params, _n: joint_raw(params, error=.1 if params is None else .4))
+  monkeypatch.setattr(search, "select_joint", lambda *_args, **_kwargs: pytest.fail("test must never select"))
+  result = search.heldout_joint_test([], {"lat": {}, "long": {}}, selected)
+  assert "long:braking_tracking_regression" in result["constraint_rejections"]
+  assert selected == original

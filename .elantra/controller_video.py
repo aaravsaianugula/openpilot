@@ -17,7 +17,8 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from controller_model_overlay import (
-  RenderError, causal_index, contiguous_path, capture_path, measured_forecasts, model_path, rdf_path, validate_rdf_output,
+  RenderError, causal_index, contiguous_path, capture_path, measured_forecasts, model_path, native_index, rdf_path,
+  validate_native_output, validate_rdf_output,
 )
 
 GT = "#77edac"
@@ -223,8 +224,8 @@ def calibration_at(data, timestamp, assumed_height):
   return np.zeros(3), assumed_height, False
 
 
-def compose(frame, data, replay, timestamp, origin, segment, intrinsics, projection_label, ground_height, rdf=None):
-  canvas = Image.new("RGB", (1600, 1000), BG)
+def compose(frame, data, replay, timestamp, origin, segment, intrinsics, projection_label, ground_height, rdf=None, native=None):
+  canvas = Image.new("RGB", (1600, 1200 if native is not None else 1000), BG)
   draw = ImageDraw.Draw(canvas)
   text(draw, (24, 10), "CN7 / comma 4    CONTROLLER EXPERIMENT", 24)
   subtitle = ("FRESH RDF v2 / dual-camera replay — fixed recorded images; controller not deployed" if rdf is not None else
@@ -234,6 +235,16 @@ def compose(frame, data, replay, timestamp, origin, segment, intrinsics, project
   if rdf is None and not bool(replay.get("lateral_model_available", True)):
     status += " | lateral response unavailable"
   text(draw, (24, 74), f"{segment}     recorded time +{timestamp - origin:05.2f} s" + status, 17, MUTED)
+  if native is not None:
+    ni = native_index(native, timestamp)
+    native_caption = "unavailable — no admitted sample/backfill"
+    if ni is not None:
+      state_name = ("off", "pid", "stopping")[int(native["native_state"][ni])]
+      initialization = "UNCERTAIN" if native["initialization_uncertain"][ni] else "reset observed"
+      native_caption = (f"state {state_name} | shouldStop {int(native['should_stop'][ni])} | "
+                        + f"RDF raw {native['rdf_accel_target'][ni]:+.3f} | native command {native['native_accel'][ni]:+.3f} m/s² | "
+                        + f"initialization {initialization}")
+    text(draw, (24, 94), "Native LongControl 100 Hz diagnostic | " + native_caption + " | tune unvalidated", 14, TUNED)
   source_width, source_height = frame.size
   frame = frame.resize((1040, 588))
   canvas.paste(frame, (16, 112))
@@ -296,7 +307,8 @@ def compose(frame, data, replay, timestamp, origin, segment, intrinsics, project
     caption += " | tuned unavailable"
   text(draw, (1092, 682), caption, 14, MUTED)
   legend = ((24, "Measured future GT", GT), (350, "Logged model path", BASELINE),
-            (690, "Tune not validated", TUNED), (1020, "Fresh RDF v2 path", MODEL)) if rdf is not None else (
+            (690, "Native cmd / state" if native is not None else "Tune not validated", TUNED),
+            (1020, "Fresh RDF v2 path", MODEL)) if rdf is not None else (
               (24, "Measured future GT", GT), (350, "Baseline simulation", BASELINE),
               (690, "Tuned simulation", TUNED), (1020, "Recorded model path", MODEL))
   for x, label, color in legend:
@@ -321,6 +333,9 @@ def compose(frame, data, replay, timestamp, origin, segment, intrinsics, project
                    + "No simulated hardware response or optimized tune is shown."
                    if rdf is not None else
                    "Green = measured. Blue/orange = torque & acceleration COMMANDS; yaw = plant simulation; speed simulated only with valid long fit.")
+  if native is not None:
+    trace_caption = ("Green measured • Blue logged • Purple RDF raw targets • Orange native LongControl commands; "
+                     + "recorded motion held fixed, no plant simulation.")
   text(draw, (24, 767), trace_caption,
        11, MUTED)
   measured_torque = data["can_torque"] if "can_torque" in data else data["torque"]
@@ -344,9 +359,16 @@ def compose(frame, data, replay, timestamp, origin, segment, intrinsics, project
       ("Curvature: measured / targets", [(data["t"], measured_curvature, GT), (data["t"], data["desired_curvature"], BASELINE),
                                         (rdf["output_ready_t"], fresh_curvature, MODEL)], (-.04, .04), None),
     ]
+    if native is not None:
+      fresh_traces[1][1].append((native["t"], np.where(native["admitted"], native["native_accel"], np.nan), TUNED))
     for j, (title, series, limits, rail) in enumerate(fresh_traces):
       left = 16 + 396 * j
       plot_trace(draw, (left, 782, left + 382, 984), title, series, timestamp, limits, rail)
+    if native is not None:
+      states = np.where(native["admitted"], native["native_state"], np.nan)
+      stops = np.where(native["admitted"], native["should_stop"].astype(float), np.nan)
+      plot_trace(draw, (16, 1000, 1584, 1184), "Native state: orange 0 off / 1 pid / 2 stopping; purple RDF shouldStop 0 / 1",
+                 [(native["t"], states, TUNED), (native["t"], stops, MODEL)], timestamp, (0, 2.2))
     return canvas, horizon, calibrated
   for j, (title, measured, baseline, tuned, limits, rail) in enumerate(traces):
     left = 16 + 396 * j
@@ -426,18 +448,32 @@ def render(args):
     if shutil.which(executable) is None:
       raise RenderError(f"{executable} is not installed")
   rdf_file = getattr(args, "rdf_output", None)
-  validate_output_path(args.out, args.segment, args.data, args.replay,
-                       () if rdf_file is None else (rdf_file, rdf_file.with_suffix(".json")))
+  native_file = getattr(args, "native_output", None)
+  extra_sources = [] if rdf_file is None else [rdf_file, rdf_file.with_suffix(".json")]
+  source_log = None
+  if native_file is not None:
+    if rdf_file is None:
+      raise RenderError("--native-output requires the exact --rdf-output")
+    source_log = next((args.segment / name for name in ("rlog.zst", "rlog.bz2", "rlog") if (args.segment / name).is_file()), None)
+    if source_log is None:
+      raise RenderError("native evidence binding requires the raw source rlog")
+    extra_sources.extend((native_file, native_file.with_suffix(".json"), source_log))
+  validate_output_path(args.out, args.segment, args.data, args.replay, extra_sources)
+  metadata_file = args.data.with_suffix(".json")
+  metadata = json.loads(metadata_file.read_text(encoding="utf-8")) if metadata_file.exists() else {}
   data = hold_calibration(dict(np.load(args.data, allow_pickle=False)))
-  data["model_capture_t"] = model_capture_times(data)
+  data["model_capture_t"] = model_capture_times(data, metadata)
   replay = dict(np.load(args.replay, allow_pickle=False))
   validate_inputs(data, replay)
   rdf = None if rdf_file is None else dict(np.load(rdf_file, allow_pickle=False))
   if rdf is not None:
     validate_rdf_output(rdf, data)
     replay.update(measured_forecasts(data))
-  metadata_file = args.data.with_suffix(".json")
-  metadata = json.loads(metadata_file.read_text(encoding="utf-8")) if metadata_file.exists() else {}
+  native, native_receipt = None, None
+  if native_file is not None:
+    native = dict(np.load(native_file, allow_pickle=False))
+    native_receipt = json.loads(native_file.with_suffix(".json").read_text(encoding="utf-8"))
+    validate_native_output(native, native_receipt, rdf, sha256(rdf_file), sha256(source_log), sha256(native_file))
   source = args.segment / "fcamera.hevc"
   if not source.is_file():
     raise RenderError(f"missing narrow camera footage: {source}")
@@ -453,10 +489,12 @@ def render(args):
   intrinsics, projection_label = projection_config(data, metadata, (width, height))
   args.out.parent.mkdir(parents=True, exist_ok=True)
   decode_cmd = ["ffmpeg", "-v", "error", "-i", str(source), "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
-  encode_cmd = ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", "1600x1000",
+  output_size = "1600x1200" if native is not None else "1600x1000"
+  encode_cmd = ["ffmpeg", "-y", "-v", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", output_size,
                 "-r", str(args.fps), "-i", "pipe:0", "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "20",
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(args.out)]
   receipt_frames, horizons, calibrated_frames, fresh_available = [], [], 0, 0
+  native_available, native_uncertain = 0, 0
   with subprocess.Popen(decode_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as decoder, \
        subprocess.Popen(encode_cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE) as encoder:
     try:
@@ -471,7 +509,7 @@ def render(args):
           frame = Image.frombytes("RGB", (width, height), raw)
         source_t = float(mapping[1][wanted])
         canvas, horizon, calibrated = compose(frame, data, replay, source_t, origin, args.segment.name,
-                                              intrinsics, projection_label, args.ground_height, rdf)
+                                              intrinsics, projection_label, args.ground_height, rdf, native)
         if rdf is not None:
           fresh_available += rdf_path(rdf, data, source_t)[1] is not None
         encoder.stdin.write(canvas.tobytes())
@@ -480,6 +518,15 @@ def render(args):
         receipt_frames.append({"output_frame": output_index, "source_frame": int(wanted), "requested_t": float(timestamp),
                                "source_t": source_t, "overlay_t": source_t, "age_ms": float((timestamp - source_t) * 1000),
                                "calibrated_flat_ground_projection": calibrated})
+        if native is not None:
+          ni = native_index(native, source_t)
+          native_available += ni is not None
+          native_uncertain += ni is not None and native["initialization_uncertain"][ni]
+          receipt_frames[-1]["native"] = None if ni is None else {
+            "sample_t": float(native["t"][ni]), "sample_age_ms": float((source_t - native["t"][ni]) * 1000),
+            "command": float(native["native_accel"][ni]), "state": int(native["native_state"][ni]),
+            "should_stop": bool(native["should_stop"][ni]), "raw_rdf_accel": float(native["rdf_accel_target"][ni]),
+            "initialization_uncertain": bool(native["initialization_uncertain"][ni])}
       encoder.stdin.close()
       if encoder.wait() != 0:
         raise RenderError("ffmpeg encoder failed: " + encoder.stderr.read().decode(errors="replace"))
@@ -519,6 +566,15 @@ def render(args):
                                  + "driver/control actions retained and flagged"),
                    trace_semantics={"green": "recorded measured signals", "blue": "recorded commands and model targets",
                                     "purple": "fresh RDF v2 desired acceleration/curvature at conservative serial output availability"})
+  if native is not None:
+    receipt.update(native_output=str(native_file.resolve()), native_output_sha256=sha256(native_file),
+                   native_receipt_sha256=sha256(native_file.with_suffix(".json")),
+                   native_bound_rdf_sha256=native_receipt["rdf_output_sha256"],
+                   native_bound_raw_log_sha256=native_receipt["source_log_sha256"],
+                   native_available_frames=int(native_available), native_initialization_uncertain_frames=int(native_uncertain),
+                   native_semantics="current-master 100 Hz native LongControl diagnostic on fixed recorded motion; tune unvalidated; no plant response",
+                   native_initialization=native_receipt["initialization"])
+    receipt["trace_semantics"]["orange"] = "native LongControl command/state; admitted samples only, no backfill"
   receipt_path = args.out.with_suffix(".json")
   receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
   print(json.dumps({"video": str(args.out), "receipt": str(receipt_path), "frames": len(times),
@@ -531,6 +587,7 @@ def main():
   parser.add_argument("--data", type=Path, required=True)
   parser.add_argument("--replay", type=Path, required=True)
   parser.add_argument("--rdf-output", type=Path, help="Fresh rdf_bench output; show model evidence with no candidate-performance claim")
+  parser.add_argument("--native-output", type=Path, help="Hash-bound native LongControl NPZ and JSON; diagnostic commands/state with no tune claim")
   parser.add_argument("--out", type=Path, required=True)
   parser.add_argument("--start", type=float, default=0.)
   parser.add_argument("--seconds", type=float, default=30.)

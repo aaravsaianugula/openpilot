@@ -13,7 +13,7 @@ def data(seconds=8):
        "accel_command": np.zeros(n), "accel_target": np.zeros(n),
        "model_t": t.copy(), "model_horizon": np.tile(h, (n, 1)),
        "model_capture_t": t.copy(), "model_frame_id": np.arange(n),
-       "raw_encode_frame_id": np.arange(n), "raw_encode_t": t.copy(),
+       "raw_encode_frame_id": np.arange(n), "raw_encode_t": t.copy(), "model_frame_id_trusted": np.ones(n),
        "model_x": np.tile(5 * np.minimum(h, 2), (n, 1)), "model_y": np.zeros((n, 33)),
        "source_segment": np.full(n, "route--0")}
   for key in ("long_active", "model_valid", "car_state_valid", "car_control_valid", "car_output_valid",
@@ -54,6 +54,15 @@ def test_nonuniform_model_path_detects_sustained_stationary_prediction():
   assert cs.prediction_at(d, 0) is None
   d["model_x"][0, 10] = d["model_x"][0, 9]
   assert cs.prediction_at(d, 0) is None
+
+
+def test_iq_stitch_rejects_relabelled_frame_capture_even_with_exact_encode_id(tmp_path):
+  path = tmp_path / "iq--0.npz"
+  np.savez(path, **data(seconds=2))
+  blocks, coverage = cs.stitch_route([(path, {"recorded_software_family": "IQ.Pilot"})], calibration_hold=False)
+  assert coverage["unknown_capture_rows"] == 41
+  assert np.isnan(blocks[0]["model_capture_t"]).all()
+  assert cs.prediction_at(blocks[0], 0) is None
 
 
 def test_model_prediction_rejects_future_stale_or_invalid_horizons():

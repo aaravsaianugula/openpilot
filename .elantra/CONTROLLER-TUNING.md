@@ -18,7 +18,10 @@ The current filesystem differs from the older `D:\comma_four\README.md`:
 - `D:\Openmayo_Archive\comma4_sidequest\recorded_routes\realdata`: another 225,
   with no duplicate segment names across these two sources.
 - Together: 1,433 complete recorded segments, across 120 populated routes.
-- `D:\comma_four\routes` is absent. No source footage was moved or duplicated.
+- At initial inventory `D:\comma_four\routes` was absent. The overnight refresh
+  subsequently added 395 missing device rlogs there, keeping flat segment folders;
+  selected cameras are transferred separately with integrity receipts. Existing
+  desktop footage was preserved.
 - Generated datasets, reports and videos belong under
   `D:\comma_four\tuning\controller-tuning-20261012`.
 
