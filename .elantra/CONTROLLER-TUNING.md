@@ -382,6 +382,15 @@ controllers and native report processing must consume the same simulated state.
 Card consumes CarControl before publishing CarOutput/CarState and later applies
 that consumed snapshot; a newer command arriving before apply is not substituted.
 Steering hardware limits belong to apply, independently of native control compute.
+The native lateral runtime now exposes separate `compute` and `apply` operations;
+compute advances PID/learner/curvature/lag state, while only a successful apply
+advances transmitted counts, angle counter and its separate chronological clock.
+The legacy same-clock `step` wrapper retains its fields and behavior. Twenty-three
+host cases passed with two opt-in skips; Ruff passed after a literal-only test
+helper correction. One new actual pinned native split/queued/skipped-apply and
+legacy-equivalence case passed in4.19s. Original native sources, Params, libraries
+and snapshots were verified unchanged. These synthetic API checks do not identify
+physical response or establish a correct recorded publication schedule.
 No queued speculative CAN count, recorded output seed or assumed zero latency
 can establish candidate feedback. Physical targets and left/right phase populations
 must stay candidate-independent. No accepted full tune follows from these modules.

@@ -304,3 +304,75 @@ def test_actual_native_provider_turns_frame300_reset_and_simulated_feedback():
   tick(a, 13.01, active=False)
   assert a.controller.pid.i == old_i
   assert a.cold_restart().controller.pid.i == 0.
+
+
+def compute_tick(handle, t=10., **changes):
+  model = handle.runtime.model_from_rdf(np.zeros((33, 15)), handle.runtime.bindings.horizon)
+  values = {"t": t, "active": True, "v": 15., "a": 0., "steering_angle": 0., "steering_rate": 0., "driver_torque": 0.,
+            "steering_pressed": False, "standstill": False, "fault_temporary": False, "fault_permanent": False,
+            "prior_published_torque": 0., "model": model, "desired_curvature": .001, "published_delay": .2, "learner": None}
+  values.update(changes)
+  return handle.compute(**values)
+
+
+def test_split_computation_and_skipped_apply_never_advance_hardware_history():
+  runtime, cp, sp, _ = fixture_runtime()
+  handle = make(runtime, cp, sp)
+  before = handle.last_transmitted_counts, handle.angle_counter
+  results = [compute_tick(handle, 10.+i*.01, steering_angle=86.) for i in range(4)]
+  assert (handle.last_transmitted_counts, handle.angle_counter) == before
+  assert all("can_torque" not in result and "steer_request" not in result for result in results)
+  applied = handle.apply(t=10.034, torque=results[0]["torque"], active=results[0]["active"], driver_torque=0., steering_angle=86.)
+  assert abs(applied["can_torque"]) <= 3 and handle.angle_counter == 1
+  compute_tick(handle, 10.04, prior_published_torque=applied["can_torque"]/409.)
+  assert handle.angle_counter == 1  # No CI.apply means no hardware state change.
+  with pytest.raises(rt.LateralRuntimeError, match="apply clock"):
+    handle.apply(t=10.034, torque=0., active=True, driver_torque=0., steering_angle=0.)
+
+
+def test_split_compute_apply_preserves_legacy_wrapper_fields_and_feedback():
+  runtime, cp, sp, _ = fixture_runtime()
+  legacy, split = make(runtime, cp, sp), make(runtime, cp, sp)
+  prior = 0.
+  for i in range(8):
+    timestamp = 10.+i*.01
+    old = tick(legacy, timestamp, prior_delivered_torque=prior)
+    computed = compute_tick(split, timestamp, prior_published_torque=prior)
+    applied = split.apply(t=timestamp, torque=computed["torque"], active=computed["active"], driver_torque=0., steering_angle=0.)
+    assert old == {**computed, **applied}
+    prior = applied["can_torque"]/409.
+
+
+@pytest.mark.skipif(os.name != "posix" or os.environ.get("RUN_NATIVE_SPLIT_API") != "1", reason="Serialized opt-in native split API")
+def test_actual_native_split_queued_skipped_apply_and_legacy_equivalence():
+  repo = Path(os.environ["NATIVE_LATERAL_SOURCE_ROOT"])
+  runtime = rt.load_runtime(repo, rt.source_hashes(repo), rt.OPENDBC_PIN)
+  from opendbc.car.structs import car
+  from opendbc.car.hyundai.values import HyundaiFlags
+  from openpilot.cereal import custom
+  cp = car.CarParams.new_message(carFingerprint="HYUNDAI_ELANTRA_2024", brand="hyundai", mass=1360., wheelbase=2.72,
+                                centerToFront=1.088, rotationalInertia=2500., steerRatio=13.5, steerRatioRear=0.,
+                                tireStiffnessFront=80000., tireStiffnessRear=80000., steerActuatorDelay=.1, steerLimitTimer=.4,
+                                minSteerSpeed=0., steerAtStandstill=False, steerControlType="torque", flags=int(HyundaiFlags.RAISED_LIMITS))
+  tuning = cp.lateralTuning.init("torque")
+  tuning.latAccelFactor, tuning.latAccelOffset, tuning.friction = 2.5, 0., .1
+  sp = custom.CarParamsSP.new_message()
+  sp.neuralNetworkLateralControl.model.path = str(repo/rt.ASSET)
+  cp, sp = cp.to_bytes(), sp.to_bytes()
+  legacy, separated = make(runtime, cp, sp), make(runtime, cp, sp)
+  prior = 0.
+  for i in range(6):
+    old = tick(legacy, 10.+i*.01, prior_delivered_torque=prior)
+    computed = compute_tick(separated, 10.+i*.01, prior_published_torque=prior)
+    applied = separated.apply(t=10.+i*.01, torque=computed["torque"], active=computed["active"], driver_torque=0., steering_angle=0.)
+    assert old == {**computed, **applied}
+    prior = applied["can_torque"]/409.
+  queued = make(runtime, cp, sp)
+  first = compute_tick(queued, 20.)
+  compute_tick(queued, 20.01, desired_curvature=-.001)
+  assert queued.last_transmitted_counts == 0 and queued.angle_counter == 0
+  result = queued.apply(t=20.015, torque=first["torque"], active=first["active"], driver_torque=0., steering_angle=0.)
+  assert abs(result["can_torque"]) <= 3
+  held = queued.last_transmitted_counts
+  compute_tick(queued, 20.02, prior_published_torque=held/409.)
+  assert queued.last_transmitted_counts == held

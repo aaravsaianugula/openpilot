@@ -295,7 +295,7 @@ class Handle:
     if (not _finite(self.previous_curvature) or type(self.last_transmitted_counts) is not int or abs(self.last_transmitted_counts) > 409
         or type(self.angle_counter) is not int or self.angle_counter < 0 or type(self.limited) is not bool):
       raise LateralRuntimeError("invalid explicit initialization")
-    self.last_t, self.param_time, self.initialization_uncertain = None, None, True
+    self.last_t, self.last_apply_t, self.param_time, self.initialization_uncertain = None, None, None, True
     self.extension_lag = provider.get("LagdValueCache")
 
   def reset_native(self):
@@ -305,10 +305,11 @@ class Handle:
     cp, sp, lp, raw, candidate, grid = self.arguments
     return self.runtime.create(cp, sp, lp, raw, candidate=candidate, grid=grid)
 
-  def step(self, *, t, active, v, a, steering_angle, steering_rate, driver_torque, steering_pressed, standstill,
-           fault_temporary, fault_permanent, prior_delivered_torque, model, desired_curvature, published_delay, learner=None):
-    numeric = (t, v, a, steering_angle, steering_rate, driver_torque, prior_delivered_torque, desired_curvature, published_delay)
-    if (any(not _finite(x) for x in numeric) or v < 0 or published_delay < 0 or abs(prior_delivered_torque) > 1
+  def compute(self, *, t, active, v, a, steering_angle, steering_rate, driver_torque, steering_pressed, standstill,
+              fault_temporary, fault_permanent, prior_published_torque, model, desired_curvature, published_delay, learner=None):
+    """Native control calculation only; no hardware/limiter history advances."""
+    numeric = (t, v, a, steering_angle, steering_rate, driver_torque, prior_published_torque, desired_curvature, published_delay)
+    if (any(not _finite(x) for x in numeric) or v < 0 or published_delay < 0 or abs(prior_published_torque) > 1
         or any(type(x) is not bool for x in (active, steering_pressed, standstill, fault_temporary, fault_permanent))):
       raise LateralRuntimeError("invalid explicit simulated feedback")
     if self.last_t is not None and abs(t-self.last_t-.01) > 1e-9:
@@ -343,18 +344,13 @@ class Handle:
     torque = float(torque)
     if not math.isfinite(torque):
       raise LateralRuntimeError("native controller produced nonfinite torque")
-    applied, self.angle_counter, request = lateral.hardware_step(torque, self.last_transmitted_counts, driver_torque, steering_angle,
-                                                                effective_active, self.limits, self.angle_counter,
-                                                                self.runtime.bindings.limiter, self.runtime.bindings.fault_avoidance)
-    if abs(applied) > 409 or (effective_active and abs(applied-self.last_transmitted_counts) > 7):
-      raise LateralRuntimeError("native steering envelope violated")
     if effective_active:
-      self.limited = abs(torque-prior_delivered_torque) > 1e-2
-    self.last_transmitted_counts, self.last_t = applied, t
+      self.limited = abs(torque-prior_published_torque) > 1e-2
+    self.last_t = t
     p, pid = self.controller.torque_params, self.controller.pid
     frame = self.controller.extension.frame if hasattr(self.controller.extension, "frame") else self.controller.frame
-    result = {"t": t, "active": effective_active, "torque": torque, "can_torque": applied, "steer_request": bool(request),
-              "torque_fault": effective_active and not request, "steer_limited_feedback": old_limited, "steer_limited_next": self.limited,
+    result = {"t": t, "active": effective_active, "torque": torque,
+              "steer_limited_feedback": old_limited, "steer_limited_next": self.limited,
               "desired_curvature": self.previous_curvature, "measured_curvature": measured, "learner_applied": learner_applied,
               "learner_policy_use_params": bool(self.policy.use_params), "effective_factor": float(p.latAccelFactor),
               "effective_offset": float(p.latAccelOffset), "effective_friction": float(p.friction), "pid_i": float(pid.i),
@@ -365,3 +361,26 @@ class Handle:
       self.extension_lag = self.runtime.bindings.get_lat_delay(self.provider, published_delay)
       self.param_time = t
     return result
+
+  def apply(self, *, t, torque, active, driver_torque, steering_angle):
+    """One actual CI.apply event, using its earlier consumed CC snapshot."""
+    if (any(not _finite(x) for x in (t, torque, driver_torque, steering_angle)) or type(active) is not bool
+        or (self.last_apply_t is not None and t <= self.last_apply_t)):
+      raise LateralRuntimeError("invalid hardware inputs or nonchronological apply clock")
+    applied, counter, request = lateral.hardware_step(torque, self.last_transmitted_counts, driver_torque, steering_angle,
+                                                     active, self.limits, self.angle_counter,
+                                                     self.runtime.bindings.limiter, self.runtime.bindings.fault_avoidance)
+    if abs(applied) > 409 or (active and abs(applied-self.last_transmitted_counts) > 7):
+      raise LateralRuntimeError("native steering envelope violated")
+    self.last_transmitted_counts, self.angle_counter, self.last_apply_t = applied, counter, t
+    return {"can_torque": applied, "steer_request": bool(request), "torque_fault": active and not request}
+
+  def step(self, *, t, active, v, a, steering_angle, steering_rate, driver_torque, steering_pressed, standstill,
+           fault_temporary, fault_permanent, prior_delivered_torque, model, desired_curvature, published_delay, learner=None):
+    """Legacy same-clock calculation/apply wrapper; fields remain compatible."""
+    computed = self.compute(t=t, active=active, v=v, a=a, steering_angle=steering_angle, steering_rate=steering_rate,
+                            driver_torque=driver_torque, steering_pressed=steering_pressed, standstill=standstill,
+                            fault_temporary=fault_temporary, fault_permanent=fault_permanent, prior_published_torque=prior_delivered_torque,
+                            model=model, desired_curvature=desired_curvature, published_delay=published_delay, learner=learner)
+    applied = self.apply(t=t, torque=computed["torque"], active=computed["active"], driver_torque=driver_torque, steering_angle=steering_angle)
+    return {**computed, **applied}

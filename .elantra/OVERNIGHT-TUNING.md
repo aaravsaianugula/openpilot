@@ -908,3 +908,14 @@ and steering hardware apply must be separated so skipped applies and later CC
 arrivals cannot advance the rack command or limiter early. Fixed physical targets,
 left/right phase populations and successful-macro coverage remain mandatory.
 No new real fit, comma inference, accepted tune or physical improvement is claimed.
+
+The separate lateral compute/apply API now preserves native control history
+without speculative hardware updates. Skipped applies hold transmitted counts
+and angle-counter state, and later queued CC arrivals cannot substitute for an
+earlier consumed snapshot. The legacy wrapper remains compatible. Twenty-three
+host cases passed; one new actual native case passed once in4.19s, with exact
+source/assets/libraries/dependencies and isolated Params proof. Ruff's initial
+C408 test-helper construction was preserved and corrected as a literal-only
+equivalent; unchanged host cases were not repeated. The source/API checkpoint
+does not complete the shared-state runner, source-bound pre-roll, packet-calibration
+binding or actual50ms macro-boundary validation, which remain in progress.
