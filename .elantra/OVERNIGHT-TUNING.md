@@ -349,3 +349,15 @@ Sixteen packet tests pass, including large stderr, actual exit preservation,
 short/extra frame rejection and timeout. Clip intervals are cut by exact frozen
 first/last frame IDs; a nominal32s duration can otherwise include641 frames due
 to the real camera clock, so preparation uses the measured midpoint end boundary.
+
+Compressed-only preparation subsequently completed both new640-pair packets:
+acceleration77.682s, turning119.462s. One bounded compact RAM buffer per camera is
+native-padded directly into zstd. Metadata explicitly separates stored compressed
+files from computed raw hashes/bytes; device expansion must verify the latter.
+There are no host raw NV12 files in these packets. The first acceleration camera
+reuses the exact successful manual compact decode with command/exit/source/index/
+pixel-hash receipts; it is not claimed as a fresh decode. Failures retain clearly
+named partial files and receipts. Thirty-seven owned packet tests and Ruff passed;
+see `recent-clips/compressed-builder-validation.json` and v5 per-build receipts.
+The device owner serializes staging, expansion verification, monitored inference
+and new comparison videos. These packets are preparation proof, not model results.
