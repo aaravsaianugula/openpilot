@@ -919,3 +919,24 @@ C408 test-helper construction was preserved and corrected as a literal-only
 equivalent; unchanged host cases were not repeated. The source/API checkpoint
 does not complete the shared-state runner, source-bound pre-roll, packet-calibration
 binding or actual50ms macro-boundary validation, which remain in progress.
+
+### Shared native three-adapter integration
+
+The separate shared-state runner now keeps simulated speed, acceleration, rack,
+yaw and unsigned vendor rate together. Native LongControl, native lateral control
+and Hyundai request-to-report processing consume causal candidate publications;
+recorded future feedback supplies no simulated state. Command calculation and
+hardware apply remain separate, and the empirical50ms response commits at the
+actual macro boundary. Candidate-independent physical targets, left/right phase
+populations, successful support and all failed finite-grid rows remain explicit.
+
+Thirty host checks/Ruff and independent review passed. One new actual native
+three-adapter composition case passed once in21.10s on isolated pinned x86 POSIX,
+with a non-skipped JUnit case, exit0 and owned process group gone. Native source,
+dependencies, libraries,26 research snapshots and the Params trap were verified.
+The A/B/A case checks two-way feedback and future-unused-GT invariance using
+arbitrary predeclared synthetic plant cells; it is not empirical tuning evidence.
+Preparation/proof-only path and symlink-stat failures are preserved without another
+native run. The full tuning goal remains incomplete: real source/policy, roll
+uncertainty, latency history, ZOH and low-speed/contact support still forbid a
+current full candidate. No deployment, road test, actuation or panda flash occurred.

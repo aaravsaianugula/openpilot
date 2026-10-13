@@ -394,3 +394,28 @@ physical response or establish a correct recorded publication schedule.
 No queued speculative CAN count, recorded output seed or assumed zero latency
 can establish candidate feedback. Physical targets and left/right phase populations
 must stay candidate-independent. No accepted full tune follows from these modules.
+
+The shared runner `controller_native_two_way.py` now connects actual native
+LongControl, lateral compute/apply and Hyundai acceleration-report processing.
+Both controllers consume one simulated speed/acceleration/rack/yaw/rate state;
+steering changes can therefore affect subsequent longitudinal feedback. The
+empirical macro commits only at its50ms boundary, while candidate CS/CO/CC
+publication queues preserve consumed snapshots, skipped applies and source clocks.
+Fixed physical targets and left/right entry/steady/exit populations are shared
+across the finite search. Missing or partial macros contribute no supported score.
+
+Thirty host cases passed. Independent source/clock/bounds review closed concrete
+publication, calibration, prefix, censor and state-boundary defects with first-red
+regressions. One new actual three-adapter composition case passed on pinned x86
+POSIX in21.10s, with source/assets/dependencies/libraries and all26 research files
+unchanged before/after. It runs A/B/A trials, observes native CAN and all five state
+channels change, and verifies that perturbed unused future measured feedback does
+not change the simulated traces. The empirical cells in this API case are arbitrary
+fixtures, not fitted vehicle response. Original failed preparation/proof attempts
+remain preserved; no native execution was repeated for those host-only corrections.
+
+No real five-state fit, accepted candidate or physical gain follows from this
+checkpoint. Unknown recorded source/policy/roll uncertainty, cold prefix,100Hz ZOH,
+joint median coherence, actuator-history sufficiency and low-speed/contact evidence
+still prevent selection. Production remains false. Exact evidence is in
+`validation-native-three-adapter-checkpoint.json` under the tuning tree.
