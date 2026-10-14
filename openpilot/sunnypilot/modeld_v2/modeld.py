@@ -100,7 +100,14 @@ class ModelState(ModelStateBase):
   prev_desire: np.ndarray
 
   def __init__(self, cam_w: int, cam_h: int, chestnut: bool = False, *, asset_reference=None):
-    ModelStateBase.__init__(self)
+    if asset_reference is None:
+      ModelStateBase.__init__(self)
+    else:
+      delay_consumer = asset_reference.delay_consumer()
+      if delay_consumer is None:
+        ModelStateBase.__init__(self)
+      else:
+        ModelStateBase.__init__(self, policy_capture=delay_consumer)
     self._model_asset_reference = asset_reference
     if asset_reference is not None:
       asset_reference.begin()
@@ -444,6 +451,10 @@ def main(demo=False):
 
   # TODO Move smooth seconds to action function
   long_delay = CP.longitudinalActuatorDelay + model.LONG_SMOOTH_SECONDS
+  if asset_observation is not None:
+    if asset_observation.delay is not None:
+      asset_observation.delay.initial_long(asset_observation, model, CP.longitudinalActuatorDelay,
+                                           long_delay, model.LONG_SMOOTH_SECONDS, "demo" if demo else "parsed")
   prev_action = log.ModelDataV2.Action()
 
   DH = DesireHelper()
@@ -489,7 +500,19 @@ def main(demo=False):
     frame_id = sm["narrowRoadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
     if sm.frame % 60 == 0:
-      model.lat_delay = get_lat_delay(params, sm["lateralDelay"].lateralDelay)
+      if asset_observation is None:
+        model.lat_delay = get_lat_delay(params, sm["lateralDelay"].lateralDelay)
+      else:
+        delay_consumer = asset_observation.consumer_for(model)
+        if delay_consumer is None:
+          model.lat_delay = get_lat_delay(params, sm["lateralDelay"].lateralDelay)
+        else:
+          try:
+            model.lat_delay = get_lat_delay(params, sm["lateralDelay"].lateralDelay, policy_capture=delay_consumer)
+          except BaseException:
+            delay_consumer.cache_failed()
+            raise
+          delay_consumer.delay_written(model.lat_delay, delay_consumer.delay_origin)
       model.PLANPLUS_CONTROL = params.get("PlanplusControl", return_default=True)
       camera_offset_helper.set_offset(params.get("CameraOffset", return_default=True))
     lat_delay = model.lat_delay + model.LAT_SMOOTH_SECONDS
@@ -540,6 +563,11 @@ def main(demo=False):
 
     if asset_observation is not None:
       asset_observation.attempt(model)
+      if asset_observation.delay is not None:
+        asset_observation.delay.prepare(asset_observation, model, sm, meta_main, meta_extra, inputs,
+          v_ego=v_ego, effective_lat=lat_delay, published_lat=None,
+          lat_action=lat_action_t, long_action=long_action_t, frame_delay=frame_delay, action_delay=action_delay,
+          lat_smoothing=model.LAT_SMOOTH_SECONDS, long_smoothing=model.LONG_SMOOTH_SECONDS, smoothing_origin="declaredProcessing")
     mt1 = time.perf_counter()
     try:
       send_chestnut = (chestnut_state is not None and
@@ -561,6 +589,9 @@ def main(demo=False):
       model_output = None
     mt2 = time.perf_counter()
     model_execution_time = mt2 - mt1
+    if asset_observation is not None:
+      if asset_observation.delay is not None:
+        asset_observation.delay.output_none(model_output is None)
 
     if model_output is not None:
       modelv2_send = messaging.new_message('modelV2')
@@ -570,6 +601,9 @@ def main(demo=False):
 
       action = model.get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego)
       prev_action = action
+      if asset_observation is not None:
+        if asset_observation.delay is not None:
+          asset_observation.delay.postprocess(lat_action_t, long_action_t, "unknown")
       fill_model_msg(drivingdata_send, modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
                      frame_drop_ratio, meta_main.timestamp_eof, model_execution_time, live_calib_seen, meta_constants)
@@ -600,6 +634,8 @@ def main(demo=False):
           pm.send('modelV2', modelv2_send)
           pm.send('drivingModelData', drivingdata_send)
           pm.send('cameraOdometry', posenet_send)
+          if asset_observation.delay is not None:
+            asset_observation.delay.final_send_started(staged_asset)
           pm.send('modelDataV2SP', mdv2sp_send)
         except BaseException:
           asset_observation.send_failed(staged_asset)

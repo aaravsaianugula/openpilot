@@ -26,12 +26,30 @@ def _finite(value):
 
 class _LoadReference:
   """Private single-loader token; completed scalar snapshot is immutable."""
-  def __init__(self, identity, chestnut, clock, epoch):
+  def __init__(self, identity, chestnut, clock, epoch, *, delay_enabled=False):
     self.id, self.chestnut, self.clock, self.epoch = identity, chestnut, clock, epoch
     self.begin_ns = None
     self.selection = "unknown"
     self.completed = None
     self.invalid = False
+    self.delay_enabled, self._delay_consumer, self._delay_requested = delay_enabled, None, False
+
+  def delay_consumer(self):
+    if not self.delay_enabled:
+      return None
+    if self._delay_requested:
+      self.invalid = True
+      if self._delay_consumer is not None:
+        self._delay_consumer.error()
+      return None
+    self._delay_requested = True
+    try:
+      from openpilot.selfdrive.modeld.model_delay_observation import DelayConsumer
+      self._delay_consumer = DelayConsumer(self.id, self.epoch, self.clock)
+      return self._delay_consumer
+    except Exception:
+      self.invalid = True
+      return None
 
   def begin(self):
     try:
@@ -73,7 +91,7 @@ class _LoadReference:
 
 
 class ModelAssetCapture:
-  def __init__(self, runner, *, clock=time.monotonic_ns, epoch=None):
+  def __init__(self, runner, *, clock=time.monotonic_ns, epoch=None, delay_enabled=False):
     if runner not in ("stock", "tinygrad"):
       raise ValueError("unknown model runner")
     self.runner, self.clock = runner, clock
@@ -85,6 +103,12 @@ class ModelAssetCapture:
     self.loss = False
     self.pending, self.loaded_ids = [], set()
     self.last_clock = self.staged = None
+    self.delay = None
+    if type(delay_enabled) is not bool:
+      raise ValueError("unknown delay observation flag")
+    if delay_enabled:
+      from openpilot.selfdrive.modeld.model_delay_observation import DelayJournal
+      self.delay = DelayJournal(self.epoch, self.clock)
 
   def error(self):
     self.dropped, self.errors = min(U64, self.dropped+1), min(U64, self.errors+1)
@@ -106,7 +130,19 @@ class ModelAssetCapture:
       self.error()
       return None
     self.instances += 1
-    return _LoadReference(self.instances, chestnut, self.clock, self.epoch)
+    return _LoadReference(self.instances, chestnut, self.clock, self.epoch, delay_enabled=self.delay is not None)
+
+  def consumer_for(self, model):
+    if self.delay is None:
+      return None
+    try:
+      ref = self._identity(model)
+      if ref is None or ref.invalid:
+        return None
+      return ref._delay_consumer
+    except Exception:
+      self.error()
+      return None
 
   def _identity(self, model):
     ref = getattr(model, "_model_asset_reference", None)
@@ -214,6 +250,8 @@ class ModelAssetCapture:
         item.longSmoothSeconds, item.longSmoothKnown = data.get("long", 0.), data.get("long_known", False)
       header.referenceCaptureComplete = not self.loss and observed is not None
       token = (self.epoch, self.publications, tuple(row["sequence"] for row in self.pending))
+      if self.delay is not None:
+        self.delay.stage(header, token)
       header.present = True
       self.staged = token
       return token
@@ -232,19 +270,25 @@ class ModelAssetCapture:
     if token is not self.staged:
       self.error()
       return
+    if self.delay is not None and not self.delay.retire(token):
+      self.error()
+      return
     self.pending = [row for row in self.pending if row["sequence"] not in token[2]]
     self.staged = None
 
   def send_failed(self, token):
     self.error()
+    if self.delay is not None:
+      self.delay.send_failed(token)
     if token is self.staged:
       self.staged = None
 
 
 def create_model_asset_capture(runner):
-  if os.environ.get("ELANTRA_MODEL_ASSET_OBSERVER") != "1":
+  delay_enabled = os.environ.get("ELANTRA_MODEL_DELAY_REFERENCE_OBSERVER") == "1"
+  if os.environ.get("ELANTRA_MODEL_ASSET_OBSERVER") != "1" and not delay_enabled:
     return None
   try:
-    return ModelAssetCapture(runner)
+    return ModelAssetCapture(runner, delay_enabled=delay_enabled)
   except Exception:
     return None  # unavailable, never authenticated/complete

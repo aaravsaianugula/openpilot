@@ -480,6 +480,97 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
     references @32 :List(Reference); referenceCaptureComplete @33 :Bool;
     # Copied from drivingModelData itself; no driving EOF or borrowed model-frame identity.
     drivingFrameId @34 :UInt32; drivingFrameIdExtra @35 :UInt32;
+    # Default-off prepared-input references, never graph/runtime proof.
+    modelDelayReference @36 :ModelDelayReferenceV1;
+
+    struct ModelDelayReferenceV1 {
+      present @0 :Bool;
+      preparedStatus @1 :PreparedStatus;  # Prepared for run; NOT run-enter or passed-to-graph.
+      preparedAttemptId @2 :UInt64; preparedInstanceId @3 :UInt16;
+      preparedNs @4 :UInt64; preparedClockStatus @5 :ClockStatus; preparationComplete @6 :Bool;
+      # Original received FrameMeta only, distinct from model/driving output fields.
+      mainFrameId @7 :UInt32; extraFrameId @8 :UInt32;
+      mainTimestampSof @9 :UInt64; mainTimestampEof @10 :UInt64;
+      extraTimestampSof @11 :UInt64; extraTimestampEof @12 :UInt64;
+      frameMetadataKnown @13 :Bool; singleCameraAlias @14 :Bool; singleCameraAliasKnown @15 :Bool;
+      smFrame @16 :UInt64;
+      # Raw publication use is not capture-asof and does not prove CP-vs-learner origin.
+      publishedDelay @17 :Float64; publishedDelayKnown @18 :Bool;
+      publishedEventNs @19 :UInt64; publishedRecvFrame @20 :UInt64;
+      publishedSeen @21 :Bool; publishedUpdated @22 :Bool; publishedValid @23 :Bool;
+      publishedAlive @24 :Bool; publishedReferenceKnown @25 :Bool;
+      cachedValue @26 :Float64; cachedValueKind @27 :ValueKind;
+      cachedReadId @28 :UInt64; cachedReadIdKnown @29 :Bool;
+      cachedWriteNs @30 :UInt64; cachedWriteClockStatus @31 :ClockStatus; cachedOrigin @32 :CacheOrigin;
+      effectiveLatOffset @33 :Float64; effectiveLatOffsetKnown @34 :Bool;
+      publishedLatOffset @35 :Float64; publishedLatOffsetKnown @36 :Bool;
+      # Private immutable constructor snapshot survives ordinary pending-read retirement.
+      constructorCacheValue @37 :Float64; constructorValueKind @38 :ValueKind;
+      constructorReadId @39 :UInt64; constructorReadIdKnown @40 :Bool;
+      constructorWriteNs @41 :UInt64; constructorWriteClockStatus @42 :ClockStatus;
+      cpLongitudinalActuatorDelay @43 :Float64; cpLongitudinalActuatorDelayKnown @44 :Bool; cpOrigin @45 :CpOrigin;
+      longDelay @46 :Float64; longDelayKnown @47 :Bool;
+      initialLongSmoothing @48 :Float64; initialLongSmoothingKnown @49 :Bool;
+      initialLongOwnerId @50 :UInt16; initialLongOwnerKnown @51 :Bool;
+      currentLatSmoothing @52 :Float64; currentLongSmoothing @53 :Float64;
+      currentLatSmoothingKnown @54 :Bool; currentLongSmoothingKnown @55 :Bool;
+      currentSmoothingOrigin @56 :SmoothingOrigin; postprocessSmoothingBranch @57 :UseBranch;
+      # Actual Python offsets separately retain their Float64 representation/use.
+      pythonLatActionT @58 :Float64; pythonLongActionT @59 :Float64; pythonActionOffsetsKnown @60 :Bool;
+      frameDelay @61 :Float64; actionDelay @62 :Float64; heuristicOffsetsKnown @63 :Bool;
+      # EXACT original ndarray(float32, shape=(2,)); absent != zero-vector.
+      preparedActionLat @64 :Float32; preparedActionLong @65 :Float32; preparedActionStatus @66 :VectorStatus;
+      preparedLateralVEgo @67 :Float32; preparedLateralDelay @68 :Float32; preparedLateralStatus @69 :VectorStatus;
+      preparationVEgo @70 :Float64; preparationVEgoKnown @71 :Bool;
+      postprocessLatActionT @72 :Float64; postprocessLongActionT @73 :Float64;
+      postprocessActionOffsetsKnown @74 :Bool;
+      readCaptureComplete @75 :Bool; reads @76 :List(PackedReadV1);
+      preparedAttemptCount @77 :UInt64; preparationUnavailableCount @78 :UInt64;
+      outputNoneObservedCount @79 :UInt64; failedFinalSpSendCount @80 :UInt64;
+      discardedBeforeFinalSpReturnCount @81 :UInt64; lastDiscardedAttemptId @82 :UInt64;
+      lastDiscardedInstanceId @83 :UInt16; lastDiscardReason @84 :DiscardReason;
+      counterOverflowKnown @85 :Bool; epochLoss @86 :Bool;
+      runCallKnown @87 :Bool; graphCopyKnown @88 :Bool; graphConsumptionKnown @89 :Bool;
+      rawPresenceKnown @90 :Bool; defaultOriginKnown @91 :Bool;
+      publishedCpVersusLearnerOriginKnown @92 :Bool;
+      sourceAuthenticated @93 :Bool; fullAssetKnown @94 :Bool; policyComplete @95 :Bool; predictiveEligible @96 :Bool;
+      clockDomainsVerified @97 :Bool; captureOriginVerified @98 :Bool; durableAckKnown @99 :Bool;
+
+      enum PreparedStatus { unavailable @0; preparedForRun @1; }
+      enum ClockStatus { unavailable @0; known @1; tie @2; regression @3; invalid @4; }
+      enum ValueKind { unknown @0; knownBool @1; knownFloat @2; knownNone @3; }
+      enum CacheOrigin { unknown @0; constructorCache @1; publishedHelper @2; cachedHelper @3; }
+      enum CpOrigin { unknown @0; parsed @1; demo @2; }
+      enum SmoothingOrigin { unknown @0; stockLiteral @1; declaredProcessing @2; }
+      enum UseBranch { unknown @0; used @1; bypassed @2; }
+      enum VectorStatus { unavailable @0; prepared @1; absentOriginalBranch @2; }
+      enum DiscardReason { unknown @0; outputNone @1; finalSendRaised @2; replacedUnreturned @3; }
+
+      # packed_read_status_v1: exact19-field semantic recovery.
+      # statusBits0..24 used;25..31 reserved/rejected. No deployed compatibility.
+      struct PackedReadV1 {
+        readId @0 :UInt64; instanceId @1 :UInt16;
+        beginNs @2 :UInt64; endNs @3 :UInt64; floatValue @4 :Float64; statusBits @5 :UInt32;
+      }
+
+      # Frozen original semantic schema retained as a reference, never the packed list target.
+      struct Read {
+        readId @0 :UInt64; instanceId @1 :UInt16; site @2 :Site; key @3 :Key;
+        method @4 :Method; registryType @5 :RegistryType; defaultRequested @6 :Bool;
+        rawPresence @7 :Unknown; defaultOrigin @8 :Unknown;
+        beginNs @9 :UInt64; endNs @10 :UInt64;
+        beginStatus @11 :ClockStatus; endStatus @12 :ClockStatus; outcome @13 :Outcome;
+        valueKind @14 :ValueKind; boolValue @15 :Bool; floatValue @16 :Float64;
+        # Later conversion is not re-labelled as a getter exception or successful write.
+        castOutcome @17 :CastOutcome; valid @18 :Bool;
+        enum Site { unknown @0; delayInitial @1; lagdToggle @2; delayCache @3; }
+        enum Key { unknown @0; lagdValueCache @1; lagdToggle @2; }
+        enum Method { unknown @0; get @1; getBool @2; }
+        enum RegistryType { unknown @0; floating @1; boolean @2; }
+        enum Outcome { unavailable @0; returned @1; raised @2; }
+        enum CastOutcome { notObserved @0; succeeded @1; raised @2; notApplied @3; }
+      }
+    }
     enum Runner { stock @0; tinygrad @1; }
     enum Unknown { unknown @0; }
     struct Reference {

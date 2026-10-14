@@ -180,7 +180,14 @@ class ModelState(ModelStateBase):
   prev_desire: np.ndarray  # for tracking the rising edge of the pulse
 
   def __init__(self, cam_w: int, cam_h: int, chestnut: bool, *, asset_reference=None):
-    ModelStateBase.__init__(self)
+    if asset_reference is None:
+      ModelStateBase.__init__(self)
+    else:
+      delay_consumer = asset_reference.delay_consumer()
+      if delay_consumer is None:
+        ModelStateBase.__init__(self)
+      else:
+        ModelStateBase.__init__(self, policy_capture=delay_consumer)
     self._model_asset_reference = asset_reference
     if asset_reference is not None:
       asset_reference.begin()
@@ -369,6 +376,10 @@ def main(demo=False):
   # TODO this needs more thought, use .2s extra for now to estimate other delays
   # TODO Move smooth seconds to action function
   long_delay = CP.longitudinalActuatorDelay + LONG_SMOOTH_SECONDS
+  if asset_observation is not None:
+    if asset_observation.delay is not None:
+      asset_observation.delay.initial_long(asset_observation, model, CP.longitudinalActuatorDelay,
+                                           long_delay, LONG_SMOOTH_SECONDS, "demo" if demo else "parsed")
   prev_action = log.ModelDataV2.Action()
 
   DH = DesireHelper()
@@ -412,7 +423,19 @@ def main(demo=False):
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["narrowRoadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
-    model.lat_delay = get_lat_delay(params, sm["lateralDelay"].lateralDelay)
+    if asset_observation is None:
+      model.lat_delay = get_lat_delay(params, sm["lateralDelay"].lateralDelay)
+    else:
+      delay_consumer = asset_observation.consumer_for(model)
+      if delay_consumer is None:
+        model.lat_delay = get_lat_delay(params, sm["lateralDelay"].lateralDelay)
+      else:
+        try:
+          model.lat_delay = get_lat_delay(params, sm["lateralDelay"].lateralDelay, policy_capture=delay_consumer)
+        except BaseException:
+          delay_consumer.cache_failed()
+          raise
+        delay_consumer.delay_written(model.lat_delay, delay_consumer.delay_origin)
     lat_delay = sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS
     if sm.updated["extrinsicsCalibration"] and sm.seen['narrowRoadCameraState'] and sm.seen['deviceState']:
       device_from_calib_euler = np.array(sm["extrinsicsCalibration"].rpyCalib, dtype=np.float32)
@@ -455,6 +478,11 @@ def main(demo=False):
 
     if asset_observation is not None:
       asset_observation.attempt(model)
+      if asset_observation.delay is not None:
+        asset_observation.delay.prepare(asset_observation, model, sm, meta_main, meta_extra, inputs,
+          v_ego=v_ego, effective_lat=lat_delay, published_lat=lat_delay,
+          lat_action=lat_action_t, long_action=long_action_t, frame_delay=frame_delay, action_delay=action_delay,
+          lat_smoothing=LAT_SMOOTH_SECONDS, long_smoothing=LONG_SMOOTH_SECONDS, smoothing_origin="stockLiteral")
     mt1 = time.perf_counter()
     try:
       send_chestnut = (chestnut_state is not None and
@@ -477,6 +505,9 @@ def main(demo=False):
       model_output = None
     mt2 = time.perf_counter()
     model_execution_time = mt2 - mt1
+    if asset_observation is not None:
+      if asset_observation.delay is not None:
+        asset_observation.delay.output_none(model_output is None)
 
     if model_output is not None:
       modelv2_send = messaging.new_message('modelV2')
@@ -485,6 +516,9 @@ def main(demo=False):
 
       action = get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego)
       prev_action = action
+      if asset_observation is not None:
+        if asset_observation.delay is not None:
+          asset_observation.delay.postprocess(lat_action_t, long_action_t, "unknown")
       fill_model_msg(modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
                      frame_drop_ratio, meta_main.timestamp_eof, model_execution_time, extrinsics_calibration_seen)
@@ -515,6 +549,8 @@ def main(demo=False):
           pm.send('modelV2', modelv2_send)
           pm.send('drivingModelData', drivingdata_send)
           pm.send('cameraOdometry', posenet_send)
+          if asset_observation.delay is not None:
+            asset_observation.delay.final_send_started(staged_asset)
           pm.send('modelDataV2SP', mdv2sp_send)
         except BaseException:
           asset_observation.send_failed(staged_asset)

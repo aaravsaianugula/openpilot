@@ -1260,3 +1260,38 @@ Production logger/Params/Hardware/IPC/device execution, enabled overhead, durabl
 delivery, authenticated source/kernel boot and clock-domain equivalence remain
 unverified. Policy/predictive eligibility and full tune selection stay false/None;
 no activation, deployment or physical improvement is claimed.
+
+### Default-off model delay read and preparation references
+
+`ELANTRA_MODEL_DELAY_REFERENCE_OBSERVER=1` adds bounded delay references to the
+existing modelDataV2SP asset header. A private consumer uses the same already
+reserved model token before the original base getter; reserve, load-begin,
+getter/cast, refresh cadence, model timer and send order stay intact. Stock
+published offsets, tinygrad cached-plus-smoothing offsets, initial longitudinal
+delay ownership and later fallback metadata remain separate. Python action offsets
+and exact two-element Float32 prepared inputs are recorded separately. Preparation
+is not evidence that the model call, graph copy or graph consumption occurred.
+
+The first full schema measured 1120 bytes and failed the unchanged 1024-byte header
+limit. Lossless 25-bit status packing retains all nineteen read fields; the full
+100-field snapshot, four asset references and four read rows measure exactly
+1024 header bytes (1064 including the Event), with no spare space. Both-off bytes
+remain identical. Thirty-three new source/host cases passed; after narrow style
+changes, three affected cases and eighteen affected prior cases passed separately.
+Scoped Ruff, all 115 overlay guards, root review and independent hook/lineage
+review passed. Original first-red and lint failures are preserved, including
+read-ID exhaustion, unknown constructor snapshot replacement and unseen references.
+See `validation-model-delay-reference-checkpoint.json` for exact commands and hashes.
+
+Only the exact entered final SP local send-return retires its staged prefix.
+Earlier send failures, None output, replacement and fallback retain unresolved
+getter evidence. No delivery or durable ACK is claimed. Current published-delay
+references do not by themselves identify the publication used by an earlier
+held-cache refresh. Tinygrad's unused published-plus-smoothing offset and the
+actual postprocess smoothing branch remain unknown; no counterfactual math or
+metadata-based branch inference fills those gaps. Raw presence/default origin,
+authenticated source/assets, exposure/clock domains, complete policy/predictive
+eligibility and graph consumption remain false or unknown. No model, weights,
+Params, IPC, native/device runtime, activation or deployment occurred. Enabled
+costs and physical response remain unvalidated; this is source preparation, not
+a controller gain or accepted tune.

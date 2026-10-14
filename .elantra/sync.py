@@ -110,6 +110,7 @@ OVERLAY_ADDED = [
     "openpilot/selfdrive/controls/lib/controller_policy_observation.py",
     "openpilot/sunnypilot/selfdrive/locationd/torqued_policy_observation.py",
     "openpilot/selfdrive/modeld/model_asset_observation.py",
+    "openpilot/selfdrive/modeld/model_delay_observation.py",
 ]
 
 # Upstream files we modify. Kept deliberately tiny -- this is the only conflict surface in
