@@ -470,10 +470,80 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
   }
 }
 
-struct CustomReserved10 @0xcb9fd56c7057593a {
+struct ControlsObservationV1 @0xcb9fd56c7057593a {
+  observation @0 :ControllerObservationRecordV1;
 }
 
-struct CustomReserved11 @0xc2243c65e0340384 {
+struct CardObservationV1 @0xc2243c65e0340384 {
+  observation @0 :ControllerObservationRecordV1;
+}
+
+# First-stage source clocks only. No policy/source/plant admission or TX delivery claim.
+struct ControllerObservationRecordV1 {
+  version @0 :UInt16;
+  producer @1 :Producer;
+  processEpoch @2 :Data;  # random 16-byte process identifier, not boot/route identity
+  sequence @3 :UInt64;  # attempted capture sequence, including dropped captures
+  loop @4 :UInt64;
+  stage @5 :Stage;
+  service @6 :Service;
+  captureNs @7 :UInt64;  # actual producer observation clock; Event time is worker construction
+  beginNs @8 :UInt64;
+  applyClockNs @9 :UInt64;  # original CI.apply argument, not inferred from publication time
+  applyId @10 :UInt64;
+  eventNs @11 :UInt64;
+  eventPresent @12 :Bool;
+  eventValid @13 :Bool;
+  reason @14 :Reason;
+  captureComplete @15 :Bool;
+  policyComplete @16 :Bool;
+  sourceAuthenticated @17 :Bool;
+  predictiveEligible @18 :Bool;
+  rawBoolPresence @19 :Availability;
+  txEchoCorrelation @20 :Correlation;
+  calibratedRollUncertainty @21 :Availability;
+  bootIdentityKnown @22 :Bool;
+  semanticDigestAvailable @23 :Bool;
+  callbackTxObserved @24 :Bool;
+  dropped @25 :UInt64;
+  errors @26 :UInt64;
+  references @27 :List(MessageReference);
+  tx @28 :List(TxFrame);  # ordered CI.apply output, not proven panda transmission/delivery
+  faults @29 :List(Fault);
+
+  enum Producer { controls @0; card @1; }
+  enum Availability { unknown @0; }
+  enum Correlation { unsupported @0; }
+  enum Stage {
+    loopStart @0; updateBegin @1; updateEnd @2; consumeEnd @3;
+    computeBegin @4; computeEnd @5; paramsRefreshBegin @6; paramsRefreshEnd @7;
+    publishBegin @8; publishEnd @9; publishFailed @10; applyBegin @11; applyEnd @12;
+    applySkipped @13; initializeBegin @14; initializeEnd @15;
+  }
+  enum Service {
+    none @0; lateralDelay @1; vehicleParameters @2; lateralTorqueParameters @3;
+    modelV2 @4; selfdriveState @5; extrinsicsCalibration @6; deviceMotion @7;
+    longitudinalPlan @8; lateralManeuverPlan @9; carState @10; carOutput @11;
+    driverMonitoringState @12; onroadEvents @13; driverAssistance @14; radarState @15;
+    selfdriveStateSP @16; pandaStates @17; carControl @18; carControlSP @19;
+    longitudinalPlanSP @20; carParams @21; carParamsSP @22; carStateSP @23;
+    controlsState @24; sendcan @25; radarTracks @26; liveLocationKalman @27;
+  }
+  enum Reason { none @0; passive @1; notInitialized @2; ccNotAlive @3; }
+  enum Status { notSubscribed @0; unseen @1; observed @2; unknown @3; }
+  enum IdentityKind { unavailable @0; timestampReference @1; }
+  enum Fault {
+    unknownField @0; nonfinite @1; sourceInvalid @2; futureReference @3;
+    timestampTie @4; timestampRegression @5; clockTie @6; clockRegression @7;
+    txOversize @8; eventOversize @9; publisherFailed @10; unseenSource @11;
+    priorLoss @12; identityUnchecked @13;
+  }
+  struct MessageReference {
+    service @0 :Service; status @1 :Status; identityKind @2 :IdentityKind;
+    eventNs @3 :UInt64; recvFrame @4 :UInt64; recvTime @5 :Float64;
+    seen @6 :Bool; updated @7 :Bool; valid @8 :Bool; alive @9 :Bool; freqOk @10 :Bool;
+  }
+  struct TxFrame { address @0 :UInt32; src @1 :UInt8; payloadLength @2 :UInt8; payloadCaptured @3 :Bool; }
 }
 
 struct CustomReserved12 @0x9ccdc8676701b412 {

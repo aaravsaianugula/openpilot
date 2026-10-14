@@ -21,6 +21,7 @@ from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper
 from openpilot.selfdrive.car.helpers import convert_carControlSP, convert_to_capnp
+from openpilot.selfdrive.controls.lib.controller_observation import create_observer, PublisherTap
 
 from openpilot.sunnypilot.mads.helpers import set_alternative_experience, set_car_specific_params
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
@@ -70,9 +71,12 @@ class Car:
   CP_SP_capnp: custom.CarParamsSP
 
   def __init__(self, CI=None, RI=None) -> None:
+    self.observer = create_observer("card")
     self.can_sock = messaging.sub_sock('can', timeout=20)
     self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents'] + ['carControlSP', 'longitudinalPlanSP'])
     self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'radarTracks'] + ['carParamsSP', 'carStateSP'])
+    if self.observer is not None:
+      self.pm = PublisherTap(self.pm, self.observer)
 
     self.can_rcv_cum_timeout_counter = 0
 
@@ -192,6 +196,9 @@ class Car:
   def state_update(self) -> tuple[car.CarState, custom.CarStateSP, structs.RadarDataT | None]:
     """carState update loop, driven by can"""
 
+    if self.observer is not None:
+      self.observer.begin_loop()
+      self.observer.capture("updateBegin")
     can_strs = messaging.drain_sock_raw(self.can_sock, wait_for_one=True)
     can_list = can_capnp_to_list(can_strs)
 
@@ -203,6 +210,8 @@ class Car:
     RD: structs.RadarDataT | None = self.RI.update(can_list)
 
     self.sm.update(0)
+    if self.observer is not None:
+      self.observer.capture("consumeEnd", sm=self.sm)
 
     can_rcv_valid = len(can_strs) > 0
 
@@ -222,6 +231,8 @@ class Car:
     # TODO: mirror the carState.cruiseState struct?
     CS.vCruise = float(self.v_cruise_helper.v_cruise_kph)
     CS.vCruiseCluster = float(self.v_cruise_helper.v_cruise_cluster_kph)
+    if self.observer is not None:
+      self.observer.capture("updateEnd")
 
     return CS, CS_SP, RD
 
@@ -273,17 +284,28 @@ class Car:
     if not self.initialized_prev:
       # Initialize CarInterface, once controls are ready
       # TODO: this can make us miss at least a few cycles when doing an ECU knockout
+      if self.observer is not None:
+        self.observer.capture("initializeBegin")
       self.CI.init(self.CP, self.CP_SP, *self.can_callbacks)
+      if self.observer is not None:
+        self.observer.capture("initializeEnd")
       # signal pandad to switch to car safety mode
       self.params.put_bool("ControlsReady", True)
 
     if self.sm.all_alive(['carControl']):
       # send car controls over can
       now_nanos = self.can_log_mono_time if REPLAY else int(time.monotonic() * 1e9)
+      observed_apply_id = None
+      if self.observer is not None:
+        observed_apply_id = self.observer.begin_apply(now_nanos, self.sm)
       self.last_actuators_output, can_sends = self.CI.apply(CC, convert_carControlSP(CC_SP), now_nanos)
+      if self.observer is not None:
+        self.observer.end_apply(observed_apply_id, now_nanos, can_sends)
       self.pm.send('sendcan', can_list_to_can_capnp(can_sends, msgtype='sendcan', valid=CS.canValid))
 
       self.CC_prev = CC
+    elif self.observer is not None:
+      self.observer.capture("applySkipped", reason="ccNotAlive")
 
   def step(self):
     CS, CS_SP, RD = self.state_update()
@@ -294,6 +316,8 @@ class Car:
                    self.sm.seen['onroadEvents'])
     if not self.CP.passive and initialized:
       self.controls_update(CS, self.sm['carControl'], self.sm['carControlSP'])
+    elif self.observer is not None:
+      self.observer.capture("applySkipped", reason="passive" if self.CP.passive else "notInitialized")
 
     self.initialized_prev = initialized
     self.CS_prev = CS

@@ -1077,3 +1077,18 @@ were identified, without transfer or decoding. Their model/source/policy identit
 and route partition remain unknown. Available storage at that instant was below
 the native floor plus 2 GiB margin; no allocation or cleanup followed. Fresh
 storage guards remain mandatory before any new device allocation.
+
+### Default-off timing observer
+
+The first observation-only source patch adds separate controls/card clock traces
+without changing controller values, arguments or publication/apply ordering.
+Twenty-nine host contracts, Ruff and all 115 guards passed; root and scoped
+independent reviews were clean. Exact source/check evidence is in
+`validation-clock-observer-checkpoint.json` and the owned code-validation receipt.
+
+This patch is disabled unless `ELANTRA_CONTROLLER_OBSERVER` is exactly `1` and
+has not been deployed or activated. Its worker does not isolate Python's GIL;
+enabled control-thread timing, backpressure and logging/storage overhead still
+need bounded isolated measurement. Passive logger subscriptions remain even off.
+Policy/source/predictive eligibility remain false, and no real plant or accepted
+tune follows. Existing deployment, road and actuation gates remain in effect.

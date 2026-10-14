@@ -106,12 +106,18 @@ OVERLAY_ADDED = [
     # in OVERLAY_MODIFIED below: registering this without the call site leaves a module
     # nothing imports, and registering the call site without this breaks the fetch outright.
     "openpilot/sunnypilot/models/elantra_catalog.py",
+    "openpilot/selfdrive/controls/lib/controller_observation.py",
 ]
 
 # Upstream files we modify. Kept deliberately tiny -- this is the only conflict surface in
 # the whole design, so every line here has to earn its place.
 OVERLAY_MODIFIED = [
     ".gitmodules",
+    "openpilot/cereal/custom.capnp",
+    "openpilot/cereal/log.capnp",
+    "openpilot/cereal/services.py",
+    "openpilot/selfdrive/controls/controlsd.py",
+    "openpilot/selfdrive/car/card.py",
     "openpilot/common/params_keys.h",
     "openpilot/system/updated/updated.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py",

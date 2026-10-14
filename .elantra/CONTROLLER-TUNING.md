@@ -555,3 +555,21 @@ were identified, without transfer or decoding. Their model/source/policy identit
 and route partition remain unknown. Available storage at that instant was below
 the native floor plus 2 GiB margin; no allocation or cleanup followed. Fresh
 storage guards remain mandatory before any new device allocation.
+
+### Default-off timing observer
+
+The first observation patch records producer input references and actual compute,
+publication, apply and skip clocks through separate controlsd/card services. It
+preserves original controller calls and the prior-output publication order.
+Capture has bounded queues and budgets; ordered CAN headers retain address, bus
+and length only. Raw payloads and Params are not exported. Outside-overlay files
+are registered in `sync.py`.
+
+Twenty-nine host contracts, including isolated schema roundtrips and enabled/off
+hook ordering, passed. Ruff and all 115 overlay guards passed; root and bounded
+independent review were clean. This is source/host evidence, not live controller
+timing. Enabled GIL scheduling, backpressure, logging overhead and durable delivery
+remain unmeasured; activation and deployment remain gated. Static service entries
+add passive logger subscriptions even while capture is off. Policy, source and
+predictive eligibility stay false; roll uncertainty and TX/echo correlation stay
+unknown or unsupported. See `validation-clock-observer-checkpoint.json`.

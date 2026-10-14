@@ -19,6 +19,7 @@ from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, S
 from openpilot.selfdrive.controls.lib.latcontrol_curvature import LatControlCurvature
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
+from openpilot.selfdrive.controls.lib.controller_observation import create_observer, PublisherTap
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
@@ -33,6 +34,7 @@ ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
 
 class Controls(ControlsExt):
   def __init__(self) -> None:
+    self.observer = create_observer("controls")
     self.params = Params()
     cloudlog.info("controlsd is waiting for CarParams")
     self.CP = messaging.log_from_bytes(self.params.get("CarParams", block=True), car.CarParams)
@@ -48,6 +50,8 @@ class Controls(ControlsExt):
                                    'driverMonitoringState', 'onroadEvents', 'driverAssistance'] + self.sm_services_ext,
                                   poll='selfdriveState')
     self.pm = messaging.PubMaster(['carControl', 'controlsState'] + self.pm_services_ext)
+    if self.observer is not None:
+      self.pm = PublisherTap(self.pm, self.observer)
 
     self.steer_limited_by_safety = False
     self.curvature = 0.0
@@ -71,12 +75,16 @@ class Controls(ControlsExt):
     self.LaC = ControlsExt.initialize_lateral_control(self, self.LaC, self.CI, DT_CTRL)
 
   def update(self):
+    if self.observer is not None:
+      self.observer.capture("updateBegin")
     self.sm.update(15)
     if self.sm.updated["extrinsicsCalibration"]:
       self.pose_calibrator.feed_extrinsics_calibration(self.sm['extrinsicsCalibration'])
     if self.sm.updated["deviceMotion"]:
       device_motion = Pose.from_device_motion(self.sm['deviceMotion'])
       self.calibrated_pose = self.pose_calibrator.build_calibrated_pose(device_motion)
+    if self.observer is not None:
+      self.observer.capture("updateEnd", sm=self.sm)
 
   def state_control(self):
     CS = self.sm['carState']
@@ -246,10 +254,20 @@ class Controls(ControlsExt):
   def run(self):
     rk = Ratekeeper(100, print_delay_threshold=None)
     while True:
+      if self.observer is not None:
+        self.observer.begin_loop()
       self.update()
+      if self.observer is not None:
+        self.observer.capture("computeBegin", sm=self.sm)
       CC, lac_log = self.state_control()
+      if self.observer is not None:
+        self.observer.capture("computeEnd")
       self.publish(CC, lac_log)
+      if self.observer is not None:
+        self.observer.capture("paramsRefreshBegin")
       self.get_params_sp(self.sm)
+      if self.observer is not None:
+        self.observer.capture("paramsRefreshEnd")
       self.run_ext(self.sm, self.pm)
       rk.monitor_time()
 
