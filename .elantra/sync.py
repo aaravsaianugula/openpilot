@@ -108,6 +108,7 @@ OVERLAY_ADDED = [
     "openpilot/sunnypilot/models/elantra_catalog.py",
     "openpilot/selfdrive/controls/lib/controller_observation.py",
     "openpilot/selfdrive/controls/lib/controller_policy_observation.py",
+    "openpilot/sunnypilot/selfdrive/locationd/torqued_policy_observation.py",
 ]
 
 # Upstream files we modify. Kept deliberately tiny -- this is the only conflict surface in
@@ -129,6 +130,8 @@ OVERLAY_MODIFIED = [
     "openpilot/sunnypilot/selfdrive/controls/lib/blinker_pause_lateral.py",
     "openpilot/sunnypilot/modeld_v2/modeld_base.py",
     "openpilot/sunnypilot/livedelay/helpers.py",
+    "openpilot/selfdrive/locationd/torqued.py",
+    "openpilot/sunnypilot/selfdrive/locationd/torqued_ext.py",
     "openpilot/common/params_keys.h",
     "openpilot/system/updated/updated.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py",

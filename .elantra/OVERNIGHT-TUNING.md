@@ -299,7 +299,7 @@ Recent Sunnypilot cohort `f9c0b765b31b` has 319 segments / 27 routes, dirty sour
 104 test segments. `experiment-recent/f9c0b765b31b` identified long delay0.1s and
 tau1.2s from training only, interior to the expanded training grid. The 63
 training candidates retain support/rejection traces; 131/180 common windows
-support this estimate. Validation admits only13/18 windows (MAE0.0885m/s²), below
+support this estimate. Validation admits only13/18 windows (MAE0.0885m/sÂ²), below
 the20-window threshold. Lateral steady and transient support fail. No axis is
 admitted for gain optimization, and an audit hook records **zero opens of all104
 held-out NPZs**. This is diagnostic identification, not a new tune or RDF result.
@@ -606,7 +606,7 @@ display telemetry. No decode, model inference or native replay was repeated.
 All commands remain cold and conditional on fixed recorded feedback. No accepted
 native long/lat tune, physical improvement or completed stop follows.
 
-### Left/right and combined acceptance — October 13 follow-up
+### Left/right and combined acceptance â€” October 13 follow-up
 
 The owner explicitly requires both turn directions and simultaneous longitudinal/
 lateral tuning. The existing combined selector already propagates simulated long
@@ -1171,5 +1171,30 @@ Thirty-eight new host cases and 58 affected existing cases passed in separate
 processes, with Ruff and all 115 guards. Actual source-fragment schedules fit
 the unchanged limits: at most 31 constructor and 28 normal-loop records. The
 combined-process duplicate-schema-ID abort is preserved. Exact source, checks
-and review evidence are in `validation-policy-reads-checkpoint.json`. No new
-enabled IPC/runtime test, device activation or deployment has occurred.
+and review evidence are in `validation-policy-reads-checkpoint.json`. The first new IPC attempt is recorded below. No device activation or deployment
+has occurred.
+
+### Torqued three-key read references
+
+A separate default-off supplement observes the existing LiveTorqueParamsToggle,
+CustomTorqueParams and LiveTorqueParamsRelaxedToggle reads in torqued. It attaches
+one bounded header only to the existing main lateralTorqueParameters publication;
+it adds no publisher, thread, Params polling or cache instrumentation. Read-return
+IDs remain distinct from cached values and the published useParams field. Pending
+read evidence retires only after the original single send returns locally; this
+is not subscriber delivery or durable acknowledgement.
+
+Twenty new host cases, 58 existing observer/startup cases, scoped Ruff and all 115
+overlay guards passed. Root and independent clock/privacy/source reviews were clean.
+Separate schema processes measured a 504-byte maximum eight-read envelope and an
+8-byte structural increase even when disabled. Original disabled operations and
+cache/get_msg ASTs match the preserved baseline. Exact commands and bindings are in
+`validation-torqued-policy-checkpoint.json` under the artifact root. Enabled IPC,
+clock-domain equivalence, comma overhead and delivery remain unverified. Full policy,
+source and predictive eligibility stay false; no activation or deployment occurred.
+
+The controls-policy IPC attempt retained all 9,331 planned received messages and
+300 loop samples but exited 1 because its validator expected incorrect service
+labels on the four startup references. That failed run remains preserved. Corrected
+offline validation of retained evidence is pending; it will not rewrite the original
+exit or be described as a successful fresh execution.

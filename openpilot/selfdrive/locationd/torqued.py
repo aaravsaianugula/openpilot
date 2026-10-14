@@ -14,6 +14,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.locationd.helpers import PointBuckets, ParameterEstimator, PoseCalibrator, Pose
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.selfdrive.locationd.torqued_ext import TorqueEstimatorExt
+from openpilot.sunnypilot.selfdrive.locationd.torqued_policy_observation import create_torqued_policy_capture
 
 HISTORY = 5  # secs
 POINTS_PER_BUCKET = 1500
@@ -54,9 +55,12 @@ class TorqueBuckets(PointBuckets):
 
 
 class TorqueEstimator(ParameterEstimator, TorqueEstimatorExt):
-  def __init__(self, CP, decimated=False, track_all_points=False):
+  def __init__(self, CP, decimated=False, track_all_points=False, *, policy_capture=None):
     ParameterEstimator.__init__(self)
-    TorqueEstimatorExt.__init__(self, CP)
+    if policy_capture is None:
+      TorqueEstimatorExt.__init__(self, CP)
+    else:
+      TorqueEstimatorExt.__init__(self, CP, policy_capture=policy_capture.instance(decimated))
     self.CP = CP
     self.hist_len = int(HISTORY / DT_MDL)
     self.lag = 0.0
@@ -261,7 +265,11 @@ def main(demo=False):
   sm = messaging.SubMaster(['carControl', 'carOutput', 'carState', 'extrinsicsCalibration', 'deviceMotion', 'lateralDelay'], poll='deviceMotion')
 
   params = Params()
-  estimator = TorqueEstimator(messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams))
+  policy_capture = create_torqued_policy_capture()
+  if policy_capture is None:
+    estimator = TorqueEstimator(messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams))
+  else:
+    estimator = TorqueEstimator(messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams), policy_capture=policy_capture)
 
   while True:
     sm.update()
@@ -275,7 +283,17 @@ def main(demo=False):
 
     # 4Hz driven by deviceMotion
     if sm.frame % 5 == 0:
-      pm.send('lateralTorqueParameters', estimator.get_msg(valid=sm.all_checks(), with_points=DEBUG))
+      if estimator._torqued_policy_capture is None:
+        pm.send('lateralTorqueParameters', estimator.get_msg(valid=sm.all_checks(), with_points=DEBUG))
+      else:
+        msg = estimator.get_msg(valid=sm.all_checks(), with_points=DEBUG)
+        staged = estimator._torqued_policy_capture.stage(msg, estimator)
+        try:
+          pm.send('lateralTorqueParameters', msg)
+        except BaseException:
+          estimator._torqued_policy_capture.send_failed(staged)
+          raise
+        estimator._torqued_policy_capture.retire(staged)  # local sendreturn only, not deliveryACK
 
     # Cache points every 60 seconds while onroad
     if sm.frame % 240 == 0:

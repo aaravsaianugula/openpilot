@@ -353,7 +353,7 @@ these additive columns. Exact scoped evidence is in
 speed, acceleration, rack angle, calibrated yaw and unsigned vendor rate. Its
 21 features include physical LLK roll and five independent requested-acceleration,
 published-acceleration-report and CAN-command nodes. One supported nominal50ms
-macro advances all five states together. Actual recorded48–52ms transitions are
+macro advances all five states together. Actual recorded48â€“52ms transitions are
 retained; no independent long trajectory or measured future state supplies feedback.
 Original source/policy/lineage, immutable TRAIN split, consumed-prefix quality and
 at least100 samples/two independent routes per cell are required. Unknown original
@@ -656,5 +656,30 @@ the actual hook fragments and preserve disabled getter order and values. Maximum
 constructor/normal schedules are 31/28 records within unchanged 32-record and
 32 KiB capture-accounting budgets. The initial combined-process schema-ID abort is preserved.
 Source reviews were clean. See `validation-policy-reads-checkpoint.json` for
-commands and exact bindings. Enabled worker/wire and timing verification for
-this supplement remain unperformed; no activation, deployment or tune follows.
+commands and exact bindings. The first enabled worker/wire attempt is recorded in the later torqued section;
+no activation, deployment or tune follows.
+
+### Torqued three-key read references
+
+A separate default-off supplement observes the existing LiveTorqueParamsToggle,
+CustomTorqueParams and LiveTorqueParamsRelaxedToggle reads in torqued. It attaches
+one bounded header only to the existing main lateralTorqueParameters publication;
+it adds no publisher, thread, Params polling or cache instrumentation. Read-return
+IDs remain distinct from cached values and the published useParams field. Pending
+read evidence retires only after the original single send returns locally; this
+is not subscriber delivery or durable acknowledgement.
+
+Twenty new host cases, 58 existing observer/startup cases, scoped Ruff and all 115
+overlay guards passed. Root and independent clock/privacy/source reviews were clean.
+Separate schema processes measured a 504-byte maximum eight-read envelope and an
+8-byte structural increase even when disabled. Original disabled operations and
+cache/get_msg ASTs match the preserved baseline. Exact commands and bindings are in
+`validation-torqued-policy-checkpoint.json` under the artifact root. Enabled IPC,
+clock-domain equivalence, comma overhead and delivery remain unverified. Full policy,
+source and predictive eligibility stay false; no activation or deployment occurred.
+
+The controls-policy IPC attempt retained all 9,331 planned received messages and
+300 loop samples but exited 1 because its validator expected incorrect service
+labels on the four startup references. That failed run remains preserved. Corrected
+offline validation of retained evidence is pending; it will not rewrite the original
+exit or be described as a successful fresh execution.

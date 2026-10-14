@@ -2324,6 +2324,35 @@ struct LateralTorqueParameters @0xe61690eb0b091692 {
   version @11 :Int32;
   useParams @12 :Bool;
   calPerc @13 :Int8;
+  # Optional in-band3-key torqued read evidence. Adds one pointer word evenOFF.
+  policyObservation @14 :TorquedPolicyObservationV1;
+  struct TorquedPolicyObservationV1 {
+    present @0 :Bool; processEpoch @1 :Data; instanceId @2 :UInt16;
+    readAttemptSequence @3 :UInt64; publicationAttemptId @4 :UInt64; windowStartSequence @5 :UInt64;
+    sourceEventNs @6 :UInt64; sourceEventKnown @7 :Bool; appendObservationNs @8 :UInt64; appendKnown @9 :Bool;
+    estimatorFrame @10 :Int64; frameKnown @11 :Bool;
+    publishedUseParams @12 :Bool; publishedUseKnown @13 :Bool; cachedLive @14 :Bool; cachedLiveKnown @15 :Bool;
+    cachedCustom @16 :Bool; cachedCustomKnown @17 :Bool;
+    factorSanity @18 :Float64; factorSanityKnown @19 :Bool; frictionSanity @20 :Float64; frictionSanityKnown @21 :Bool;
+    decimated @22 :Bool; decimatedKnown @23 :Bool;
+    cachedLiveReadId @24 :UInt64; cachedCustomReadId @25 :UInt64; initializeCustomReadId @26 :UInt64; relaxedReadId @27 :UInt64;
+    rawPresence @28 :Availability; defaultUsed @29 :Availability; readClock @30 :Clock; publicationClock @31 :Clock;
+    policyComplete @32 :Bool; sourceAuthenticated @33 :Bool; predictiveEligible @34 :Bool;
+    bootIdentityKnown @35 :Bool; defaultOriginKnown @36 :Bool; clockDomainsVerified @37 :Bool;
+    fullUseHistory @38 :Bool; learnerThresholdsComplete @39 :Bool; cacheRestoreProven @40 :Bool;
+    reads @41 :List(Read); dropped @42 :UInt64; errors @43 :UInt64; epochLoss @44 :Bool; readCaptureComplete @45 :Bool;
+    enum Availability { unknown @0; }
+    enum Clock { pythonMonotonicNs @0; eventLogMonoTime @1; }
+    struct Read {
+      readId @0 :UInt64; site @1 :Site; key @2 :Key; estimatorFrame @3 :Int64;
+      beginNs @4 :UInt64; endNs @5 :UInt64; beginKnown @6 :Bool; endKnown @7 :Bool;
+      outcome @8 :Outcome; returnedKnown @9 :Bool; returnedBool @10 :Bool; valid @11 :Bool;
+      # All six sites use original get_bool/BOOL/defaultRequested=False; no raw presence evidence.
+      enum Key { liveTorqueParamsToggle @0; customTorqueParams @1; liveTorqueParamsRelaxedToggle @2; }
+      enum Site { constructorLive @0; constructorCustom @1; initializeRelaxed @2; initializeCustom @3; refreshLive @4; refreshCustom @5; }
+      enum Outcome { returned @0; raised @1; unavailable @2; }
+    }
+  }
 }
 
 struct LateralDelay @0x98dfdb22c44df8d4 {
