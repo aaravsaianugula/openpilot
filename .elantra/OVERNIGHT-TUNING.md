@@ -1092,3 +1092,21 @@ enabled control-thread timing, backpressure and logging/storage overhead still
 need bounded isolated measurement. Passive logger subscriptions remain even off.
 Policy/source/predictive eligibility remain false, and no real plant or accepted
 tune follows. Existing deployment, road and actuation gates remain in effect.
+
+### Frozen-report diagnostic selection
+
+The earlier shared runner evaluated candidates but had no generic winner branch.
+The new pure conditional selector closes that code gap using explicit
+predeclared residual/coverage/category limits and trusted-caller expected
+bindings. It recomputes quantitative validation evidence and requires the exact
+consumed model, complete common populations and unchanged joint regression
+gates. Forty-nine synthetic selector cases and eight frozen-report attachment
+cases passed; Ruff and root/scoped reviews were clean.
+
+Use `attach_predictive_diagnostics` on the original frozen search report; do not
+rerun native search merely to attach reporting. Original rejected rows and full
+tune/production fields remain unchanged. Conditional observed-command prediction
+errors do not validate closed-loop response, source authentication or a road
+tune. No current plant was promoted and all 104 reserved test arrays remain
+unopened. Exact commands/hashes are in the predictive-selection validation
+receipts under the artifact root.

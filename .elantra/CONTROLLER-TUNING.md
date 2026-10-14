@@ -573,3 +573,22 @@ remain unmeasured; activation and deployment remain gated. Static service entrie
 add passive logger subscriptions even while capture is off. Policy, source and
 predictive eligibility stay false; roll uncertainty and TX/echo correlation stay
 unknown or unsupported. See `validation-clock-observer-checkpoint.json`.
+
+### Conditional diagnostic winner selection
+
+`controller_predictive_selection.select_diagnostic` can now choose a strictly
+better finite-grid diagnostic row when explicit predeclared quantitative limits
+and frozen model, source, helper, validation and search bindings pass. All
+incomplete/unsupported rows and original assumptions remain visible. Existing
+common-window, left/right entry/steady/exit, acceleration/braking, path, comfort
+and stopping constraints are reused. Hash checks are conditional integrity;
+independent caller authentication and physical validation remain unperformed.
+
+`controller_native_two_way.attach_predictive_diagnostics` adds these results to
+an already frozen report without rerunning controllers, fits or search. The
+original report hash binds evidence before attachment, and original rows,
+selection and production fields stay unchanged. Forty-nine selector and eight
+attachment synthetic cases passed, with Ruff and scoped reviews. See
+`validation-predictive-selection-stage1-checkpoint.json` and
+`validation-predictive-selection-attachment-checkpoint.json`. No current data
+was admitted, no native case repeated and no installable/full tune selected.

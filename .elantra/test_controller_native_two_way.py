@@ -1633,3 +1633,71 @@ def test_actual_three_adapter_approach_crossing_and_hold():
   assert first["output_receipt"] == second["output_receipt"] and first["event_attempts"] == second["event_attempts"]
   assert first["fixed_reference_sha256"] == second["fixed_reference_sha256"]
   assert report["split"]["test"] == ["route-x"]  # Synthetic reservation, no data opened.
+
+
+def test_predictive_attachment_preserves_frozen_search_and_never_runs_controllers(monkeypatch):
+  from test_controller_predictive_selection import fixture as selection_fixture
+  from controller_multirate_lateral import identity_hash
+  search, evidence = selection_fixture()
+  before = identity_hash([search, evidence])
+
+  def forbidden(*args, **kwargs):
+    pytest.fail("report attachment invoked recurrence/native/fit")
+
+  monkeypatch.setattr(runner, "evaluate_two_way", forbidden)
+  monkeypatch.setattr(runner.long.NativeRuntime, "__init__", forbidden)
+  monkeypatch.setattr(runner.lateral.Runtime, "create", forbidden)
+  monkeypatch.setattr(runner.output.Runtime, "create", forbidden)
+  monkeypatch.setattr(plant, "fit", forbidden)
+  monkeypatch.setattr(runner.low_plant, "fit", forbidden)
+  attached = runner.attach_predictive_diagnostics(search, **evidence)
+  diagnostic = attached["predictive_diagnostics"]
+  assert diagnostic["source_search_sha256"] == identity_hash(search) == evidence["expected_bindings"]["search_sha256"]
+  assert identity_hash({k: v for k, v in attached.items() if k != "predictive_diagnostics"}) == identity_hash(search)
+  assert identity_hash([search, evidence]) == before
+  assert diagnostic["diagnostic_winner"]["parameters"]["lateral"]["factor"] == 2.
+  assert attached["ranking_status"] == search["ranking_status"] == "unavailable"
+  assert attached["selection"] is None and attached["complete_controller_candidate"] is None and not attached["production_enabled"]
+  assert diagnostic["selection"] is None and diagnostic["full_controller_candidate"] is None
+  assert not diagnostic["caller_authentication_verified"] and not diagnostic["predictive_validated"] and not diagnostic["production_enabled"]
+  assert identity_hash(attached) == identity_hash(runner.attach_predictive_diagnostics(search, **evidence))
+  attached["rows"][0]["selection_rejections"].append("caller_changed_returned_copy")
+  assert identity_hash([search, evidence]) == before
+
+
+@pytest.mark.parametrize("fault", ["missing", "search_hash", "model"])
+def test_predictive_attachment_unavailable_evidence_preserves_original_failures(fault):
+  from test_controller_predictive_selection import fixture as selection_fixture
+  from controller_multirate_lateral import identity_hash
+  search, evidence = selection_fixture()
+  if fault == "missing":
+    evidence["expected_bindings"] = None
+  elif fault == "search_hash":
+    evidence["expected_bindings"]["search_sha256"] = "0"*64
+  else:
+    evidence["expected_bindings"]["models"]["moving"]["model_sha256"] = "0"*64
+  before = identity_hash([search, evidence])
+  attached = runner.attach_predictive_diagnostics(search, **evidence)
+  diagnostic = attached["predictive_diagnostics"]
+  assert diagnostic["status"] == "unavailable" and diagnostic["diagnostic_winner"] is None
+  assert len(diagnostic["rows"]) == len(search["rows"])
+  assert attached["rows"][0]["selection_rejections"] == search["rows"][0]["selection_rejections"]
+  assert diagnostic["source_search_sha256"] == identity_hash(search)
+  assert identity_hash([search, evidence]) == before
+  assert attached["selection"] is None and attached["complete_controller_candidate"] is None and not attached["production_enabled"]
+
+
+@pytest.mark.parametrize("fault", ["attached", "selection", "candidate", "production"])
+def test_predictive_attachment_refuses_nonoriginal_or_nonresearch_report(fault):
+  from test_controller_predictive_selection import fixture as selection_fixture
+  search, evidence = selection_fixture()
+  if fault == "attached":
+    search["predictive_diagnostics"] = {"diagnostic_winner": None}
+  elif fault == "selection":
+    search["selection"] = {"arbitrary": "claimed tune"}
+  elif fault == "candidate":
+    search["complete_controller_candidate"] = {"arbitrary": "claimed tune"}
+  else:
+    search["production_enabled"] = True
+  with pytest.raises(runner.TwoWayError, match="original.*research"):
+    runner.attach_predictive_diagnostics(search, **evidence)

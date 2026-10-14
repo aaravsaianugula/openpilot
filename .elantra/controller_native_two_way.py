@@ -906,3 +906,27 @@ def validation_search(windows, report, envelopes, model, lr, lat, out, proofs, *
   return {"status": "insufficient_evidence", "baseline": rows[0], "rows": rows[1:], "common_window_ids": common,
           "ranking_status": "unavailable", "ranking_rejections": ["joint_plant_predictive_validation_unavailable"],
           "attempted_windows": len(common), "selection": None, "complete_controller_candidate": None, "production_enabled": False}
+
+
+def attach_predictive_diagnostics(search_report, *, models, validation_reports, split, cp, sp, specification, expected_bindings):
+  """Attach conditional diagnostics to an original frozen report without rerunning it.
+
+  Expected bindings hash the original report, before this one additional field.
+  Caller authentication and every full-tune rejection remain unresolved. Supply
+  the original again for a repeated comparison, never an already-attached report.
+  """
+  if (not isinstance(search_report, dict) or "predictive_diagnostics" in search_report
+      or not isinstance(search_report.get("baseline"), dict) or not isinstance(search_report.get("rows"), list)
+      or not {"selection", "complete_controller_candidate", "production_enabled"} <= search_report.keys()
+      or search_report["selection"] is not None or search_report["complete_controller_candidate"] is not None
+      or search_report["production_enabled"] is not False):
+    raise TwoWayError("original disabled research search report required")
+  frozen = deepcopy(search_report)
+  source_sha256 = plant.identity_hash(frozen)
+  # The selector imports this module for existing constraints; import only here.
+  from controller_predictive_selection import select_diagnostic
+  diagnostics = select_diagnostic(frozen, models=models, validation_reports=validation_reports, split=split, cp=cp, sp=sp,
+                                  specification=specification, expected_bindings=expected_bindings)
+  diagnostics["source_search_sha256"] = source_sha256
+  frozen["predictive_diagnostics"] = diagnostics
+  return frozen
