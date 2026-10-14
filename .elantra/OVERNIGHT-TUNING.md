@@ -1045,3 +1045,35 @@ diagnostic ranks without predictive plant-validation evidence. Four affected
 finite-search regression cases and Ruff passed. An unbound caller success label
 cannot enable ranking. This change affects search reporting only; the verified
 native control recurrence is unchanged.
+
+### Frozen response validation
+
+`controller_multirate_validation.py` now evaluates a frozen TRAIN plant on
+explicit VALIDATION records. It reuses the exact 21/31-feature collectors and
+predictors, preserving all source, queue, uncertainty and unsupported-cell gates.
+Five state residuals and categorical standstill errors retain route coverage and
+measured left/right yaw groups. Unknown labels, unsupported predictions and
+quality exclusions stay separate. Conditional error summaries state their
+denominators; no overall PASS, rank or tune acceptance follows.
+
+All metadata and physical-source separation checks precede raw arrays. Existing
+public fits remain TRAIN-only; TEST is never admitted. Historical training/helper
+proof must be supplied and authenticated by a reviewed caller, not invented from
+current files. Seventy-eight targeted checks passed; two review fixes then passed
+26 affected checks, with Ruff and scoped independent review clean. The fixes
+preserve observed category labels on unsupported predictions and reject malformed
+array-valued model claims before data access. No real-data validation or fit ran.
+See `validation-multirate-predictive-checkpoint.json` for exact proof.
+
+Current publishers do not record the exact consumed CS/CC and compute/apply
+correlations required by the categorical plant. Publication clocks and a wrapping
+CAN counter cannot reconstruct them uniquely. Future observation traces need
+those clocks, prior full CP/SP and typed policy values, plus verified source/build
+provenance; calibrated roll uncertainty also remains unresolved. This source
+finding does not authorize instrumentation deployment or a road test.
+
+One later strict read-only probe succeeded. Five locally absent candidate rlogs
+were identified, without transfer or decoding. Their model/source/policy identity
+and route partition remain unknown. Available storage at that instant was below
+the native floor plus 2 GiB margin; no allocation or cleanup followed. Fresh
+storage guards remain mandatory before any new device allocation.

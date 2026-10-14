@@ -20,8 +20,8 @@ FIELDS = {**base.FIELDS, "carState": (*base.FIELDS["carState"], "standstill"),
           "carControl": ("lat_active", "long_active", "torque_request"), "carOutput": ("torque_reported", "torque_counts")}
 
 
-def _metadata(records, split, cp, sp):
-  contract, verified, anchors = base._metadata(records, split)
+def _metadata(records, split, cp, sp, *, partition="train"):
+  contract, verified, anchors = base._metadata(records, split, partition=partition)
   if (not isinstance(cp, dict) or not isinstance(sp, dict) or cp.get("carFingerprint") != "HYUNDAI_ELANTRA_2024"
       or cp.get("brand") != "hyundai" or cp.get("steerControlType") != "torque" or cp.get("minSteerSpeed") != 0.
       or cp.get("steerAtStandstill") is not False or cp.get("openpilotLongitudinalControl") is not True

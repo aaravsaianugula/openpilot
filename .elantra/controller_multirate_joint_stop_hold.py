@@ -25,13 +25,13 @@ LOW_SPEED_MAX_MPS = 3.  # Declared identification domain, NOT native activation.
 QUEUE_CLOCKS = ("echo_t_ns", "apply_t_ns", "consume_t_ns", "consumed_cc_t_ns", "compute_t_ns", "feedback_cs_t_ns")
 
 
-def _metadata(records, split, cp, sp):
+def _metadata(records, split, cp, sp, *, partition="train"):
   if (not isinstance(split, dict) or set(split) != {"train", "validation", "test"}
       or any(not isinstance(v, list) or any(not isinstance(r, str) or not r for r in v) or len(v) != len(set(v)) for v in split.values())):
     raise FitError("frozen disjoint string routes without duplicates required")
-  contract, verified, anchors = lateral_hold._metadata(records, split, cp, sp)
+  contract, verified, anchors = lateral_hold._metadata(records, split, cp, sp, partition=partition)
   for record in records:  # No array access until EVERY source/metadata gate passes.
-    moving._binding_metadata(record, split)
+    moving._binding_metadata(record, split, partition=partition)
     m, q = record["metadata"], record.get("queued_apply_metadata", {})
     if not isinstance(q, dict):
       raise FitError("queued apply source/policy/lineage metadata unavailable or differs")

@@ -43,11 +43,11 @@ def _hash(value):
     raise ViewError("noncanonical/object-array input content") from error
 
 
-def _admit(arrays, metadata, split, proof):
+def _admit(arrays, metadata, split, proof, *, partition="train"):
+  if partition not in ("train", "validation"):
+    raise ViewError("only TRAIN or validation content admission is allowed")
   if not all(isinstance(v, dict) for v in (arrays, metadata, split, proof)):
     raise ViewError("explicit arrays/metadata/split/proof mappings required")
-  if any(not isinstance(v, np.ndarray) or v.dtype.hasobject for v in arrays.values()):
-    raise ViewError("original nonobject NPZ array content required")
   if (type(metadata.get("source_eligible")) is not bool or not isinstance(metadata.get("eligibility_reasons"), list)
       or any(not isinstance(reason, str) for reason in metadata["eligibility_reasons"])):
     raise ViewError("explicit original source/policy eligibility metadata required; no defaults")
@@ -57,8 +57,8 @@ def _admit(arrays, metadata, split, proof):
     raise ViewError("frozen disjoint TRAIN/validation/test route split required")
   segment = metadata.get("segment", "")
   match = SEGMENT_RE.fullmatch(segment) if isinstance(segment, str) else None
-  if not match or match[1] not in split["train"] or metadata.get("route", match[1]) != match[1]:
-    raise ViewError("exact flat segment/route must belong to reserved TRAIN, without route aliases")
+  if not match or match[1] not in split[partition] or metadata.get("route", match[1]) != match[1]:
+    raise ViewError(f"exact flat segment/route must belong to reserved {partition.upper()}, without route aliases")
   for key in ("source_log_sha256", "output_npz_sha256", "splits_sha256"):
     if not isinstance(metadata.get(key), str) or not _SHA.fullmatch(metadata[key]):
       raise ViewError("missing source/Motion NPZ/frozen-split SHA256")
@@ -67,6 +67,8 @@ def _admit(arrays, metadata, split, proof):
       or any(not isinstance(k, str) or not isinstance(v, str) or not _SHA.fullmatch(v) for k, v in hashes.items())
       or not isinstance(metadata.get("cohort"), str) or not metadata["cohort"]):
     raise ViewError("exact recorded schema-hash map and cohort required")
+  if any(not isinstance(v, np.ndarray) or v.dtype.hasobject for v in arrays.values()):
+    raise ViewError("original nonobject NPZ array content required")
   expected = {"cohort": metadata["cohort"], "segment": segment, "source_log_sha256": metadata["source_log_sha256"],
               "motion_npz_sha256": metadata["output_npz_sha256"], "arrays_sha256": _hash(arrays),
               "metadata_sha256": _hash(metadata), "schema_sha256": dict(hashes), "split_sha256": _hash(split),

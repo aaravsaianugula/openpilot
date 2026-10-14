@@ -54,15 +54,17 @@ def identity_hash(value):
 _hash = identity_hash
 
 
-def _metadata(records, split):
+def _metadata(records, split, *, partition="train"):
+  if partition not in ("train", "validation"):
+    raise FitError("only TRAIN or validation metadata admission is allowed")
   if (set(split) != {"train", "validation", "test"} or any(not isinstance(v, list) for v in split.values())
       or any(set(split[a]) & set(split[b]) for a, b in (("train", "validation"), ("train", "test"), ("validation", "test")))):
     raise FitError("requires disjoint frozen TRAIN/validation/test routes")
   sources, contracts = {}, set()
   for record in records:  # No arrays are accessed until ALL metadata gates pass.
     m = record["metadata"]
-    if m.get("route") not in split["train"]:
-      raise FitError("only reserved TRAIN routes may be opened")
+    if m.get("route") not in split[partition]:
+      raise FitError(f"only reserved {partition.upper()} routes may be opened")
     for key in ("source_log_sha256", "static_identity_sha256", "policy_identity_sha256"):
       if not re.fullmatch(r"[0-9a-f]{64}", m.get(key, "")):
         raise FitError("missing hash-bound source/static/policy contract")

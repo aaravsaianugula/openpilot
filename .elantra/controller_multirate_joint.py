@@ -19,15 +19,17 @@ FEATURES = (*STATE_KEYS, "physical_llk_roll", *(f"accel_request_{i}" for i in ra
 SERVICES = ("carState", "carControl", "carOutput", "LKAS11Tx")
 
 
-def _binding_metadata(record, split):
+def _binding_metadata(record, split, *, partition="train"):
   """All original/enriched source gates precede any record's array access."""
+  if partition not in ("train", "validation"):
+    raise FitError("only TRAIN or validation metadata admission is allowed")
   try:
     m, original, receipt = record["metadata"], record["motion_metadata"], record["view_receipt"]
     segment = original.get("segment", "") if isinstance(original, dict) else ""
     match = view.SEGMENT_RE.fullmatch(segment) if isinstance(segment, str) else None
     if (any(not isinstance(v, dict) for v in (original, receipt)) or receipt.get("kind") != view.KIND
         or any(original.get(k) != m.get(k) or receipt.get(k) != m.get(k) for k in ("cohort", "segment", "source_log_sha256"))
-        or not match or match[1] != m["route"] or match[1] not in split["train"]
+        or not match or match[1] != m["route"] or match[1] not in split[partition]
         or type(original.get("source_eligible")) is not bool or not isinstance(original.get("eligibility_reasons"), list)
         or any(not isinstance(r, str) for r in original["eligibility_reasons"])
         or receipt.get("route") != m["route"] or receipt.get("input_source_eligible") != original.get("source_eligible")
@@ -39,12 +41,14 @@ def _binding_metadata(record, split):
     raise FitError("Motion/view source metadata: "+str(error)) from error
 
 
-def _bind(record, split):
+def _bind(record, split, *, partition="train"):
   """Content claims only: a reviewed caller must authenticate files and schema."""
+  if partition not in ("train", "validation"):
+    raise FitError("only TRAIN or validation content admission is allowed")
   try:
     m, original, receipt = record["metadata"], record["motion_metadata"], record["view_receipt"]
     a, derived = record["motion_arrays"], record["view_arrays"]
-    route, binding = view._admit(a, original, split, receipt["input_proof"])
+    route, binding = view._admit(a, original, split, receipt["input_proof"], partition=partition)
     if (route != m["route"] or receipt.get("input_arrays_sha256") != binding["arrays_sha256"]
         or not isinstance(derived, dict) or any(not isinstance(v, np.ndarray) or v.dtype.hasobject for v in derived.values())
         or receipt.get("output_view_arrays_sha256") != identity_hash(derived)):
