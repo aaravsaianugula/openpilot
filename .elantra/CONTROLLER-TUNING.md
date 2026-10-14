@@ -630,5 +630,14 @@ Elantra guards passed. Exact checks and source bindings are in
 A byte digest identifies that startup buffer only. It does not identify current
 mutable CP, an atomic CP/SP pair, runtime source, complete torque policy or a
 qualified physical plant. All source/policy/predictive eligibility flags stay
-false. The supplement has not been deployed or activated; a separate bounded
-local IPC test is being prepared for its worker/wire path.
+false. The supplement has not been deployed or activated.
+
+One isolated x86 run completed two new worker/wire cases and 600 timed loops.
+All eight startup references arrived with the required envelope and clock fields,
+the digests matched independent checks, and both producers released their 560-byte
+synthetic buffer jobs. No drops or errors were recorded. Sources stayed unchanged,
+Params stayed absent and owned groups/namespaces were cleaned. Every digest was
+ready before the first scheduled tick; hashing contention remains unmeasured. These tiny
+400/160-byte fixtures and short desktop measurements do not establish comma
+timing, durable logging or driving performance. Exact proof is retained in
+`validation-startup-static-ipc-checkpoint.json`; the prior 14 cases were not rerun.
