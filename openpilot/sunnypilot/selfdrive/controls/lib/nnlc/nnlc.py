@@ -36,7 +36,13 @@ class NeuralNetworkLateralControl(LatControlTorqueJerkAware):
   def __init__(self, lac_torque, CP, CP_SP, CI):
     super().__init__(lac_torque, CP, CP_SP, CI)
     self.params = Params()
-    self.enabled = self.params.get_bool("NeuralNetworkLateralControl")
+    policy_capture = getattr(self, "_policy_capture", None)
+    if policy_capture is None:
+      self.enabled = self.params.get_bool("NeuralNetworkLateralControl")
+    else:
+      with policy_capture.read("nnEnable") as read:
+        self.enabled = self.params.get_bool("NeuralNetworkLateralControl")
+        read.returned(self.enabled)
     model_path = CP_SP.neuralNetworkLateralControl.model.path
     self.has_nn_model = model_path not in (MOCK_MODEL_PATH, '')
 

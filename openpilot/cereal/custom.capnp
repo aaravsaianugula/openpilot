@@ -511,6 +511,7 @@ struct ControllerObservationRecordV1 {
   tx @28 :List(TxFrame);  # ordered CI.apply output, not proven panda transmission/delivery
   faults @29 :List(Fault);
   startupReference @30 :StartupReference;
+  policyObservation @31 :PolicyObservation;
 
   enum Producer { controls @0; card @1; }
   enum Availability { unknown @0; }
@@ -519,7 +520,7 @@ struct ControllerObservationRecordV1 {
     loopStart @0; updateBegin @1; updateEnd @2; consumeEnd @3;
     computeBegin @4; computeEnd @5; paramsRefreshBegin @6; paramsRefreshEnd @7;
     publishBegin @8; publishEnd @9; publishFailed @10; applyBegin @11; applyEnd @12;
-    applySkipped @13; initializeBegin @14; initializeEnd @15; startupBegin @16; startupEnd @17;
+    applySkipped @13; initializeBegin @14; initializeEnd @15; startupBegin @16; startupEnd @17; policy @18;
   }
   enum Service {
     none @0; lateralDelay @1; vehicleParameters @2; lateralTorqueParameters @3;
@@ -545,6 +546,41 @@ struct ControllerObservationRecordV1 {
     seen @6 :Bool; updated @7 :Bool; valid @8 :Bool; alive @9 :Bool; freqOk @10 :Bool;
   }
   struct TxFrame { address @0 :UInt32; src @1 :UInt8; payloadLength @2 :UInt8; payloadCaptured @3 :Bool; }
+  # Returned typed values and separate scalar writes only. Raw/default origin remains unknown.
+  struct PolicyObservation {
+    present @0 :Bool; kind @1 :Kind; group @2 :Group; groupId @3 :UInt32;
+    consumerId @4 :UInt32; parentId @5 :UInt32; consumerKind @6 :Consumer;
+    site @7 :Site; key @8 :Key; method @9 :Method; registryType @10 :Scalar;
+    defaultRequested @11 :Bool; rawPresence @12 :Availability; defaultUsed @13 :Availability;
+    readSequence @14 :UInt32; scalarKind @15 :Scalar; boolValue @16 :Bool; intValue @17 :Int64; floatValue @18 :Float64;
+    beginNs @19 :UInt64; endNs @20 :UInt64; beginKnown @21 :Bool; valid @22 :Bool;
+    writeSource @23 :WriteSource; factor @24 :Float64; offset @25 :Float64; friction @26 :Float64;
+    sourceNs @27 :UInt64; sourceFrame @28 :UInt64;
+    selectedId @29 :UInt32; selectedKnown @30 :Bool; selectedClass @31 :SelectedClass; selectionReason @32 :SelectionReason;
+    attempts @33 :UInt32; returned @34 :UInt32; raised @35 :UInt32; accepted @36 :UInt32; dropped @37 :UInt32; complete @38 :Bool;
+    enum Kind { consumerCreated @0; readReturned @1; readRaised @2; controllerSelected @3; torqueParametersWritten @4;
+                delayCacheWritten @5; groupComplete @6; }
+    enum Group { controlsInit @0; stockConstructor @1; v0Constructor @2; selection @3; overrideRefresh @4;
+                 controlsRefresh @5; learnerWrite @6; }
+    enum Consumer { controls @0; blinker @1; stockTorque @2; stockExtension @3; v0Torque @4; v0Extension @5; }
+    enum Method { none @0; get @1; getBool @2; }
+    enum Scalar { unknown @0; none @1; bool @2; int @3; float @4; }
+    enum Availability { unknown @0; }
+    enum WriteSource { none @0; constructor @1; learner @2; override @3; cachedDelay @4; publishedDelay @5; }
+    enum SelectedClass { unknown @0; angle @1; curvature @2; pid @3; stockTorque @4; v0Torque @5; }
+    enum SelectionReason { observed @0; nonTorqueNotInstrumented @1; notInstrumented @2; }
+    enum Key {
+      none @0; enforceTorqueControl @1; torqueControlTune @2; lateralJerkTorqueController @3; neuralNetworkLateralControl @4;
+      torqueParamsOverrideEnabled @5; torqueParamsOverrideLatAccelFactor @6; torqueParamsOverrideFriction @7;
+      lagdToggle @8; lagdValueCache @9; blinkerPauseLateralControl @10; isMetric @11; blinkerMinLateralControlSpeed @12;
+      blinkerLateralReengageDelay @13; customTorqueParams @14; liveTorqueParamsToggle @15; liveTorqueParamsRelaxedToggle @16;
+    }
+    enum Site {
+      none @0; selectionEnforce @1; selectionTune @2; jerkEnable @3; nnEnable @4; overrideEnforce @5; overrideInitial @6;
+      overrideRefresh @7; overrideFactor @8; overrideFriction @9; delayInitial @10; lagdToggle @11; delayCache @12;
+      blinkerInitial @13; metricInitial @14; blinkerRefresh @15; metricRefresh @16; blinkerMinSpeed @17; blinkerReengage @18;
+    }
+  }
   # Exact startup buffer only: NOT current CP, source authentication, semantic or paired-static identity.
   struct StartupReference {
     present @0 :Bool;

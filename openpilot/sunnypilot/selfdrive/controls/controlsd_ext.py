@@ -20,12 +20,19 @@ from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_v0 import Lat
 
 
 class ControlsExt(ModelStateBase):
-  def __init__(self, CP: structs.CarParams, params: Params):
-    ModelStateBase.__init__(self)
+  def __init__(self, CP: structs.CarParams, params: Params, *, policy_capture=None):
+    self._policy_capture = policy_capture
+    if policy_capture is None:
+      ModelStateBase.__init__(self)
+    else:
+      ModelStateBase.__init__(self, policy_capture=policy_capture)
     self.CP = CP
     self.params = params
     self._param_update_time: float = 0.0
-    self.blinker_pause_lateral = BlinkerPauseLateral()
+    if policy_capture is None:
+      self.blinker_pause_lateral = BlinkerPauseLateral()
+    else:
+      self.blinker_pause_lateral = BlinkerPauseLateral(policy_capture=policy_capture.child("blinker"))
 
     cloudlog.info("controlsd_ext is waiting for CarParamsSP")
     if getattr(self, "observer", None) is None:
@@ -47,6 +54,24 @@ class ControlsExt(ModelStateBase):
     self.pm_services_ext = ['carControlSP']
 
   def initialize_lateral_control(self, lac, CI, dt):
+    policy_capture = getattr(self, "_policy_capture", None)
+    if policy_capture is not None:
+      with policy_capture.group("selection"):
+        with policy_capture.read("selectionEnforce") as read:
+          enforce_torque_control = self.params.get_bool("EnforceTorqueControl")
+          read.returned(enforce_torque_control)
+        with policy_capture.read("selectionTune") as read:
+          torque_versions = self.params.get("TorqueControlTune")
+          read.returned(torque_versions)
+        replace = (not enforce_torque_control and self.CP.lateralTuning.which() == 'torque') or (enforce_torque_control and torque_versions == 0.0)
+        if replace:
+          with policy_capture.group("v0Constructor") as group:
+            lac = LatControlTorqueV0(self.CP, self.CP_SP, CI, dt, policy_capture=group.consumer("v0Torque", policy_capture))
+        kind = ("angle" if self.CP.steerControlType == structs.CarParams.SteerControlType.angle else
+                "curvature" if self.CP.steerControlType == structs.CarParams.SteerControlType.curvature else
+                "pid" if self.CP.lateralTuning.which() == 'pid' else "unknown")
+        policy_capture.selected(lac, kind)
+        return lac
     enforce_torque_control = self.params.get_bool("EnforceTorqueControl")
     torque_versions = self.params.get("TorqueControlTune")
     if not enforce_torque_control:
@@ -61,10 +86,17 @@ class ControlsExt(ModelStateBase):
 
   def get_params_sp(self, sm: messaging.SubMaster) -> None:
     if time.monotonic() - self._param_update_time > PARAMS_UPDATE_PERIOD:
-      self.blinker_pause_lateral.get_params()
-
-      if self.CP.lateralTuning.which() == 'torque':
-        self.lat_delay = get_lat_delay(self.params, sm["lateralDelay"].lateralDelay)
+      policy_capture = getattr(self, "_policy_capture", None)
+      if policy_capture is None:
+        self.blinker_pause_lateral.get_params()
+        if self.CP.lateralTuning.which() == 'torque':
+          self.lat_delay = get_lat_delay(self.params, sm["lateralDelay"].lateralDelay)
+      else:
+        with policy_capture.group("controlsRefresh"):
+          self.blinker_pause_lateral.get_params()
+          if self.CP.lateralTuning.which() == 'torque':
+            self.lat_delay = get_lat_delay(self.params, sm["lateralDelay"].lateralDelay, policy_capture=policy_capture)
+            policy_capture.delay_written(self.lat_delay, policy_capture.delay_origin)
 
       self._param_update_time = time.monotonic()
 

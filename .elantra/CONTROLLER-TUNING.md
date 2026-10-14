@@ -641,3 +641,20 @@ ready before the first scheduled tick; hashing contention remains unmeasured. Th
 400/160-byte fixtures and short desktop measurements do not establish comma
 timing, durable logging or driving performance. Exact proof is retained in
 `validation-startup-static-ipc-checkpoint.json`; the prior 14 cases were not rerun.
+
+### Controls policy read and write references
+
+The default-off controls observer now records typed results at the existing
+13-key read sites, with actual begin/end clocks and distinct consumer IDs.
+Separate records identify controller selection and subsequent constructor,
+learner, override and delay-cache writes. Raw Params, default origin and external
+learner/model/card-thread reads remain unknown; full policy eligibility stays false.
+
+Thirty-eight new host cases and 58 affected existing observer/startup cases passed
+in separate processes, with Ruff and all 115 overlay guards. Fixtures exercise
+the actual hook fragments and preserve disabled getter order and values. Maximum
+constructor/normal schedules are 31/28 records within unchanged 32-record and
+32 KiB capture-accounting budgets. The initial combined-process schema-ID abort is preserved.
+Source reviews were clean. See `validation-policy-reads-checkpoint.json` for
+commands and exact bindings. Enabled worker/wire and timing verification for
+this supplement remain unperformed; no activation, deployment or tune follows.

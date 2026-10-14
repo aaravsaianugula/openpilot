@@ -107,6 +107,7 @@ OVERLAY_ADDED = [
     # nothing imports, and registering the call site without this breaks the fetch outright.
     "openpilot/sunnypilot/models/elantra_catalog.py",
     "openpilot/selfdrive/controls/lib/controller_observation.py",
+    "openpilot/selfdrive/controls/lib/controller_policy_observation.py",
 ]
 
 # Upstream files we modify. Kept deliberately tiny -- this is the only conflict surface in
@@ -119,6 +120,15 @@ OVERLAY_MODIFIED = [
     "openpilot/selfdrive/controls/controlsd.py",
     "openpilot/selfdrive/car/card.py",
     "openpilot/sunnypilot/selfdrive/controls/controlsd_ext.py",
+    "openpilot/selfdrive/controls/lib/latcontrol_torque.py",
+    "openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py",
+    "openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_ext.py",
+    "openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_ext_override.py",
+    "openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_jerk_aware.py",
+    "openpilot/sunnypilot/selfdrive/controls/lib/nnlc/nnlc.py",
+    "openpilot/sunnypilot/selfdrive/controls/lib/blinker_pause_lateral.py",
+    "openpilot/sunnypilot/modeld_v2/modeld_base.py",
+    "openpilot/sunnypilot/livedelay/helpers.py",
     "openpilot/common/params_keys.h",
     "openpilot/system/updated/updated.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py",

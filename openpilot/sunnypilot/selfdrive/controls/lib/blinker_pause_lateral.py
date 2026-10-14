@@ -11,20 +11,42 @@ from openpilot.common.params import Params
 
 
 class BlinkerPauseLateral:
-  def __init__(self):
+  def __init__(self, *, policy_capture=None):
     self.params = Params()
-
-    self.enabled = self.params.get_bool("BlinkerPauseLateralControl")
-    self.is_metric = self.params.get_bool("IsMetric")
+    self._policy_capture = policy_capture
+    if policy_capture is None:
+      self.enabled = self.params.get_bool("BlinkerPauseLateralControl")
+      self.is_metric = self.params.get_bool("IsMetric")
+    else:
+      with policy_capture.read("blinkerInitial") as read:
+        self.enabled = self.params.get_bool("BlinkerPauseLateralControl")
+        read.returned(self.enabled)
+      with policy_capture.read("metricInitial") as read:
+        self.is_metric = self.params.get_bool("IsMetric")
+        read.returned(self.is_metric)
     self.min_speed = 0
     self.reengage_delay = 0
     self.blinker_off_timer = 0.0
 
   def get_params(self) -> None:
-    self.enabled = self.params.get_bool("BlinkerPauseLateralControl")
-    self.is_metric = self.params.get_bool("IsMetric")
-    self.min_speed = self.params.get("BlinkerMinLateralControlSpeed", return_default=True)
-    self.reengage_delay = self.params.get("BlinkerLateralReengageDelay", return_default=True)
+    if self._policy_capture is None:
+      self.enabled = self.params.get_bool("BlinkerPauseLateralControl")
+      self.is_metric = self.params.get_bool("IsMetric")
+      self.min_speed = self.params.get("BlinkerMinLateralControlSpeed", return_default=True)
+      self.reengage_delay = self.params.get("BlinkerLateralReengageDelay", return_default=True)
+    else:
+      with self._policy_capture.read("blinkerRefresh") as read:
+        self.enabled = self.params.get_bool("BlinkerPauseLateralControl")
+        read.returned(self.enabled)
+      with self._policy_capture.read("metricRefresh") as read:
+        self.is_metric = self.params.get_bool("IsMetric")
+        read.returned(self.is_metric)
+      with self._policy_capture.read("blinkerMinSpeed") as read:
+        self.min_speed = self.params.get("BlinkerMinLateralControlSpeed", return_default=True)
+        read.returned(self.min_speed)
+      with self._policy_capture.read("blinkerReengage") as read:
+        self.reengage_delay = self.params.get("BlinkerLateralReengageDelay", return_default=True)
+        read.returned(self.reengage_delay)
 
   def update(self, CS: car.CarState, DT_CTRL: float = 0.01) -> bool:
     if not self.enabled:

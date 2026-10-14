@@ -16,7 +16,13 @@ class LatControlTorqueJerkAware(LatControlTorqueExtBase):
   def __init__(self, lac_torque, CP, CP_SP, CI):
     super().__init__(lac_torque, CP, CP_SP, CI)
     self.params = Params()
-    self._jerk_aware_enabled = self.params.get_bool("LateralJerkTorqueController")
+    policy_capture = getattr(self, "_policy_capture", None)
+    if policy_capture is None:
+      self._jerk_aware_enabled = self.params.get_bool("LateralJerkTorqueController")
+    else:
+      with policy_capture.read("jerkEnable") as read:
+        self._jerk_aware_enabled = self.params.get_bool("LateralJerkTorqueController")
+        read.returned(self._jerk_aware_enabled)
 
   def update_limits(self):
     if not self._jerk_aware_enabled:

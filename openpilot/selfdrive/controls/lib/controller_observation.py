@@ -13,6 +13,8 @@ import threading
 import time
 from collections import deque
 
+from openpilot.selfdrive.controls.lib.controller_policy_observation import MAX_POLICY_BYTES, PolicyCapture, encode_policy, snapshot
+
 MAX_REFS = 24
 MAX_CAN = 64
 MAX_CAN_BYTES = 1024
@@ -36,7 +38,7 @@ SERVICES = ("none", *dict.fromkeys((*CONTROLS_INPUTS, *CARD_INPUTS, "carParams",
                                  "sendcan", "radarTracks", "liveLocationKalman")))
 STAGES = ("loopStart", "updateBegin", "updateEnd", "consumeEnd", "computeBegin", "computeEnd", "paramsRefreshBegin",
           "paramsRefreshEnd", "publishBegin", "publishEnd", "publishFailed", "applyBegin", "applyEnd", "applySkipped",
-          "initializeBegin", "initializeEnd", "startupBegin", "startupEnd")
+          "initializeBegin", "initializeEnd", "startupBegin", "startupEnd", "policy")
 REASONS = ("none", "passive", "notInitialized", "ccNotAlive")
 
 
@@ -87,6 +89,7 @@ class Observer:
     self.loss = False
     self._startup_tokens, self._startup_sources = {}, set()
     self._startup_records = self._startup_jobs = self._startup_reserved_bytes = self._startup_released_bytes = 0
+    self.policy = PolicyCapture(self) if producer == "controls" else None
     if start_worker:
       threading.Thread(target=self._worker, name=f"{producer}_observation", daemon=True).start()
 
@@ -135,7 +138,7 @@ class Observer:
     return tuple(result)
 
   def capture(self, stage, *, sm=None, service="none", event=None, begin_ns=None, apply_clock_ns=None, apply_id=None,
-              reason="none", tx=None, _startup=None):
+              reason="none", tx=None, _startup=None, _policy=None):
     """Copy only bounded clocks/flags/CAN. Never serialize, hash full payloads, send or wait."""
     self.sequence += 1
     try:
@@ -146,6 +149,12 @@ class Observer:
       if now <= self._last_clock:
         faults.append("clockTie" if now == self._last_clock else "clockRegression")
       self._last_clock = now
+      policy = None
+      if _policy is not None:
+        if stage != "policy" or sm is not None or event is not None or tx is not None or _startup is not None:
+          raise ValueError("unknown policy capture")
+        policy = snapshot(_policy, now, faults)
+        _policy["valid"], _policy["complete"] = policy["valid"], policy["complete"]
       startup = None
       if _startup is not None:
         startup = dict(_startup)
@@ -196,6 +205,8 @@ class Observer:
       if not _uint(begin) or begin > now or not _uint(applied_clock) or not _uint(applied_id):
         raise ValueError("unknown source clock")
       size = 256 + 112 * len(refs) + 24 * len(frames) + (0 if raw is None else len(raw)) + (256 if startup else 0)
+      if policy is not None:
+        size = MAX_POLICY_BYTES  # total charge; no additional refs or raw payload allowed
       if (size > MAX_RECORD_CAPTURE_BYTES or self._loop_records >= MAX_LOOP_RECORDS
           or self._loop_bytes + size > MAX_LOOP_CAPTURE_BYTES or len(self._pending) >= self.capacity):
         self.dropped += 1
@@ -218,7 +229,11 @@ class Observer:
       if startup is not None:
         record["startup_reference"] = startup
         _startup["queued"] = True
+      if policy is not None:
+        record["policy"] = policy
       self._pending.append(record)  # sole producer appends; worker only poplefts, no capacity eviction
+      if policy is not None:
+        _policy["_queued"] = True
       return now
     except Exception:
       # Observation failure must not replace a controller exception or alter its values.
@@ -439,6 +454,9 @@ def encode_record(record, log, *, publisher_ns, previous_publications=None):
       previous_publications[record["service"]] = event_ns
   complete = record["capture_complete"] and not faults
   startup = record.get("startup_reference")
+  policy = record.get("policy")
+  if policy is not None:
+    complete = complete and policy["valid"]
   if startup is not None:
     startup = dict(startup)  # metadata only; internal raw job has already been popped in flush_one
     if startup["status"] == "ready" and (not _uint(publisher_ns) or publisher_ns < startup["digest_ready_ns"]):
@@ -475,7 +493,9 @@ def encode_record(record, log, *, publisher_ns, previous_publications=None):
     ref.beginStatus, ref.endStatus, ref.outcome, ref.status = (startup[k] for k in ("begin_status", "end_status", "outcome", "status"))
     ref.byteCount, ref.byteCountKnown = startup["byte_count"], startup["byte_count_known"]
     ref.sha256, ref.digestReadyNs = startup["sha256"], startup["digest_ready_ns"]
+  if policy is not None:
+    encode_policy(target.policyObservation, policy)
   raw = event.to_bytes()
-  if len(raw) > (MAX_STARTUP_WIRE_BYTES if startup is not None else MAX_SERIALIZED_BYTES):
+  if len(raw) > (MAX_POLICY_BYTES if policy is not None else MAX_STARTUP_WIRE_BYTES if startup is not None else MAX_SERIALIZED_BYTES):
     raise ValueError("bounded observer record exceeded wire budget")
   return raw

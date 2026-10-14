@@ -8,5 +8,11 @@ from openpilot.common.params import Params
 
 
 class ModelStateBase:
-  def __init__(self):
-    self.lat_delay = Params().get("LagdValueCache", return_default=True)
+  def __init__(self, *, policy_capture=None):
+    if policy_capture is None:
+      self.lat_delay = Params().get("LagdValueCache", return_default=True)
+    else:
+      with policy_capture.read("delayInitial") as read:
+        self.lat_delay = Params().get("LagdValueCache", return_default=True)
+        read.returned(self.lat_delay)
+      policy_capture.delay_written(self.lat_delay, "constructor")

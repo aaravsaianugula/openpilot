@@ -35,7 +35,8 @@ VERSION = 0
 
 
 class LatControlTorque(LatControl):
-  def __init__(self, CP, CP_SP, CI, dt):
+  def __init__(self, CP, CP_SP, CI, dt, *, policy_capture=None):
+    self._policy_capture = policy_capture
     super().__init__(CP, CP_SP, CI, dt)
     self.torque_params = CP.lateralTuning.torque.as_builder()
     self.torque_from_lateral_accel = CI.torque_from_lateral_accel()
@@ -48,7 +49,11 @@ class LatControlTorque(LatControl):
     self.previous_measurement = 0.0
     self.measurement_rate_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
 
-    self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
+    if policy_capture is None:
+      self.extension = LatControlTorqueExt(self, CP, CP_SP, CI)
+    else:
+      self.extension = LatControlTorqueExt(self, CP, CP_SP, CI, policy_capture=policy_capture.child("v0Extension"))
+      policy_capture.torque_written("constructor", self.torque_params)
 
   def update_torque_parameters(self, latAccelFactor, latAccelOffset, friction):
     self.torque_params.latAccelFactor = latAccelFactor

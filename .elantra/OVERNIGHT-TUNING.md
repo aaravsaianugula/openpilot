@@ -1159,3 +1159,17 @@ ready before the first scheduled tick; hashing contention remains unmeasured. Th
 400/160-byte fixtures and short desktop measurements do not establish comma
 timing, durable logging or driving performance. Exact proof is retained in
 `validation-startup-static-ipc-checkpoint.json`; the prior 14 cases were not rerun.
+
+### Controls policy read and write references
+
+The default-off controls supplement observes the existing 13-key typed reads,
+consumer/selection identity and separate effective torque/delay writes. It adds
+no Params polling, publisher or thread. External learner/model/card-thread reads,
+raw/default origin, full policy and source authentication remain unknown.
+
+Thirty-eight new host cases and 58 affected existing cases passed in separate
+processes, with Ruff and all 115 guards. Actual source-fragment schedules fit
+the unchanged limits: at most 31 constructor and 28 normal-loop records. The
+combined-process duplicate-schema-ID abort is preserved. Exact source, checks
+and review evidence are in `validation-policy-reads-checkpoint.json`. No new
+enabled IPC/runtime test, device activation or deployment has occurred.

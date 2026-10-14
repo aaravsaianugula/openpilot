@@ -53,7 +53,11 @@ class Controls(ControlsExt):
     cloudlog.info("controlsd got CarParams")
 
     # Initialize sunnypilot controlsd extension and base model state
-    ControlsExt.__init__(self, self.CP, self.params)
+    if self.observer is None:
+      ControlsExt.__init__(self, self.CP, self.params)
+    else:
+      with self.observer.policy.group("controlsInit") as group:
+        ControlsExt.__init__(self, self.CP, self.params, policy_capture=group.consumer("controls"))
 
     self.CI = interfaces[self.CP.carFingerprint](self.CP, self.CP_SP)
 
@@ -82,7 +86,12 @@ class Controls(ControlsExt):
     elif self.CP.lateralTuning.which() == 'pid':
       self.LaC = LatControlPID(self.CP, self.CP_SP, self.CI, DT_CTRL)
     elif self.CP.lateralTuning.which() == 'torque':
-      self.LaC = LatControlTorque(self.CP, self.CP_SP, self.CI, DT_CTRL)
+      if self.observer is None:
+        self.LaC = LatControlTorque(self.CP, self.CP_SP, self.CI, DT_CTRL)
+      else:
+        with self.observer.policy.group("stockConstructor") as group:
+          self.LaC = LatControlTorque(self.CP, self.CP_SP, self.CI, DT_CTRL,
+                                     policy_capture=group.consumer("stockTorque", self._policy_capture))
 
     self.LaC = ControlsExt.initialize_lateral_control(self, self.LaC, self.CI, DT_CTRL)
 
@@ -118,6 +127,12 @@ class Controls(ControlsExt):
                                            torque_params.frictionCoefficientFiltered)
 
         self.LaC.extension.update_limits()
+        policy_capture = getattr(self.LaC, "_policy_capture", None)
+        if policy_capture is not None:
+          with policy_capture.group("learnerWrite"):
+            policy_capture.torque_written("learner", self.LaC.torque_params,
+                                          source_ns=self.sm.logMonoTime['lateralTorqueParameters'],
+                                          source_frame=self.sm.recv_frame['lateralTorqueParameters'])
 
       self.LaC.extension.update_model_v2(self.sm['modelV2'])
 
