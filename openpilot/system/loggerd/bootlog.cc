@@ -48,6 +48,8 @@ static kj::Array<capnp::word> build_boot_log() {
 
 int main(int argc, char** argv) {
   const std::string id = logger_get_identifier("BootCount");
+  LoggerReferenceContext boot_reference;
+  boot_reference.enabled = logger_reference_observer_enabled();
   const std::string path = Path::log_root() + "/boot/" + id + ".zst";
   LOGW("bootlog to %s", path.c_str());
 
@@ -57,7 +59,11 @@ int main(int argc, char** argv) {
 
   ZstdFileWriter file(path, LOG_COMPRESSION_LEVEL);
   // Write initdata
-  file.write(logger_build_init_data().asBytes());
+  if (!boot_reference.enabled) {
+    file.write(logger_build_init_data().asBytes());
+  } else {
+    file.write(logger_build_init_data(false, &boot_reference, &id).asBytes());
+  }
   // Write bootlog
   file.write(build_boot_log().asBytes());
 

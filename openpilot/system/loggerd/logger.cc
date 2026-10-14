@@ -6,6 +6,7 @@
 #include <iostream>
 #include <sstream>
 #include <random>
+#include <limits>
 
 #include "common/params.h"
 #include "common/swaglog.h"
@@ -13,8 +14,143 @@
 
 #include "sunnypilot/common/version.h"
 
+// Logger-reference supplement. No reads/hashes/publishers; only bounded built values.
+bool logger_reference_observer_enabled() {
+  const char* flag = getenv("ELANTRA_LOGGER_REFERENCE_OBSERVER");
+  return flag != nullptr && flag[0] == '1' && flag[1] == '\0';
+}
+
+static bool logger_hex(char c) {
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+static bool logger_label_valid(const std::string& label) {
+  if (label.size() != 20) return false;
+  for (size_t i = 0; i < 20; ++i) {
+    if ((i == 8 || i == 9) ? label[i] != '-' : !logger_hex(label[i])) return false;
+  }
+  return true;
+}
+
+static bool logger_git_claim_valid(capnp::Text::Reader value, bool allow_newline = false) {
+  if (value.size() != 40 && !(allow_newline && value.size() == 41 && value[40] == '\n')) return false;
+  for (size_t i = 0; i < 40; ++i) if (!logger_hex(value[i])) return false;
+  return true;
+}
+
+static bool logger_version_claim_valid(capnp::Text::Reader value) {
+  if (value.size() == 0 || value.size() > 64) return false;
+  for (char c : value) {
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+          c == '.' || c == '_' || c == '-' || c == '+' || c == ' ' || c == '(' || c == ')')) return false;
+  }
+  return true;
+}
+
+static void logger_reference_error(LoggerReferenceContext* reference) {
+  reference->loss = true;
+  if (reference->errors < std::numeric_limits<uint64_t>::max()) ++reference->errors;
+}
+
+static void logger_attach_reference(MessageBuilder& msg, LoggerReferenceContext* reference,
+                                    const std::string* owned_label, const std::map<std::string, std::string>* params_map,
+                                    bool route_log, int part, uint64_t read_begin, uint64_t read_end) {
+  if (reference == nullptr || !reference->enabled) return;
+  try {
+    auto event = msg.getRoot<cereal::Event>();  // original Event; never initEvent twice
+    const bool init_record = params_map != nullptr;
+    auto ref = init_record ? event.getInitData().initLoggerReference() : event.getSentinel().initLoggerReference();
+    ref.setPresent(false);  // final commit marker; partial observer encoding remains unavailable
+    ref.setVersion(1);
+    const bool label_known = owned_label != nullptr && logger_label_valid(*owned_label);
+    if (label_known) {
+      if (init_record && !route_log) {
+        ref.setOwnBootlogLabel(*owned_label);
+        ref.setOwnBootlogLabelKnown(true);
+      } else {
+        ref.setRouteLabel(*owned_label);
+        ref.setRouteLabelKnown(true);
+      }
+    } else {
+      reference->incomplete = true;
+    }
+    ref.setInitConstructionEventNs(reference->init_event_ns);
+    ref.setInitConstructionKnown(reference->init_event_known);
+    if (init_record) {
+      ref.setKind(route_log ? cereal::LoggerReferenceV1::Kind::ROUTE_INIT : cereal::LoggerReferenceV1::Kind::BOOT_INIT);
+      auto native = event.getInitData().asReader();
+      ref.setWallTimeNanos(native.getWallTimeNanos());  // REALTIME; never compare to BOOTTIME
+      const bool bracket_known = reference->init_event_known && reference->init_event_ns < read_begin && read_begin < read_end;
+      reference->read_end_ns = read_end;
+      reference->read_end_known = bracket_known;
+      ref.setReadAllBeginNs(read_begin);
+      ref.setReadAllEndNs(read_end);
+      ref.setReadAllBracketKnown(bracket_known);
+      if (!bracket_known) reference->incomplete = true;
+      if (route_log) {
+        const auto cached = params_map->find("CurrentBootlog");  // returned map only; never insert or reread
+        ref.setCachedBootlogMapEntryPresent(cached != params_map->end());
+        const bool cached_known = cached != params_map->end() && logger_label_valid(cached->second);
+        ref.setCachedBootlogLabelKnown(cached_known);
+        if (cached_known) ref.setCachedBootlogLabel(cached->second);
+        else reference->incomplete = true;  // cached label may be missing/stale; never actual boot identity
+      }
+      auto git = native.getGitCommit();
+      const bool git_known = logger_git_claim_valid(git);
+      if (git_known) ref.setGitCommitClaim(git);
+      ref.setGitCommitClaimKnown(git_known);
+      auto source_git = native.getGitSrcCommit();
+      const bool source_known = logger_git_claim_valid(source_git, true);
+      if (source_known) ref.setGitSrcCommitClaim(source_git);
+      ref.setGitSrcCommitClaimKnown(source_known);
+      auto version = native.getVersion();
+      const bool version_known = logger_version_claim_valid(version);
+      if (version_known) ref.setCompiledVersionClaim(version);
+      ref.setCompiledVersionClaimKnown(version_known);
+      ref.setDirtyEnvironmentClaim(native.getDirty());
+      ref.setDirtyEnvironmentClaimKnown(true);
+      if (!git_known || !source_known || !version_known) reference->incomplete = true;
+    } else {
+      ref.setKind(cereal::LoggerReferenceV1::Kind::SEGMENT_BOUNDARY);
+      const uint64_t now = event.getLogMonoTime();
+      const bool clock_known = reference->init_event_known && reference->read_end_known &&
+                               now > reference->read_end_ns && now > reference->last_boundary_ns;
+      ref.setBoundaryEventNs(now);
+      ref.setBoundaryClockKnown(clock_known);
+      ref.setSegment(part >= 0 ? part : 0);
+      ref.setSegmentKnown(part >= 0);
+      ref.setSentinelType(event.getSentinel().getType());
+      const bool sequence_known = reference->boundaries < std::numeric_limits<uint64_t>::max();
+      if (sequence_known) ++reference->boundaries;
+      else logger_reference_error(reference);
+      ref.setBoundarySequence(reference->boundaries);
+      ref.setBoundarySequenceKnown(sequence_known);
+      reference->last_boundary_ns = now;
+      if (!clock_known || part < 0) reference->incomplete = true;
+    }
+    ref.setInitReferencePresent(init_record || reference->init_reference_present);
+    ref.setObserverLoss(reference->loss);
+    ref.setObserverErrors(reference->errors);
+    ref.setReferenceCaptureComplete(!reference->loss && !reference->incomplete);
+    ref.setKernelBootKnown(false);
+    ref.setSourceAuthenticated(false);
+    ref.setLoadedBytesKnown(false);
+    ref.setPolicyComplete(false);
+    ref.setPredictiveEligible(false);
+    ref.setDurableAck(false);
+    ref.setClockDomainsVerified(false);
+    ref.setParamsAtomic(false);
+    ref.setRawFilePresenceKnown(false);
+    ref.setIndividualReadClockKnown(false);
+    ref.setPresent(true);
+    if (init_record) reference->init_reference_present = true;
+  } catch (...) {
+    logger_reference_error(reference);  // observer-only failure; original native exceptions/calls stay outside this catch
+  }
+}
+
 // ***** log metadata *****
-kj::Array<capnp::word> logger_build_init_data(bool route_log) {
+kj::Array<capnp::word> logger_build_init_data(bool route_log, LoggerReferenceContext* reference, const std::string* owned_label) {
   uint64_t wall_time = nanos_since_epoch();
 
   MessageBuilder msg;
@@ -43,7 +179,10 @@ kj::Array<capnp::word> logger_build_init_data(bool route_log) {
 
   // log params
   Params params(util::getenv("PARAMS_COPY_PATH", ""));
+  uint64_t reference_read_begin = 0, reference_read_end = 0;
+  if (reference != nullptr && reference->enabled) reference_read_begin = nanos_since_boot();
   std::map<std::string, std::string> params_map = params.readAll();
+  if (reference != nullptr && reference->enabled) reference_read_end = nanos_since_boot();
 
   init.setGitCommit(params_map["GitCommit"]);
   init.setGitCommitDate(params_map["GitCommitDate"]);
@@ -92,6 +231,11 @@ kj::Array<capnp::word> logger_build_init_data(bool route_log) {
     i++;
   }
 
+  if (reference != nullptr && reference->enabled) {
+    reference->init_event_ns = msg.getRoot<cereal::Event>().getLogMonoTime();
+    reference->init_event_known = reference->init_event_ns > 0;
+    logger_attach_reference(msg, reference, owned_label, &params_map, route_log, -1, reference_read_begin, reference_read_end);
+  }
   return capnp::messageToFlatArray(msg);
 }
 
@@ -160,13 +304,21 @@ static void log_sentinel(LoggerState *log, SentinelType type, int exit_signal = 
   auto sen = msg.initEvent().initSentinel();
   sen.setType(type);
   sen.setSignal(exit_signal);
+  if (auto* reference = log->referenceContext()) {
+    logger_attach_reference(msg, reference, &log->routeName(), nullptr, true, log->segment(), 0, 0);
+  }
   log->write(msg.toBytes(), true);
 }
 
 LoggerState::LoggerState(const std::string &log_root) {
   route_name = logger_get_identifier("RouteCount");
   route_path = log_root + "/" + route_name;
-  init_data = logger_build_init_data(true);
+  reference_context.enabled = logger_reference_observer_enabled();
+  if (!reference_context.enabled) {
+    init_data = logger_build_init_data(true);
+  } else {
+    init_data = logger_build_init_data(true, &reference_context, &route_name);
+  }
 }
 
 LoggerState::~LoggerState() {

@@ -1235,3 +1235,28 @@ Successful unpickling is not EOF proof; consumed/full asset digests, authenticat
 source, exposure origin and complete policy/predictive eligibility remain unknown
 or false. Enabled overhead and delivery are unverified; activation/deployment
 remain gated.
+
+### Logger reference checkpoint, October 14
+
+Default-off references on existing InitData/Sentinel preserve owner-built route
+and bootlog labels, cached init construction time and fresh boundary clocks.
+Cached CurrentBootlog and declared Git/version/dirty values remain unauthenticated
+claims. There are no extra Params/source/asset reads, hashes, publishers, services
+or threads. Independent source/clock/privacy review was clean.
+
+Thirteen host contracts, two affected schema cases, Ruff and all 115 overlay
+guards passed. One final isolated x86 C++ attempt passed compilation, three syntax
+units and all twelve synthetic serializer groups. Earlier missing-header and
+fixture Text::Builder comparison failures remain preserved. Only two fixture reader
+conversions changed; the eight successful schemas were reused without generation.
+A pinned public header supplied syntax declarations only, with no installation,
+Zstandard library run or target-device SDK identity claim. Source/provider/compiler
+and generated-file equality and owned-process cleanup were proved.
+
+Host schema measurements were 376 bytes maximum added envelope and 8 bytes added
+even off for each InitData/Sentinel. C++ checked the actual 1 KiB envelope bound.
+See `validation-logger-route-boot-checkpoint.json` for commands/exits/bindings.
+Production logger/Params/Hardware/IPC/device execution, enabled overhead, durable
+delivery, authenticated source/kernel boot and clock-domain equivalence remain
+unverified. Policy/predictive eligibility and full tune selection stay false/None;
+no activation, deployment or physical improvement is claimed.

@@ -720,3 +720,32 @@ Successful unpickling is not EOF proof; consumed/full asset digests, authenticat
 source, exposure origin and complete policy/predictive eligibility remain unknown
 or false. Enabled overhead and delivery are unverified; activation/deployment
 remain gated.
+
+### Logger-owned route and boot references
+
+A default-off logger supplement now adds bounded references to existing InitData
+and Sentinel records. It preserves the owner-built route/bootlog labels and
+distinguishes the cached InitData construction clock from each fresh segment
+boundary. Cached CurrentBootlog, declared Git/version strings and dirty state
+remain claims; they do not authenticate loaded source or identify a kernel boot.
+No extra Params/source/asset reads, hashes, publisher, service or thread were added.
+
+Thirteen host contracts, two affected schema cases, scoped Ruff and all 115 overlay
+guards passed. Root and independent clock/privacy/source reviews were clean.
+Actual isolated x86 C++ compilation, three syntax units and twelve synthetic
+serializer groups passed. The first attempt stopped on a missing development
+header; a later fixture-only Text::Builder comparison failed compilation. Both
+failures are preserved. The final fixture corrected two reader conversions and
+reused the eight successful generated schemas without regeneration. Syntax used
+an isolated pinned public Zstandard header, with no installation or library run.
+This does not establish target-device SDK equivalence.
+
+The host schema probe measured a 376-byte maximum added envelope and an 8-byte
+default-off pointer increase for each InitData/Sentinel record. C++ cases checked
+the actual added envelope against the 1 KiB bound. Source/provider/compiler and
+reused-schema hashes stayed equal; all owned test processes are gone. Exact
+commands, exits and failures are in `validation-logger-route-boot-checkpoint.json`.
+No production logger, Params, Hardware, IPC or device execution occurred.
+Authenticated source, kernel boot, clock-domain equivalence, complete policy,
+predictive eligibility and durable recording remain false or unknown. No
+activation/deployment, current plant admission or controller tune follows.

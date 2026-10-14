@@ -147,6 +147,26 @@ enum LongitudinalPersonality {
   relaxed @2;
 }
 
+# Logger-owned labels and built metadata claims only. No kernel/source/loaded-byte identity.
+struct LoggerReferenceV1 {
+  present @0 :Bool; version @1 :UInt16; kind @2 :Kind;
+  routeLabel @3 :Text; routeLabelKnown @4 :Bool;
+  ownBootlogLabel @5 :Text; ownBootlogLabelKnown @6 :Bool;
+  cachedBootlogLabel @7 :Text; cachedBootlogLabelKnown @8 :Bool; cachedBootlogMapEntryPresent @9 :Bool;
+  initConstructionEventNs @10 :UInt64; initConstructionKnown @11 :Bool; wallTimeNanos @12 :UInt64;
+  readAllBeginNs @13 :UInt64; readAllEndNs @14 :UInt64; readAllBracketKnown @15 :Bool;
+  gitCommitClaim @16 :Text; gitCommitClaimKnown @17 :Bool; gitSrcCommitClaim @18 :Text; gitSrcCommitClaimKnown @19 :Bool;
+  compiledVersionClaim @20 :Text; compiledVersionClaimKnown @21 :Bool;
+  dirtyEnvironmentClaim @22 :Bool; dirtyEnvironmentClaimKnown @23 :Bool;
+  boundaryEventNs @24 :UInt64; boundaryClockKnown @25 :Bool; segment @26 :Int32; segmentKnown @27 :Bool;
+  sentinelType @28 :Sentinel.SentinelType; boundarySequence @29 :UInt64; boundarySequenceKnown @30 :Bool;
+  initReferencePresent @31 :Bool; observerLoss @32 :Bool; observerErrors @33 :UInt64; referenceCaptureComplete @34 :Bool;
+  kernelBootKnown @35 :Bool; sourceAuthenticated @36 :Bool; loadedBytesKnown @37 :Bool; policyComplete @38 :Bool;
+  predictiveEligible @39 :Bool; durableAck @40 :Bool; clockDomainsVerified @41 :Bool;
+  paramsAtomic @42 :Bool; rawFilePresenceKnown @43 :Bool; individualReadClockKnown @44 :Bool;
+  enum Kind { routeInit @0; bootInit @1; segmentBoundary @2; }
+}
+
 struct InitData {
   kernelArgs @0 :List(Text);
   kernelVersion @15 :Text;
@@ -177,6 +197,8 @@ struct InitData {
   commands @19 :Map(Text, Data);
 
   wallTimeNanos @20 :UInt64;
+  # Optional pointer adds structural bytes even when observation is disabled.
+  loggerReference @25 :LoggerReferenceV1;
 
   enum DeviceType {
     unknown @0;
@@ -2415,6 +2437,7 @@ struct Sentinel {
   }
   type @0 :SentinelType;
   signal @1 :Int32;
+  loggerReference @2 :LoggerReferenceV1;
 }
 
 struct UIDebug {
