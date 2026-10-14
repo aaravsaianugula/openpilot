@@ -26,6 +26,7 @@ from openpilot.cereal.visionipc import VisionStreamType
 from msgq.visionipc import VisionIpcClient, VisionBuf
 from opendbc.car.car_helpers import get_demo_car_params
 from openpilot.common.file_chunker import open_file_chunked
+from openpilot.selfdrive.modeld.model_asset_observation import create_model_asset_capture
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
 from openpilot.common.filter_simple import FirstOrderFilter
@@ -65,8 +66,10 @@ def _pkl_exists(path):
   return os.path.exists(path) or os.path.exists(get_manifest_path(path))
 
 
-def _find_driving_pkl(bundle):
+def _find_driving_pkl(bundle, *, asset_reference=None):
   if (override := os.environ.get('COMBINED_MODEL_PKL')) and _pkl_exists(override):
+    if asset_reference is not None:
+      asset_reference.origin("envOverride")
     return override
   if bundle is None or not bundle.models:
     return None
@@ -76,6 +79,8 @@ def _find_driving_pkl(bundle):
   pkl_name = bundle.models[0].artifact.fileName
   pkl_path = os.path.join(model_root, pkl_name)
   if _pkl_exists(pkl_path):
+    if asset_reference is not None:
+      asset_reference.origin("bundleLookup")
     return pkl_path
   return None
 
@@ -94,8 +99,11 @@ class ModelState(ModelStateBase):
   inputs: dict[str, np.ndarray]
   prev_desire: np.ndarray
 
-  def __init__(self, cam_w: int, cam_h: int, chestnut: bool = False):
+  def __init__(self, cam_w: int, cam_h: int, chestnut: bool = False, *, asset_reference=None):
     ModelStateBase.__init__(self)
+    self._model_asset_reference = asset_reference
+    if asset_reference is not None:
+      asset_reference.begin()
 
     env_pkl = os.environ.get('COMBINED_MODEL_PKL')
     if env_pkl and os.path.exists(env_pkl):
@@ -111,9 +119,14 @@ class ModelState(ModelStateBase):
     self.PLANPLUS_CONTROL: float = 1.0
     self.chestnut = chestnut
 
-    pkl_path = _find_driving_pkl(model_bundle)
+    if asset_reference is None:
+      pkl_path = _find_driving_pkl(model_bundle)
+    else:
+      pkl_path = _find_driving_pkl(model_bundle, asset_reference=asset_reference)
     assert pkl_path is not None, f"No driving pkl found for {'chestnut' if chestnut else 'small model'} — all models must be compiled with compile_modeld.py"
     self._init_combined(pkl_path, cam_w, cam_h, model_bundle)
+    if asset_reference is not None:
+      asset_reference.loaded(self, cam_w, cam_h, self._combined_model_type)
 
   def _init_combined(self, pkl_path, cam_w, cam_h, bundle):
     cloudlog.warning(f"loading combined pkl: {pkl_path}")
@@ -359,12 +372,18 @@ def main(demo=False):
   st = time.monotonic()
 
   model = None
+  asset_observation = create_model_asset_capture("tinygrad")
   if CHESTNUT:
     big_model = None
+    if asset_observation is not None:
+      big_asset_reference = asset_observation.reserve(True)
     def load_big():
       nonlocal big_model
       try:
-        m = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, chestnut=True)
+        if asset_observation is None:
+          m = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, chestnut=True)
+        else:
+          m = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, chestnut=True, asset_reference=big_asset_reference)
         m.warmup()
         big_model = m
       except Exception:
@@ -374,16 +393,24 @@ def main(demo=False):
     loader.join(BIG_MODEL_TIMEOUT)
     model = big_model
     if model is None:
+      if asset_observation is not None:
+        asset_observation.unavailable(big_asset_reference)
       params.put_bool("ChestnutModelError", True)
     params.put_bool("ChestnutActive", model is not None)
     if model is not None:
       params.remove("ChestnutModelError")
 
-  small_model = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, chestnut=False) if model is None or CHESTNUT else None
+  if asset_observation is None:
+    small_model = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, chestnut=False) if model is None or CHESTNUT else None
+  else:
+    small_model = ModelState(cam_w=vipc_client_main.width, cam_h=vipc_client_main.height, chestnut=False,
+                             asset_reference=asset_observation.reserve(False)) if model is None or CHESTNUT else None
   if model is None:
     model = small_model
   params.put_bool("ChestnutLoading", False)
   assert model is not None
+  if asset_observation is not None:
+    asset_observation.activate(model, small_model)
   cloudlog.warning(f"models loaded in {time.monotonic() - st:.1f}s, modeld starting")
 
   # messaging
@@ -511,6 +538,8 @@ def main(demo=False):
     if 'action_t' in model.numpy_inputs:
       inputs['action_t'] = np.array([lat_action_t, long_action_t], dtype=np.float32)
 
+    if asset_observation is not None:
+      asset_observation.attempt(model)
     mt1 = time.perf_counter()
     try:
       send_chestnut = (chestnut_state is not None and
@@ -524,6 +553,8 @@ def main(demo=False):
       params.put_bool("ChestnutActive", False)
       assert small_model is not None
       model = small_model
+      if asset_observation is not None:
+        asset_observation.fallback(model)
       if chestnut_state is not None:
         chestnut_state.big = False
       run_count = 0
@@ -558,10 +589,22 @@ def main(demo=False):
       drivingdata_send.drivingModelData.meta.laneChangeDirection = DH.lane_change_direction
 
       fill_pose_msg(posenet_send, model_output, meta_main.frame_id, vipc_dropped_frames, meta_main.timestamp_eof, live_calib_seen)
-      pm.send('modelV2', modelv2_send)
-      pm.send('drivingModelData', drivingdata_send)
-      pm.send('cameraOdometry', posenet_send)
-      pm.send('modelDataV2SP', mdv2sp_send)
+      if asset_observation is None:
+        pm.send('modelV2', modelv2_send)
+        pm.send('drivingModelData', drivingdata_send)
+        pm.send('cameraOdometry', posenet_send)
+        pm.send('modelDataV2SP', mdv2sp_send)
+      else:
+        staged_asset = asset_observation.stage(mdv2sp_send, modelv2_send, drivingdata_send, model)
+        try:
+          pm.send('modelV2', modelv2_send)
+          pm.send('drivingModelData', drivingdata_send)
+          pm.send('cameraOdometry', posenet_send)
+          pm.send('modelDataV2SP', mdv2sp_send)
+        except BaseException:
+          asset_observation.send_failed(staged_asset)
+          raise
+        asset_observation.retire(staged_asset)  # local final-send return, not deliveryACK
     last_vipc_frame_id = meta_main.frame_id
 
 if __name__ == "__main__":

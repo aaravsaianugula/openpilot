@@ -31,6 +31,7 @@ from openpilot.selfdrive.modeld.parse_model_outputs import Parser
 from openpilot.selfdrive.modeld.compile_modeld import make_input_queues, nv12_copy_size, MODELD_INPUTS
 from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, fill_driving_model_data, fill_pose_msg, PublishState
 from openpilot.common.file_chunker import open_file_chunked
+from openpilot.selfdrive.modeld.model_asset_observation import create_model_asset_capture
 from openpilot.common.hardware.usb import CHESTNUT_USB_IDS
 from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
 from openpilot.selfdrive.modeld.helpers import chestnut_present, chestnut_compiled, chestnut_ready, modeld_pkl_path, load_oob
@@ -178,8 +179,12 @@ class FrameMeta:
 class ModelState(ModelStateBase):
   prev_desire: np.ndarray  # for tracking the rising edge of the pulse
 
-  def __init__(self, cam_w: int, cam_h: int, chestnut: bool):
+  def __init__(self, cam_w: int, cam_h: int, chestnut: bool, *, asset_reference=None):
     ModelStateBase.__init__(self)
+    self._model_asset_reference = asset_reference
+    if asset_reference is not None:
+      asset_reference.begin()
+      asset_reference.origin("stockBuiltin")
     jits = load_oob(open_file_chunked(modeld_pkl_path(chestnut)))
     input_devices = jits['input_devices']
     self.model_device = input_devices['model']
@@ -197,6 +202,8 @@ class ModelState(ModelStateBase):
       self.input_shapes, self.frame_skip, device=self.model_device, frame_copy_size=self.frame_copy_size)
     self.parser = Parser()
     self.run_model = jits['run_model'][(cam_w,cam_h)]
+    if asset_reference is not None:
+      asset_reference.loaded(self, cam_w, cam_h, "stock")
 
   def slice_outputs(self, model_outputs: np.ndarray, output_slices: dict[str, slice]) -> dict[str, np.ndarray]:
     parsed_model_outputs = {k: model_outputs[np.newaxis, v] for k,v in output_slices.items()}
@@ -290,12 +297,18 @@ def main(demo=False):
   st = time.monotonic()
   cloudlog.warning("loading model")
   model = None
+  asset_observation = create_model_asset_capture("stock")
   if CHESTNUT:
     big_model = None
+    if asset_observation is not None:
+      big_asset_reference = asset_observation.reserve(True)
     def load_big():
       nonlocal big_model
       try:
-        m = ModelState(vipc_client_main.width, vipc_client_main.height, True)
+        if asset_observation is None:
+          m = ModelState(vipc_client_main.width, vipc_client_main.height, True)
+        else:
+          m = ModelState(vipc_client_main.width, vipc_client_main.height, True, asset_reference=big_asset_reference)
         m.warmup()
         big_model = m
       except Exception:
@@ -305,16 +318,24 @@ def main(demo=False):
     loader.join(BIG_MODEL_TIMEOUT)
     model = big_model
     if model is None:
+      if asset_observation is not None:
+        asset_observation.unavailable(big_asset_reference)
       params.put_bool("ChestnutModelError", True)
     params.put_bool("ChestnutActive", model is not None)
     if model is not None:
       params.remove("ChestnutModelError")
 
-  small_model = ModelState(vipc_client_main.width, vipc_client_main.height, False) if model is None or CHESTNUT else None
+  if asset_observation is None:
+    small_model = ModelState(vipc_client_main.width, vipc_client_main.height, False) if model is None or CHESTNUT else None
+  else:
+    small_model = ModelState(vipc_client_main.width, vipc_client_main.height, False,
+                             asset_reference=asset_observation.reserve(False)) if model is None or CHESTNUT else None
   if model is None:
     model = small_model
   params.put_bool("ChestnutLoading", False)
   assert model is not None
+  if asset_observation is not None:
+    asset_observation.activate(model, small_model)
   cloudlog.warning(f"models loaded in {time.monotonic() - st:.1f}s, modeld starting")
 
   # messaging
@@ -432,6 +453,8 @@ def main(demo=False):
       'action_t': np.array([lat_action_t, long_action_t], dtype=np.float32),
     }
 
+    if asset_observation is not None:
+      asset_observation.attempt(model)
     mt1 = time.perf_counter()
     try:
       send_chestnut = (chestnut_state is not None and
@@ -446,6 +469,8 @@ def main(demo=False):
       params.put_bool("ChestnutActive", False)
       assert small_model is not None
       model = small_model
+      if asset_observation is not None:
+        asset_observation.fallback(model)
       if chestnut_state is not None:
         chestnut_state.big = False
       run_count = 0
@@ -479,10 +504,22 @@ def main(demo=False):
 
       fill_driving_model_data(drivingdata_send, modelv2_send)
       fill_pose_msg(posenet_send, model_output, meta_main.frame_id, vipc_dropped_frames, meta_main.timestamp_eof, extrinsics_calibration_seen)
-      pm.send('modelV2', modelv2_send)
-      pm.send('drivingModelData', drivingdata_send)
-      pm.send('cameraOdometry', posenet_send)
-      pm.send('modelDataV2SP', mdv2sp_send)
+      if asset_observation is None:
+        pm.send('modelV2', modelv2_send)
+        pm.send('drivingModelData', drivingdata_send)
+        pm.send('cameraOdometry', posenet_send)
+        pm.send('modelDataV2SP', mdv2sp_send)
+      else:
+        staged_asset = asset_observation.stage(mdv2sp_send, modelv2_send, drivingdata_send, model)
+        try:
+          pm.send('modelV2', modelv2_send)
+          pm.send('drivingModelData', drivingdata_send)
+          pm.send('cameraOdometry', posenet_send)
+          pm.send('modelDataV2SP', mdv2sp_send)
+        except BaseException:
+          asset_observation.send_failed(staged_asset)
+          raise
+        asset_observation.retire(staged_asset)  # local final-send return, not deliveryACK
     last_vipc_frame_id = meta_main.frame_id
 
 if __name__ == "__main__":

@@ -462,6 +462,43 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
   laneTurnDirection @0 :TurnDirection;
   leftLaneChangeEdgeBlock @1 :Bool;
   rightLaneChangeEdgeBlock @2 :Bool;
+  # Default-off instance references only; no compiled-byte/source authentication.
+  modelAssetReference @3 :ModelAssetReferenceV1;
+
+  struct ModelAssetReferenceV1 {
+    present @0 :Bool; processEpoch @1 :Data; runner @2 :Runner;
+    activeInstanceId @3 :UInt16; attemptedInstanceId @4 :UInt16;
+    attemptSequence @5 :UInt64; publicationAttemptId @6 :UInt64;
+    appendNs @7 :UInt64; appendKnown @8 :Bool;
+    modelEventNs @9 :UInt64; drivingEventNs @10 :UInt64; spEventNs @11 :UInt64;
+    modelEventValid @12 :Bool; drivingEventValid @13 :Bool; spEventValid @14 :Bool;
+    modelFrameId @15 :UInt32; modelFrameIdExtra @16 :UInt32; modelTimestampEof @17 :UInt64;
+    referenceAttempts @18 :UInt64; dropped @19 :UInt64; errors @20 :UInt64; epochLoss @21 :Bool;
+    streamLayout @22 :Unknown; consumedDigest @23 :Unknown; fullAssetDigest @24 :Unknown;
+    fullAssetKnown @25 :Bool; sourceAuthenticated @26 :Bool; policyComplete @27 :Bool; predictiveEligible @28 :Bool;
+    bootIdentityKnown @29 :Bool; clockDomainsVerified @30 :Bool; exposureOriginVerified @31 :Bool;
+    references @32 :List(Reference); referenceCaptureComplete @33 :Bool;
+    # Copied from drivingModelData itself; no driving EOF or borrowed model-frame identity.
+    drivingFrameId @34 :UInt32; drivingFrameIdExtra @35 :UInt32;
+    enum Runner { stock @0; tinygrad @1; }
+    enum Unknown { unknown @0; }
+    struct Reference {
+      sequence @0 :UInt64; kind @1 :Kind; fromInstanceId @2 :UInt16; toInstanceId @3 :UInt16;
+      failedAttemptId @4 :UInt64; observationNs @5 :UInt64; clockKnown @6 :Bool; valid @7 :Bool;
+      # Begin is after ModelStateBase init; end is constructor completion, NOT warmup/handoff.
+      selectionBeginNs @8 :UInt64; constructorEndNs @9 :UInt64; constructorClockKnown @10 :Bool;
+      origin @11 :Origin; chestnut @12 :Bool; roleKnown @13 :Bool;
+      # Actual processing metadata from selected bundle; not compiled-asset generation.
+      declaredGeneration @14 :UInt32; declaredGenerationKnown @15 :Bool;
+      camWidth @16 :UInt16; camHeight @17 :UInt16; geometryKnown @18 :Bool;
+      mode @19 :Mode; device @20 :Device;
+      latSmoothSeconds @21 :Float64; latSmoothKnown @22 :Bool; longSmoothSeconds @23 :Float64; longSmoothKnown @24 :Bool;
+      enum Kind { load @0; initialSelection @1; runtimeFallback @2; bigUnavailable @3; }
+      enum Origin { unknown @0; envOverride @1; bundleLookup @2; stockBuiltin @3; }
+      enum Mode { unknown @0; stock @1; supercombo @2; split @3; multiPolicy @4; }
+      enum Device { unknown @0; cpu @1; qcom @2; amd @3; }
+    }
+  }
 
   enum TurnDirection {
     none @0;

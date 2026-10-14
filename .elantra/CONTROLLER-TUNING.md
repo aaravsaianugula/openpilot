@@ -699,11 +699,24 @@ its namespace was later observed absent; removal timing/cause is unknown, with
 no namespace cleanup by us. Source/input hashes and the original failure are
 preserved; deployment and car timing remain unverified.
 
-A source-only active-model reference proposal is now available under
-`recent-clips/observer-model-asset-reference-proposal-v1/proposal.json`. It separates
-actual loaded instances, activation and fallback from declared bundle metadata.
-A manifest-only environment override can differ from the declared bundle. Successful
-unpickling does not prove complete stream/EOF identity. Reference-only default-off source preparation is now approved; no model-asset
-observation runtime or byte hashing has executed. Same-reader hashing, extra
-asset reads and the proposed startup cost are outside that preparation approval.
-The compiled-byte identity contract remains unknown.
+### Model load, activation and fallback references
+
+A default-off reference supplement now attaches a bounded header to the existing
+modelDataV2SP output. It distinguishes the actual attempted and active instances,
+load origin and fallback from declared bundle generation. Late background completion
+cannot activate a model or relabel earlier output. Model and driving Event/frame
+identities are recorded independently; no driving EOF is invented. The original
+load, warmup, run and send operations and disabled native ASTs are preserved.
+
+Twenty-eight new host cases and six affected existing schema/startup cases passed,
+with Ruff and all 115 overlay guards. Root and scoped independent source reviews
+were clean. Separate schema processes measured a 488-byte maximum four-reference
+header and an 8-byte default-off structural increase. Exact commands, first-red
+failures and source bindings are in `validation-model-asset-reference-checkpoint.json`.
+
+No model, weights, Params, IPC or device runtime executed for this supplement.
+It adds no publisher, thread, polling, file probe or compiled-stream hashing.
+Successful unpickling is not EOF proof; consumed/full asset digests, authenticated
+source, exposure origin and complete policy/predictive eligibility remain unknown
+or false. Enabled overhead and delivery are unverified; activation/deployment
+remain gated.
