@@ -108,6 +108,7 @@ OVERLAY_ADDED = [
     "openpilot/sunnypilot/models/elantra_catalog.py",
     "openpilot/selfdrive/controls/lib/controller_observation.py",
     "openpilot/selfdrive/controls/lib/controller_policy_observation.py",
+    "openpilot/selfdrive/controls/lib/card_async_policy_observation.py",
     "openpilot/sunnypilot/selfdrive/locationd/torqued_policy_observation.py",
     "openpilot/selfdrive/modeld/model_asset_observation.py",
     "openpilot/selfdrive/modeld/model_delay_observation.py",

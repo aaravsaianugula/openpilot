@@ -132,7 +132,13 @@ class Car:
     set_car_specific_params(self.CP, self.CP_SP, self.params)
 
     # Dynamic Experimental Control
-    self.dynamic_experimental_control = self.params.get_bool("DynamicExperimentalControl")
+    if self.observer is None:
+      self.dynamic_experimental_control = self.params.get_bool("DynamicExperimentalControl")
+    else:
+      with self.observer.card_async.read("dynamicInitial") as policy_read:
+        policy_value = policy_read.returned(self.params.get_bool("DynamicExperimentalControl"))
+        self.dynamic_experimental_control = policy_value
+        policy_read.assigned(policy_value)
 
     openpilot_enabled_toggle = self.params.get_bool("OpenpilotEnabledToggle")
     controller_available = self.CI.CC is not None and openpilot_enabled_toggle and not self.CP.dashcamOnly
@@ -205,8 +211,19 @@ class Car:
 
     self.v_cruise_helper = VCruiseHelper(self.CP, self.CP_SP)
 
-    self.is_metric = self.params.get_bool("IsMetric")
-    self.experimental_mode = self.params.get_bool("ExperimentalMode")
+    if self.observer is None:
+      self.is_metric = self.params.get_bool("IsMetric")
+      self.experimental_mode = self.params.get_bool("ExperimentalMode")
+    else:
+      with self.observer.card_async.read("metricInitial") as policy_read:
+        policy_value = policy_read.returned(self.params.get_bool("IsMetric"))
+        self.is_metric = policy_value
+        policy_read.assigned(policy_value)
+      with self.observer.card_async.read("experimentalInitial") as policy_read:
+        policy_value = policy_read.returned(self.params.get_bool("ExperimentalMode"))
+        self.experimental_mode = policy_value
+        policy_read.assigned(policy_value)
+      self.observer.card_async.initial_complete()
 
     # card is driven by can recv, expected at 100Hz
     self.rk = Ratekeeper(100, print_delay_threshold=None)
@@ -219,6 +236,7 @@ class Car:
 
     if self.observer is not None:
       self.observer.begin_loop()
+      self.observer.card_async.drain()
       self.observer.capture("updateBegin")
     can_strs = messaging.drain_sock_raw(self.can_sock, wait_for_one=True)
     can_list = can_capnp_to_list(can_strs)
@@ -243,11 +261,22 @@ class Car:
     if can_rcv_valid and REPLAY:
       self.can_log_mono_time = messaging.log_from_bytes(can_strs[0]).logMonoTime
 
-    self.v_cruise_helper.update_speed_limit_assist(self.is_metric, self.sm['longitudinalPlanSP'])
-    self.v_cruise_helper.update_v_cruise(CS, self.sm['carControl'].enabled, self.is_metric)
+    if self.observer is None:
+      self.v_cruise_helper.update_speed_limit_assist(self.is_metric, self.sm['longitudinalPlanSP'])
+      self.v_cruise_helper.update_v_cruise(CS, self.sm['carControl'].enabled, self.is_metric)
+    else:
+      self.v_cruise_helper.update_speed_limit_assist(
+        self.observer.card_async.use("metricSpeedLimitUse").returned(self.is_metric), self.sm['longitudinalPlanSP'])
+      self.v_cruise_helper.update_v_cruise(
+        CS, self.sm['carControl'].enabled, self.observer.card_async.use("metricCruiseUse").returned(self.is_metric))
     if self.sm['carControl'].enabled and not self.CC_prev.enabled:
       # Use CarState w/ buttons from the step selfdrived enables on
-      self.v_cruise_helper.initialize_v_cruise(self.CS_prev, self.experimental_mode, self.dynamic_experimental_control)
+      if self.observer is None:
+        self.v_cruise_helper.initialize_v_cruise(self.CS_prev, self.experimental_mode, self.dynamic_experimental_control)
+      else:
+        self.v_cruise_helper.initialize_v_cruise(
+          self.CS_prev, self.observer.card_async.use("experimentalInitializeUse").returned(self.experimental_mode),
+          self.observer.card_async.use("dynamicInitializeUse").returned(self.dynamic_experimental_control))
 
     # TODO: mirror the carState.cruiseState struct?
     CS.vCruise = float(self.v_cruise_helper.v_cruise_kph)
@@ -346,11 +375,27 @@ class Car:
 
   def params_thread(self, evt):
     while not evt.is_set():
-      self.is_metric = self.params.get_bool("IsMetric")
-      self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
+      if self.observer is None:
+        self.is_metric = self.params.get_bool("IsMetric")
+        self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
 
-      # sunnypilot
-      self.dynamic_experimental_control = self.params.get_bool("DynamicExperimentalControl")
+        # sunnypilot
+        self.dynamic_experimental_control = self.params.get_bool("DynamicExperimentalControl")
+      else:
+        with self.observer.card_async.refresh():
+          with self.observer.card_async.read("metricRefresh") as policy_read:
+            policy_value = policy_read.returned(self.params.get_bool("IsMetric"))
+            self.is_metric = policy_value
+            policy_read.assigned(policy_value)
+          with self.observer.card_async.read("experimentalRefresh") as policy_read:
+            policy_value = policy_read.returned(self.params.get_bool("ExperimentalMode")) and policy_read.cp_operand(
+              self.CP.openpilotLongitudinalControl)
+            self.experimental_mode = policy_value
+            policy_read.assigned(policy_value)
+          with self.observer.card_async.read("dynamicRefresh") as policy_read:
+            policy_value = policy_read.returned(self.params.get_bool("DynamicExperimentalControl"))
+            self.dynamic_experimental_control = policy_value
+            policy_read.assigned(policy_value)
       self.v_cruise_helper.read_custom_set_speed_params()
 
       time.sleep(0.1)
@@ -359,6 +404,8 @@ class Car:
     e = threading.Event()
     t = threading.Thread(target=self.params_thread, args=(e, ))
     try:
+      if self.observer is not None:
+        self.observer.card_async.transfer()
       t.start()
       while True:
         self.step()

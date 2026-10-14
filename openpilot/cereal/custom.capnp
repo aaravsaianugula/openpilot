@@ -640,6 +640,7 @@ struct ControllerObservationRecordV1 {
   faults @29 :List(Fault);
   startupReference @30 :StartupReference;
   policyObservation @31 :PolicyObservation;
+  cardAsyncPolicyObservation @32 :CardAsyncPolicyObservation;
 
   enum Producer { controls @0; card @1; }
   enum Availability { unknown @0; }
@@ -648,7 +649,7 @@ struct ControllerObservationRecordV1 {
     loopStart @0; updateBegin @1; updateEnd @2; consumeEnd @3;
     computeBegin @4; computeEnd @5; paramsRefreshBegin @6; paramsRefreshEnd @7;
     publishBegin @8; publishEnd @9; publishFailed @10; applyBegin @11; applyEnd @12;
-    applySkipped @13; initializeBegin @14; initializeEnd @15; startupBegin @16; startupEnd @17; policy @18;
+    applySkipped @13; initializeBegin @14; initializeEnd @15; startupBegin @16; startupEnd @17; policy @18; cardAsyncPolicy @19;
   }
   enum Service {
     none @0; lateralDelay @1; vehicleParameters @2; lateralTorqueParameters @3;
@@ -674,6 +675,31 @@ struct ControllerObservationRecordV1 {
     seen @6 :Bool; updated @7 :Bool; valid @8 :Bool; alive @9 :Bool; freqOk @10 :Bool;
   }
   struct TxFrame { address @0 :UInt32; src @1 :UInt8; payloadLength @2 :UInt8; payloadCaptured @3 :Bool; }
+  # Offered-use values do NOT identify their async read, an atomic config or current CP/SP.
+  struct CardAsyncPolicyObservation {
+    present @0 :Bool; kind @1 :Kind; site @2 :Site; key @3 :Key; method @4 :Method; registryType @5 :Scalar;
+    consumerId @6 :UInt64; readSequence @7 :UInt64; cycleId @8 :UInt64;
+    beginNs @9 :UInt64; endNs @10 :UInt64; assignmentNs @11 :UInt64;
+    beginStatus @12 :Clock; endStatus @13 :Clock; assignmentStatus @14 :Clock;
+    getterOutcome @15 :Outcome; operationRaised @16 :Bool;
+    returnedKnown @17 :Bool; returnedValue @18 :Bool; effectiveKnown @19 :Bool; effectiveValue @20 :Bool;
+    cpConditional @21 :Bool; cpKnown @22 :Bool; cpValue @23 :Bool; offeredKnown @24 :Bool; offeredValue @25 :Bool;
+    originReadKnown @26 :Bool; originReadId @27 :UInt64;
+    attempted @28 :UInt64; returned @29 :UInt64; raised @30 :UInt64; queued @31 :UInt64; dropped @32 :UInt64; errors @33 :UInt64;
+    loss @34 :Bool; valid @35 :Bool; complete @36 :Bool;
+    rawPresence @37 :Availability; defaultUsed @38 :Availability;
+    policyComplete @39 :Bool; sourceAuthenticated @40 :Bool; predictiveEligible @41 :Bool;
+    enum Kind { read @0; directSubsetComplete @1; use @2; }
+    enum Site { none @0; dynamicInitial @1; metricInitial @2; experimentalInitial @3;
+                metricRefresh @4; experimentalRefresh @5; dynamicRefresh @6;
+                metricSpeedLimitUse @7; metricCruiseUse @8; experimentalInitializeUse @9; dynamicInitializeUse @10; }
+    enum Key { none @0; isMetric @1; experimentalMode @2; dynamicExperimentalControl @3; }
+    enum Method { none @0; getBool @1; }
+    enum Scalar { bool @0; }
+    enum Clock { unavailable @0; known @1; tie @2; regression @3; }
+    enum Outcome { unknown @0; returned @1; raised @2; }
+    enum Availability { unknown @0; }
+  }
   # Returned typed values and separate scalar writes only. Raw/default origin remains unknown.
   struct PolicyObservation {
     present @0 :Bool; kind @1 :Kind; group @2 :Group; groupId @3 :UInt32;

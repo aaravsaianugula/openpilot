@@ -13,6 +13,9 @@ import threading
 import time
 from collections import deque
 
+from openpilot.selfdrive.controls.lib.card_async_policy_observation import (
+  CardAsyncPolicyCapture, MAX_CARD_POLICY_BYTES, encode as encode_card_policy, snapshot as card_policy_snapshot,
+)
 from openpilot.selfdrive.controls.lib.controller_policy_observation import MAX_POLICY_BYTES, PolicyCapture, encode_policy, snapshot
 
 MAX_REFS = 24
@@ -38,7 +41,7 @@ SERVICES = ("none", *dict.fromkeys((*CONTROLS_INPUTS, *CARD_INPUTS, "carParams",
                                  "sendcan", "radarTracks", "liveLocationKalman")))
 STAGES = ("loopStart", "updateBegin", "updateEnd", "consumeEnd", "computeBegin", "computeEnd", "paramsRefreshBegin",
           "paramsRefreshEnd", "publishBegin", "publishEnd", "publishFailed", "applyBegin", "applyEnd", "applySkipped",
-          "initializeBegin", "initializeEnd", "startupBegin", "startupEnd", "policy")
+          "initializeBegin", "initializeEnd", "startupBegin", "startupEnd", "policy", "cardAsyncPolicy")
 REASONS = ("none", "passive", "notInitialized", "ccNotAlive")
 
 
@@ -90,6 +93,7 @@ class Observer:
     self._startup_tokens, self._startup_sources = {}, set()
     self._startup_records = self._startup_jobs = self._startup_reserved_bytes = self._startup_released_bytes = 0
     self.policy = PolicyCapture(self) if producer == "controls" else None
+    self.card_async = CardAsyncPolicyCapture(self) if producer == "card" else None
     if start_worker:
       threading.Thread(target=self._worker, name=f"{producer}_observation", daemon=True).start()
 
@@ -138,7 +142,7 @@ class Observer:
     return tuple(result)
 
   def capture(self, stage, *, sm=None, service="none", event=None, begin_ns=None, apply_clock_ns=None, apply_id=None,
-              reason="none", tx=None, _startup=None, _policy=None):
+              reason="none", tx=None, _startup=None, _policy=None, _card_policy=None):
     """Copy only bounded clocks/flags/CAN. Never serialize, hash full payloads, send or wait."""
     self.sequence += 1
     try:
@@ -150,6 +154,12 @@ class Observer:
         faults.append("clockTie" if now == self._last_clock else "clockRegression")
       self._last_clock = now
       policy = None
+      card_policy = None
+      if _card_policy is not None:
+        if (self.producer != "card" or stage != "cardAsyncPolicy" or sm is not None or event is not None
+            or tx is not None or _startup is not None or _policy is not None):
+          raise ValueError("unknown card policy capture")
+        card_policy = card_policy_snapshot(_card_policy, now, faults)
       if _policy is not None:
         if stage != "policy" or sm is not None or event is not None or tx is not None or _startup is not None:
           raise ValueError("unknown policy capture")
@@ -205,7 +215,7 @@ class Observer:
       if not _uint(begin) or begin > now or not _uint(applied_clock) or not _uint(applied_id):
         raise ValueError("unknown source clock")
       size = 256 + 112 * len(refs) + 24 * len(frames) + (0 if raw is None else len(raw)) + (256 if startup else 0)
-      if policy is not None:
+      if policy is not None or card_policy is not None:
         size = MAX_POLICY_BYTES  # total charge; no additional refs or raw payload allowed
       if (size > MAX_RECORD_CAPTURE_BYTES or self._loop_records >= MAX_LOOP_RECORDS
           or self._loop_bytes + size > MAX_LOOP_CAPTURE_BYTES or len(self._pending) >= self.capacity):
@@ -231,9 +241,13 @@ class Observer:
         _startup["queued"] = True
       if policy is not None:
         record["policy"] = policy
+      if card_policy is not None:
+        record["card_policy"] = card_policy
       self._pending.append(record)  # sole producer appends; worker only poplefts, no capacity eviction
       if policy is not None:
         _policy["_queued"] = True
+      if card_policy is not None:
+        _card_policy["_queued"] = True
       return now
     except Exception:
       # Observation failure must not replace a controller exception or alter its values.
@@ -455,8 +469,11 @@ def encode_record(record, log, *, publisher_ns, previous_publications=None):
   complete = record["capture_complete"] and not faults
   startup = record.get("startup_reference")
   policy = record.get("policy")
+  card_policy = record.get("card_policy")
   if policy is not None:
     complete = complete and policy["valid"]
+  if card_policy is not None:
+    complete = complete and card_policy["valid"]
   if startup is not None:
     startup = dict(startup)  # metadata only; internal raw job has already been popped in flush_one
     if startup["status"] == "ready" and (not _uint(publisher_ns) or publisher_ns < startup["digest_ready_ns"]):
@@ -495,7 +512,11 @@ def encode_record(record, log, *, publisher_ns, previous_publications=None):
     ref.sha256, ref.digestReadyNs = startup["sha256"], startup["digest_ready_ns"]
   if policy is not None:
     encode_policy(target.policyObservation, policy)
+  if card_policy is not None:
+    encode_card_policy(target.cardAsyncPolicyObservation, card_policy)
   raw = event.to_bytes()
-  if len(raw) > (MAX_POLICY_BYTES if policy is not None else MAX_STARTUP_WIRE_BYTES if startup is not None else MAX_SERIALIZED_BYTES):
+  limit = MAX_CARD_POLICY_BYTES if card_policy is not None else MAX_POLICY_BYTES if policy is not None else (
+    MAX_STARTUP_WIRE_BYTES if startup is not None else MAX_SERIALIZED_BYTES)
+  if len(raw) > limit:
     raise ValueError("bounded observer record exceeded wire budget")
   return raw

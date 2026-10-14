@@ -784,3 +784,38 @@ eligibility and graph consumption remain false or unknown. No model, weights,
 Params, IPC, native/device runtime, activation or deployment occurred. Enabled
 costs and physical response remain unvalidated; this is source preparation, not
 a controller gain or accepted tune.
+
+### Default-off card asynchronous policy observations
+
+The existing controller observer now records the three direct card fields
+IsMetric, ExperimentalMode and DynamicExperimentalControl. Constructor reads
+remain distinct from the existing asynchronous refresh. Returned getter values,
+the conditional CP operand and effective assignments are separate from each
+actual argument offered to the cruise helper. Every read-to-use origin remains
+unknown; equal values or nearby clocks do not establish an association. A failed
+CP access has no returned-operand witness, not proof that no access was attempted.
+Nested cruise settings, full mutable CP/SP and complete policy remain unobserved.
+
+One private scalar journal holds at most sixteen immutable rows; card main drains
+at most two each tick and remains the existing Observer's sole producer. There
+are no extra Params reads, polls, publishers, threads, services, locks or waits.
+Original getters, short-circuit reads, arguments, exceptions and disabled native
+operations are preserved. A review found a loss/counter interposition that could
+leave completion true; its regression and conservative observed-counter rejection
+are retained. No atomic configuration or verified runtime handoff is claimed.
+
+The initial 24-case host run had 23 passes and one disabled-AST fixture failure.
+After correcting that fixture, it and two style-affected cases passed separately;
+one added maximum-wire case also passed. Forty-three affected existing cases,
+Ruff and all 115 overlay guards passed. Root and independent source reviews were
+clean. Separate schema processes measured a 400-byte maximum new record and an
+unused-pointer increase from 224 to 232 bytes. Conservative capture charges,
+including both sendcan raw captures, total 31,488 bytes within the unchanged
+32,768-byte/32-record loop bounds. Per-record limits still reject oversized input;
+these charges are not heap, latency or delivery measurements. Exact commands,
+first-reds and source hashes are in validation-card-async-policy-checkpoint.json.
+
+No actual card, Params, model, IPC, native/device runtime, activation or deployment
+occurred. CPython handoff/timing, delivery, read-to-use origin, full policy,
+authenticated source, transport and calibrated-roll uncertainty remain unverified.
+Source/policy/predictive eligibility stay false; no plant or tune is accepted.
