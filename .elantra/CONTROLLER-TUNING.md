@@ -478,3 +478,20 @@ transition from higher-speed approach is still unimplemented. Real source/policy
 roll uncertainty, contact/hold, ZOH and joint response coherence remain unvalidated.
 No current full tune is selected; production is false. Exact evidence is in
 `validation-native-stop-three-adapter-checkpoint.json` under the tuning tree.
+
+### Categorical approach plant
+
+The pure predictor now has named `fit_approach` and `predict_approach_macro`
+entrypoints with a distinct model kind. One categorical plant can span observed
+approach, crossing 3 m/s and hold cells. Its domain remains the retained TRAIN
+global and local cell bounds. Initial and next hardware standstill remain
+independent observations; missing or conflicting categories are unsupported.
+The existing low-speed entrypoints keep their signatures, model kind and 3 m/s
+refusal. No automatic regime switch or fallback was added.
+
+All 52 pure synthetic cases passed, including all 35 unchanged earlier cases;
+Ruff and bounded independent review were clean. First-red API failures and
+source/test snapshots remain preserved. No actual-data fit, held-out array,
+native controller job or device execution occurred. Connecting the new kind to
+the shared native recurrence remains the next step. Current full tune selection
+and production stay disabled. See `validation-categorical-approach-component-checkpoint.json`.

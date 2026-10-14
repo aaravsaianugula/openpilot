@@ -292,3 +292,161 @@ def test_malformed_queue_metadata_is_declared_fit_error_before_arrays(bad_metada
     row["motion_arrays"] = row["view_arrays"] = row["queued_apply_arrays"] = Unreadable()
   with pytest.raises(hold.FitError, match="queued apply"):
     hold.fit(rows, SPLIT, CP, SP)
+
+
+def approach_record(route, *, initial=None, final_speed=2.5, sign=1, next_standstill=False, tag=0):
+  """Synthetic independently named sources; no physical approach evidence."""
+  initial = {**STATE, "v": 5.} if initial is None else initial
+  row = record(route, mode="active", sign=sign, next_standstill=next_standstill)
+  a, m = row["motion_arrays"], row["metadata"]
+  n = len(a["carState_t_ns"])
+  end = (((np.arange(n)-3) % 12) >= 5) & (np.arange(n) >= 3)
+  a["carState_v"][:] = np.where(end, final_speed, initial["v"])
+  a["carState_a"][:] = initial["a"]+end*.1
+  a["carState_steering_angle"][:] = initial["angle"]+end*sign
+  a["carState_vendor_rate_unsigned"][:] = initial["vendor_rate"]+end*4.
+  li = np.searchsorted(a["carState_t_ns"], a["liveLocationKalman_t_ns"])
+  a["liveLocationKalman_yaw"][:] = initial["yaw"]+end[li]*sign*.01
+  feedback = np.maximum(np.arange(n)-2, 0)
+  active = (a["carState_v"][feedback] > .3) & (a["carState_standstill"][feedback] == 0)
+  a["LKAS11Tx_request"][:], a["LKAS11Tx_torque"][:] = active, active*20
+  row["queued_apply_arrays"]["effective_active"][:] = active
+  segment, source = route+"--"+str(tag), base.identity_hash({"route": route, "tag": tag})
+  for metadata in (m, row["motion_metadata"]):
+    metadata.update(segment=segment, source_log_sha256=source)
+  row["queued_apply_metadata"]["source_log_sha256"] = source
+  for kind in ("static", "policy"):
+    anchor = m[kind+"_anchor"]
+    anchor["source_log_sha256"] = source
+    anchor["sha256"] = base.identity_hash({k: v for k, v in anchor.items() if k != "sha256"})
+  bind(row)
+  return row
+
+
+def approach_predict(model, state=None, *, active=None, standstill=False):
+  active = np.ones(5, bool) if active is None else active
+  return hold.predict_approach_macro(model, {**STATE, "v": 5.} if state is None else state,
+                                    [1.]*5, [1.]*5, np.where(active, 20, 0), active, active, .01, standstill)
+
+
+def test_legacy_low_speed_kind_and_above_three_refusal_are_unchanged():
+  rows = [approach_record(route) for route in ROUTES]
+  model = hold.fit(rows, SPLIT, CP, SP)
+  assert model["kind"] == hold.KIND and model["low_speed_max_initial_mps"] == 3.
+  assert not model["accepted_windows"]
+  assert model["excluded_reasons"]["outside_declared_low_speed_identification_domain"] >= 200
+  assert predict(model, state={**STATE, "v": 5.}, active=np.ones(5, bool), request=np.ones(5, bool), command=[20]*5).reason == "invalid_macro_inputs"
+
+
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_approach_high_speed_cell_updates_all_five_states_and_observed_category(sign):
+  model = hold.fit_approach([approach_record(route, sign=sign) for route in ROUTES], SPLIT, CP, SP)
+  result = approach_predict(model)
+  assert result["state"] == pytest.approx({"v": 2.5, "a": .1, "angle": sign, "yaw": sign*.01, "vendor_rate": 16.})
+  assert result["hardware_standstill"] is False
+  assert model["kind"] == hold.APPROACH_KIND != hold.KIND and model["supported_cells"]
+  assert model["initial_speed_domain"] == "retained_train_global_and_cell_bounds"
+  assert "low_speed_max_initial_mps" not in model
+  assert model["selection"] is None and not model["source_eligible"] and not model["production_enabled"]
+  assert predict(model).reason == "model_contract"  # No cross-kind fallback.
+
+
+def test_one_approach_model_crosses_three_without_reset_or_guessed_category():
+  middle = {"v": 2.5, "a": .1, "angle": 1., "yaw": .01, "vendor_rate": 16.}
+  rows = [approach_record(route, initial=initial, final_speed=final, tag=tag)
+          for route in ROUTES for tag, initial, final in ((0, {**STATE, "v": 5.}, 2.5), (1, middle, 1.), (2, STATE, 0.))]
+  model = hold.fit_approach(rows, SPLIT, CP, SP)
+  first = approach_predict(model)
+  second = approach_predict(model, first["state"], standstill=first["hardware_standstill"])
+  held = approach_predict(model, STATE, active=np.zeros(5, bool))
+  assert first["state"] == pytest.approx(middle)
+  assert second["state"] == pytest.approx({"v": 1., "a": .2, "angle": 2., "yaw": .02, "vendor_rate": 20.})
+  assert first["hardware_standstill"] is second["hardware_standstill"] is held["hardware_standstill"] is False
+  assert held["state"]["v"] == 0. and held["state"]["angle"] == 1.
+
+
+@pytest.mark.parametrize("category", [False, True])
+def test_approach_zero_speed_standstill_follows_category_not_speed(category):
+  model = hold.fit_approach([record(route, next_standstill=category) for route in ROUTES], SPLIT, CP, SP)
+  result = approach_predict(model, STATE, active=np.zeros(5, bool))
+  assert result["state"]["v"] == 0. and result["state"]["angle"] == 1.
+  assert result["hardware_standstill"] is category
+  assert approach_predict(model, STATE, active=np.zeros(5, bool), standstill=None).reason == "hardware_standstill_required"
+
+
+def test_approach_conflicting_next_category_never_falls_back_to_false():
+  rows = [approach_record(route, final_speed=0., next_standstill=bool(index)) for index, route in enumerate(ROUTES)]
+  model = hold.fit_approach(rows, SPLIT, CP, SP)
+  assert not model["supported_cells"]
+  active = np.array(model["window_evidence"][-1]["effective_active"], bool)
+  assert approach_predict(model, active=active).reason == "ambiguous_next_hardware_standstill"
+  altered = deepcopy(model)
+  for cell in altered["cells"].values():
+    cell["next_hardware_standstill_values"] = []
+  assert approach_predict(altered, active=active).reason == "model_contract"
+
+
+def test_approach_training_bounds_pattern_and_route_support_never_extrapolate():
+  rows = [approach_record(route) for route in ROUTES]
+  model = hold.fit_approach(rows, SPLIT, CP, SP)
+  assert approach_predict(model, {**STATE, "v": 9.}).reason == "outside_training_bounds"
+  assert approach_predict(model, active=np.zeros(5, bool)).reason == "unsupported_pattern"
+  assert approach_predict(model, standstill=True).reason == "invalid_macro_inputs"
+  sparse = hold.fit_approach(rows[:1], SPLIT, CP, SP)
+  assert not sparse["supported_cells"] and approach_predict(sparse).reason == "cell_support"
+  altered = deepcopy(model)
+  for cell in altered["cells"].values():
+    cell["next_hardware_standstill_values"] = [True]
+  assert approach_predict(altered).reason == "invalid_joint_prediction"
+  assert hold.predict_approach_macro(fitted(), STATE, [1.]*5, [1.]*5, [0]*5,
+                                     np.zeros(5, bool), np.zeros(5, bool), .01, False).reason == "model_contract"
+
+
+@pytest.mark.parametrize("fault", ["heldout", "duplicate_train", "alias", "source_pin", "queue_source"])
+def test_approach_metadata_refuses_before_arrays_with_shared_source_gates(fault):
+  rows, split = [approach_record(route) for route in ROUTES], deepcopy(SPLIT)
+  if fault == "heldout":
+    rows[1]["metadata"]["route"] = SPLIT["test"][0]
+  elif fault == "duplicate_train":
+    split["train"].append(ROUTES[0])
+  elif fault == "alias":
+    rows[1]["metadata"]["source_log_sha256"] = rows[0]["metadata"]["source_log_sha256"]
+  elif fault == "source_pin":
+    for row in rows:
+      row["metadata"].update(opendbc_gitlink="a"*40, source_identity_verified=True)
+  else:
+    rows[1]["queued_apply_metadata"]["source_log_sha256"] = "9"*64
+  for row in rows:
+    row["motion_arrays"] = row["view_arrays"] = row["queued_apply_arrays"] = Unreadable()
+  with pytest.raises(hold.FitError):
+    hold.fit_approach(rows, split, CP, SP)
+
+
+@pytest.mark.parametrize("fault,reason", [("tie", "queued_apply_order"), ("invalid", "carState_invalid"),
+                                         ("category", "hardware_standstill_invalid")])
+def test_approach_queue_ties_and_invalid_interpositions_stay_excluded(fault, reason):
+  rows = [approach_record(route) for route in ROUTES]
+  if fault == "tie":
+    q = rows[0]["queued_apply_arrays"]
+    q["consume_t_ns"][16] = q["apply_t_ns"][16]
+  elif fault == "invalid":
+    rows[0]["motion_arrays"]["carState_valid"][16] = rows[0]["view_arrays"]["carState_valid"][16] = False
+  else:
+    rows[0]["motion_arrays"]["carState_standstill"][16] = np.nan
+  bind(rows[0])
+  model = hold.fit_approach(rows, SPLIT, CP, SP)
+  assert any(reason in e["reasons"] for e in model["exclusions"])
+
+
+def test_approach_future_gt_unused_and_dirty_source_never_promotes_selection():
+  rows = [approach_record(route) for route in ROUTES]
+  for row in rows:
+    row["metadata"].update(opendbc_gitlink="a"*40, source_identity_verified=True)
+    row["motion_metadata"].update(opendbc_gitlink="a"*40, eligibility_reasons=["dirty_source_unknown"])
+    bind(row)
+  model = hold.fit_approach(rows, SPLIT, CP, SP)
+  expected = approach_predict(model)
+  model["unused_future_measured_state"] = {key: [999., -999.] for key in STATE}
+  assert approach_predict(model) == expected
+  assert model["supported_cells"] and model["source_pin_verified"] and not model["source_eligible"]
+  assert model["selection"] is None and model["complete_controller_candidate"] is None and not model["production_enabled"]

@@ -18,6 +18,7 @@ NATIVE_POLICY_SHA = lateral_hold.NATIVE_POLICY_SHA
 CARD_SHA = "6e54bc5145634e451d6b48de9dd80691bf891ba81fab77f7d4de59eebe6c191b"
 QUEUE_KIND = "source_bound_queued_lateral_apply_v1"
 KIND = "joint_v_a_angle_yaw_unsigned_rate_stop_hold_categorical_50ms_v1"
+APPROACH_KIND = "joint_v_a_angle_yaw_unsigned_rate_approach_stop_hold_categorical_50ms_v1"
 STATE_KEYS = moving.STATE_KEYS
 FEATURES = (*moving.FEATURES, *(f"effective_active_{i}" for i in range(5)), *(f"request_{i}" for i in range(5)))
 LOW_SPEED_MAX_MPS = 3.  # Declared identification domain, NOT native activation.
@@ -122,7 +123,7 @@ def _queued(streams, q, indices, anchor):
   return expected, []
 
 
-def _windows(record, anchor):
+def _windows(record, anchor, *, maximum_initial_mps=LOW_SPEED_MAX_MPS):
   m = record["metadata"]
   provenance = {k: m[k] for k in ("route", "source_log_sha256")}
   try:
@@ -175,7 +176,7 @@ def _windows(record, anchor):
       return np.array([cs["v"][k][index] for k in ("v", "a", "steering_angle")]
                       +[llk["v"]["yaw"][location], cs["v"]["vendor_rate_unsigned"][index]])
     initial, final = state(ci[0], i), state(endpoint, i+1)
-    if initial[0] > LOW_SPEED_MAX_MPS:
+    if maximum_initial_mps is not None and initial[0] > maximum_initial_mps:
       excluded.append({**source, "reasons": ["outside_declared_low_speed_identification_domain"]})
       continue
     features = np.r_[initial, llk["v"]["roll"][i], streams["carControl"]["v"]["accel_request"][ui],
@@ -193,6 +194,18 @@ def _pattern(standstill, features):
 
 
 def fit(records, split, cp, sp, *, quantile_bins=2, min_samples=100, min_routes=2):
+  """Legacy <=3m/s identification domain; never automatic native activation."""
+  return _fit(records, split, cp, sp, quantile_bins=quantile_bins, min_samples=min_samples,
+              min_routes=min_routes, kind=KIND, maximum_initial_mps=LOW_SPEED_MAX_MPS)
+
+
+def fit_approach(records, split, cp, sp, *, quantile_bins=2, min_samples=100, min_routes=2):
+  """One categorical model across observed TRAIN speed cells; no regime stitching."""
+  return _fit(records, split, cp, sp, quantile_bins=quantile_bins, min_samples=min_samples,
+              min_routes=min_routes, kind=APPROACH_KIND, maximum_initial_mps=None)
+
+
+def _fit(records, split, cp, sp, *, quantile_bins, min_samples, min_routes, kind, maximum_initial_mps):
   if (not records or type(quantile_bins) is not int or not 1 <= quantile_bins <= 8
       or type(min_samples) is not int or min_samples < 100 or type(min_routes) is not int or min_routes < 2):
     raise FitError("records,1..8quantile bins and >=100samples/two physical TRAIN routes required")
@@ -201,14 +214,16 @@ def fit(records, split, cp, sp, *, quantile_bins=2, min_samples=100, min_routes=
     moving._bind(record, split)
   windows, exclusions, repairs, ignored = [], [], 0, 0
   for record, anchor in zip(records, anchors, strict=True):
-    rows, failures, order, discarded = _windows(record, anchor)
+    rows, failures, order, discarded = _windows(record, anchor, maximum_initial_mps=maximum_initial_mps)
     windows += rows
     exclusions += failures
     repairs += order
     ignored += discarded
-  model = {"kind": KIND, **dict(zip(("cohort", "static_identity_sha256", "policy_identity_sha256", "opendbc_gitlink"), contract, strict=True)),
+  model = {"kind": kind, **dict(zip(("cohort", "static_identity_sha256", "policy_identity_sha256", "opendbc_gitlink"), contract, strict=True)),
     "features": list(FEATURES), "macro_dt_s": .05, "native_dt_s": .01, "micro_nodes": 5, "macro_dt_tolerance_s": .002,
-    "low_speed_max_initial_mps": LOW_SPEED_MAX_MPS, "native_policy_source_sha256": NATIVE_POLICY_SHA, "card_source_sha256": CARD_SHA,
+    **({"low_speed_max_initial_mps": LOW_SPEED_MAX_MPS} if kind == KIND else
+       {"initial_speed_domain": "retained_train_global_and_cell_bounds"}),
+    "native_policy_source_sha256": NATIVE_POLICY_SHA, "card_source_sha256": CARD_SHA,
     "source_eligible": verified and all(a is not None for a in anchors)
                        and all(r["motion_metadata"]["source_eligible"] and not r["motion_metadata"]["eligibility_reasons"] for r in records),
     "source_pin_verified": verified, "static_policy_timing_verified": all(a is not None for a in anchors),
@@ -230,7 +245,8 @@ def fit(records, split, cp, sp, *, quantile_bins=2, min_samples=100, min_routes=
       "Queue witness binds consumed effective-active snapshots only; it does not equate published requests with applied force",
       "No intermediate measured v/a features, contact clamp, rack freeze, invented restart or old model fallback",
       "50ms endpoints/100Hz ZOH, Markov history sufficiency, joint coherence and v/a kinematics remain unvalidated",
-      "Initialv<=3m/s is a declared overlapping identification domain, never native activation or automatic model routing",
+      ("Initialv<=3m/s is a declared overlapping identification domain, never native activation or automatic model routing" if kind == KIND else
+       "Approach speed domain is retained TRAIN global/cell bounds, never native activation or an unbounded physical model"),
       "Source/static/policy, stopping uncertainty and physical contact evidence remain separate selection gates"]}
   if windows:
     x = np.stack([w["features"] for w in windows])
@@ -261,6 +277,18 @@ def fit(records, split, cp, sp, *, quantile_bins=2, min_samples=100, min_routes=
 
 def predict_macro(model, state, accel_request, accel_reported, can_command, effective_active, request, roll, hardware_standstill):
   """Only five completed candidate-own command nodes; no controller/report generator."""
+  return _predict(model, state, accel_request, accel_reported, can_command, effective_active, request, roll,
+                  hardware_standstill, kind=KIND, maximum_initial_mps=LOW_SPEED_MAX_MPS)
+
+
+def predict_approach_macro(model, state, accel_request, accel_reported, can_command, effective_active, request, roll, hardware_standstill):
+  """Observed categorical approach/hold cells only; no v-derived category or fallback."""
+  return _predict(model, state, accel_request, accel_reported, can_command, effective_active, request, roll,
+                  hardware_standstill, kind=APPROACH_KIND, maximum_initial_mps=None)
+
+
+def _predict(model, state, accel_request, accel_reported, can_command, effective_active, request, roll,
+             hardware_standstill, *, kind, maximum_initial_mps):
   if type(hardware_standstill) is not bool:
     return Unsupported("hardware_standstill_required")
   if accel_reported is None:
@@ -273,16 +301,18 @@ def predict_macro(model, state, accel_request, accel_reported, can_command, effe
     initial, command = np.array([state[k] for k in STATE_KEYS], float), np.asarray(can_command, float)
     features = np.r_[initial, roll, np.asarray(accel_request, float), np.asarray(accel_reported, float), command, active, request]
     if (features.shape != (31,) or not np.isfinite(features).all() or initial[0] < 0 or initial[4] < 0
-        or initial[0] > LOW_SPEED_MAX_MPS or (hardware_standstill and initial[0] > .3)
+        or (maximum_initial_mps is not None and initial[0] > maximum_initial_mps) or (hardware_standstill and initial[0] > .3)
         or (np.abs(command) > 409).any() or (command != np.rint(command)).any()):
       return Unsupported("invalid_macro_inputs")
     reason = _mode(active, request, command)
     if reason:
       return Unsupported(reason)
-    if (model.get("kind") != KIND or model.get("features") != list(FEATURES)
+    domain_differs = (model.get("low_speed_max_initial_mps") != LOW_SPEED_MAX_MPS if kind == KIND else
+                      model.get("initial_speed_domain") != "retained_train_global_and_cell_bounds")
+    if (model.get("kind") != kind or model.get("features") != list(FEATURES)
         or (model.get("macro_dt_s"), model.get("native_dt_s"), model.get("micro_nodes")) != (.05, .01, 5)
         or model.get("native_policy_source_sha256") != NATIVE_POLICY_SHA or model.get("card_source_sha256") != CARD_SHA
-        or model.get("low_speed_max_initial_mps") != LOW_SPEED_MAX_MPS
+        or domain_differs
         or type(model["min_samples"]) is not int or model["min_samples"] < 100 or type(model["min_routes"]) is not int or model["min_routes"] < 2):
       return Unsupported("model_contract")
     if not model["cells"]:
