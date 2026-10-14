@@ -568,8 +568,8 @@ are registered in `sync.py`.
 Twenty-nine host contracts, including isolated schema roundtrips and enabled/off
 hook ordering, passed. Ruff and all 115 overlay guards passed; root and bounded
 independent review were clean. This is source/host evidence, not live controller
-timing. Enabled GIL scheduling, backpressure, logging overhead and durable delivery
-remain unmeasured; activation and deployment remain gated. Static service entries
+timing. Device-specific GIL scheduling, backpressure, logging overhead and durable
+delivery remain unmeasured; activation and deployment remain gated. Static service entries
 add passive logger subscriptions even while capture is off. Policy, source and
 predictive eligibility stay false; roll uncertainty and TX/echo correlation stay
 unknown or unsupported. See `validation-clock-observer-checkpoint.json`.
@@ -592,3 +592,21 @@ attachment synthetic cases passed, with Ruff and scoped reviews. See
 `validation-predictive-selection-stage1-checkpoint.json` and
 `validation-predictive-selection-attachment-checkpoint.json`. No current data
 was admitted, no native case repeated and no installable/full tune selected.
+
+### Local observer IPC measurements
+
+One corrected isolated x86 run completed all 14 synthetic IPC cases and 4,200
+ticks. The first schema-include abort is preserved; recovery added only the
+exact pinned include to a separate package and changed artifact path/hash
+literals. Native source/dependencies remained unchanged, Params stayed absent,
+and all owned process groups and namespaces were gone after exact cleanup.
+
+Card slow-reader tick start lateness peaked at 18.655 ms, with two samples at
+least 10 ms late; its loop duration peaked at 3.322 ms. Controls pressure
+recorded 2,700 observer drops and 2,682 timed sequence missing references,
+without attributing them to transport or ring loss. Both actual worker failures
+and oversize loss flags were observed. Per-case quantiles, denominators and
+raw samples are retained in `validation-clock-observer-ipc-checkpoint.json`
+and the bound compact-metrics artifact. This short desktop experiment is not
+a comma timing, real-time, durable-logging or deployment acceptance result.
+The observer remains default-off and has not been deployed.

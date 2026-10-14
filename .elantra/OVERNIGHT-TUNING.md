@@ -1088,8 +1088,8 @@ independent reviews were clean. Exact source/check evidence is in
 
 This patch is disabled unless `ELANTRA_CONTROLLER_OBSERVER` is exactly `1` and
 has not been deployed or activated. Its worker does not isolate Python's GIL;
-enabled control-thread timing, backpressure and logging/storage overhead still
-need bounded isolated measurement. Passive logger subscriptions remain even off.
+device-specific control-thread timing, backpressure and logging/storage overhead
+remain unmeasured. Passive logger subscriptions remain even off.
 Policy/source/predictive eligibility remain false, and no real plant or accepted
 tune follows. Existing deployment, road and actuation gates remain in effect.
 
@@ -1110,3 +1110,21 @@ errors do not validate closed-loop response, source authentication or a road
 tune. No current plant was promoted and all 104 reserved test arrays remain
 unopened. Exact commands/hashes are in the predictive-selection validation
 receipts under the artifact root.
+
+### Local observer IPC measurements
+
+One corrected isolated x86 run completed all 14 synthetic IPC cases and 4,200
+ticks. The first schema-include abort is preserved; recovery added only the
+exact pinned include to a separate package and changed artifact path/hash
+literals. Native source/dependencies remained unchanged, Params stayed absent,
+and all owned process groups and namespaces were gone after exact cleanup.
+
+Card slow-reader tick start lateness peaked at 18.655 ms, with two samples at
+least 10 ms late; its loop duration peaked at 3.322 ms. Controls pressure
+recorded 2,700 observer drops and 2,682 timed sequence missing references,
+without attributing them to transport or ring loss. Both actual worker failures
+and oversize loss flags were observed. Per-case quantiles, denominators and
+raw samples are retained in `validation-clock-observer-ipc-checkpoint.json`
+and the bound compact-metrics artifact. This short desktop experiment is not
+a comma timing, real-time, durable-logging or deployment acceptance result.
+The observer remains default-off and has not been deployed.
