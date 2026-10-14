@@ -1254,3 +1254,363 @@ def test_mixed_population_requires_identical_full_static_and_policy_before_facto
   with pytest.raises(runner.TwoWayError, match="mixed.*static.*policy"):
     runner.validation_search([w, stopping[0]], report, {w["id"]: env, stopping[0]["id"]: stopping[2]}, model,
       lr, lat, out, proofs, grid=[{"long": None, "lateral": None}], lateral_grid=GRID, low_speed_model=low)
+
+
+def approach_stopping_fixture(sign=1):
+  """Predeclared synthetic3.5m/s approach, +/-CAN cells; no empirical evidence."""
+  import controller_multirate_joint_stop_hold as categorical
+  args, _ = stopping_fixture()
+  w, report, env, _, _, _, _ = args
+  w["initial_v"] = env["initial"]["state"]["v"] = 3.5
+  env["raw_car_state_witness"]["v_ego"][:] = 3.5
+  env["raw_car_state_witness"]["sha256"] = runner._body_hash(env["raw_car_state_witness"])
+  tape = w["tape"]
+  tape["v"][:] = 3.5
+  tape["rdf_plan"][:, :, 3] = np.where(tape["rdf_narrow_t"][:, None] >= 7.75, 0., 3.5)
+  tape["rdf_plan"][:, :, 14] = sign*.14
+  tape["rdf_desired_curvature"][:] = sign*.04
+  lower, upper, edges = [-500.]*31, [500.]*31, [[] for _ in range(31)]
+  lower[0], upper[0], lower[4] = 0., 3.5, 0.
+  lower[16:21], upper[16:21], lower[21:], upper[21:] = [-409.]*5, [409.]*5, [0.]*10, [1.]*10
+  edges[0], edges[6], edges[16] = np.arange(.125, 3.5, .25).tolist(), [-.005], [-45.5, 45.5]
+  cells, patterns = {}, []
+  for hardware in (False, True):
+    for bits in ((True,)*5, (True, True, False, False, False), (False,)*5):
+      pattern = str(int(hardware))+"|"+"".join(str(int(v)) for v in (*bits, *bits))
+      patterns.append(pattern)
+      for vi, speed in enumerate(np.arange(0., 3.51, .25)):
+        for braking in (False, True):
+          for ci, (command_lo, command_hi) in enumerate(((-409., -45.5), (-45.5, 45.5), (45.5, 409.))):
+            bins, lo, hi = [0]*31, lower.copy(), upper.copy()
+            bins[0], bins[6], bins[16] = vi, int(not braking), ci
+            lo[0], hi[0] = max(0., speed-.125), min(3.5, speed+.125)
+            lo[6], hi[6] = (-500., -.005) if braking else (-.005, 500.)
+            lo[16], hi[16] = command_lo, command_hi
+            lo[21:], hi[21:] = list(map(float, (*bits, *bits))), list(map(float, (*bits, *bits)))
+            strong = ci != 1
+            next_v = max(0., speed-(.5 if strong else .25)) if braking else speed
+            cells[pattern+"|"+":".join(map(str, bins))] = {
+              "supported": True, "samples": 100, "routes": ["route-t", "route-u"], "feature_min": lo, "feature_max": hi,
+              "joint_delta_median": [next_v-speed, 0. if speed == 0 else (-.02 if strong else -.01) if braking else (-.002 if strong else -.001),
+                                     sign*.001, sign*.00001, .001], "next_hardware_standstill_values": [bool(next_v == 0)]}
+  model = {k: deepcopy(env[k]) for k in ("cohort", "opendbc_gitlink", "static_identity_sha256", "policy_identity_sha256")}
+  model.update(kind=categorical.APPROACH_KIND, features=list(categorical.FEATURES), macro_dt_s=.05, native_dt_s=.01, micro_nodes=5,
+    initial_speed_domain="retained_train_global_and_cell_bounds", source_eligible=True, source_pin_verified=True,
+    static_policy_timing_verified=True, cells=cells, edges=edges, feature_min=lower, feature_max=upper, patterns=patterns,
+    native_policy_source_sha256=categorical.NATIVE_POLICY_SHA, card_source_sha256=categorical.CARD_SHA, min_samples=100, min_routes=2,
+    split=deepcopy(report["split"]), record_hashes=["7"*64, "8"*64], supported_cells=len(cells),
+    selection_eligible=False, production_enabled=False, fixture_only=True)
+  model["model_sha256"] = categorical.identity_hash(model)
+  return args, model
+
+
+def evaluate_approach(args, model, **kwargs):
+  return runner.evaluate_two_way(*args, runner.bind_proof(*args, approach_stop_model=model),
+                                 lateral_grid=GRID, approach_stop_model=model, **kwargs)
+
+
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_fullrange_approach_crosses_three_with_one_continuous_native_composition(monkeypatch, sign):
+  args, model = approach_stopping_fixture(sign)
+  created = {"long": 0, "lat": 0, "output": 0}
+  original_long = args[4].controller_type
+  class CountedLong(original_long):
+    def __init__(self, *a, **kw):
+      created["long"] += 1
+      super().__init__(*a, **kw)
+  args = list(args)
+  args[4] = replace(args[4], controller_type=CountedLong)
+  for name, runtime in (("lat", args[5]), ("output", args[6])):
+    original = runtime.create
+    def create(*a, _name=name, _original=original, **kw):
+      created[_name] += 1
+      return _original(*a, **kw)
+    monkeypatch.setattr(runtime, "create", create)
+  monkeypatch.setattr(old.LongCache, "evaluate", lambda *a, **kw: pytest.fail("separable long cache used"))
+  monkeypatch.setattr(plant, "predict_macro", lambda *a, **kw: pytest.fail("21-state fallback used"))
+  monkeypatch.setattr(runner.low_plant, "predict_macro", lambda *a, **kw: pytest.fail("legacy3m/s fallback used"))
+  result = evaluate_approach(args, model)
+  assert result["status"] == "complete", result["reason"]
+  assert created == {"long": 1, "lat": 1, "output": 1}
+  trace = result["trace"]
+  assert trace["v"][0] == 3.5 and np.any(trace["v"] < 3.) and trace["hardware_standstill"][0] == 0.
+  assert result["supported_steps"] == result["used_steps"] == 200 and result["macro_indices"] == list(range(0, 200, 5))
+  assert result["categorical_plant_kind"] == runner.low_plant.APPROACH_KIND
+  assert result["categorical_plant_model_sha256"] == model["model_sha256"]
+  assert result["hold_motion"]["supported_zero_speed_s"] >= .5 and np.ptp(trace["angle"]) > 0 and np.ptp(trace["yaw"]) > 0
+  first_zero = int(np.flatnonzero(trace["hardware_standstill"] == 1)[0])
+  captured = {event["node_index"]: event["captured_state"] for event in result["event_attempts"] if event.get("event") == "cs_capture"}
+  assert captured[first_zero]["hardware_standstill"] is False and captured[first_zero+1]["hardware_standstill"] is True
+  assert "high_speed_to_low_speed_categorical_transition_unimplemented" not in result["selection_rejections"]
+  assert "independent_categorical_state_dynamics_unvalidated" in result["selection_rejections"]
+  assert not result["selection_eligible"] and result["complete_controller_candidate"] is None and not result["production_enabled"]
+
+
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_fullrange_steering_changes_shared_motion_and_later_braking_with_fixed_targets(sign):
+  args, model = approach_stopping_fixture(sign)
+  start = len(FixtureController.calls)
+  first = evaluate_approach(args, model, parameters={"long": None, "lateral": {"factor": 2., "friction": .1}})
+  first_calls = FixtureController.calls[start:].copy()
+  start = len(FixtureController.calls)
+  second = evaluate_approach(args, model, parameters={"long": None, "lateral": {"factor": 3., "friction": .1}})
+  second_calls = FixtureController.calls[start:].copy()
+  assert first["status"] == second["status"] == "complete"
+  for key in ("can_torque", "v", "a", "native_feedback_v", "native_feedback_a"):
+    assert np.any(first["trace"][key] != second["trace"][key]), key
+  prefix = len(args[2]["publication_schedule"]["prefix_node_t"])
+  direct_feedback = []
+  for result, calls in ((first, first_calls), (second, second_calls)):
+    assert len(calls) == prefix+result["used_steps"]
+    received = np.asarray([call[:2] for call in calls[prefix:]], float)
+    np.testing.assert_array_equal(received[:, 0], result["trace"]["native_feedback_v"])
+    np.testing.assert_array_equal(received[:, 1], result["trace"]["native_feedback_a"])
+    direct_feedback.append(received)
+  assert np.any(direct_feedback[0] != direct_feedback[1])
+  # Source stopping ramps previous output, ignoring latera; changed received
+  # feedback can therefore legitimately leave acceleration requests identical.
+  assert first["fixed_reference_sha256"] == second["fixed_reference_sha256"]
+
+
+@pytest.mark.parametrize("fault", ["kind", "domain", "low_domain", "source", "pin", "static", "policy", "split", "edges"])
+def test_fullrange_model_admission_refuses_before_native_factories(monkeypatch, fault):
+  args, model = approach_stopping_fixture()
+  if fault == "kind":
+    model["kind"] = runner.low_plant.KIND
+  elif fault == "domain":
+    model["initial_speed_domain"] = "unbounded"
+  elif fault == "low_domain":
+    model["low_speed_max_initial_mps"] = 3.
+  elif fault == "source":
+    model["source_eligible"] = False
+  elif fault == "pin":
+    model["opendbc_gitlink"] = "b"*40
+  elif fault in ("static", "policy"):
+    model[fault+"_identity_sha256"] = "9"*64
+  elif fault == "split":
+    model["split"]["train"] = ["route-t"]
+  else:
+    model["edges"][0][-1] = 4.
+  model["model_sha256"] = runner.low_plant.identity_hash({k: v for k, v in model.items() if k != "model_sha256"})
+  monkeypatch.setattr(args[5], "create", lambda *a, **kw: pytest.fail("factory before fullrange admission refusal"))
+  with pytest.raises(runner.TwoWayError):
+    evaluate_approach(args, model)
+
+
+def test_fullrange_and_legacy_models_are_explicit_exclusive_stopping_options(monkeypatch):
+  args, model = approach_stopping_fixture()
+  _, low = stopping_fixture()
+  monkeypatch.setattr(args[5], "create", lambda *a, **kw: pytest.fail("factory before model choice refusal"))
+  for api in (runner.bind_proof, runner.evaluate_two_way):
+    positional = (*args,) if api is runner.bind_proof else (*args, {})
+    keywords = {} if api is runner.bind_proof else {"lateral_grid": GRID}
+    with pytest.raises(runner.TwoWayError, match="mutually exclusive"):
+      api(*positional, **keywords, low_speed_model=low, approach_stop_model=model)
+  with pytest.raises(runner.TwoWayError, match="mutually exclusive"):
+    runner.validation_search([args[0]], args[1], {args[0]["id"]: args[2]}, args[3], *args[4:], {}, grid=[None],
+                             lateral_grid=GRID, low_speed_model=low, approach_stop_model=model)
+  moving = fixture()
+  with pytest.raises(runner.TwoWayError, match="moving"):
+    runner.bind_proof(*moving, approach_stop_model=model)
+  with pytest.raises(runner.TwoWayError, match="moving"):
+    runner.bind_proof(*moving, low_speed_model=low)
+  with pytest.raises(runner.TwoWayError, match="population unavailable"):
+    runner.evaluate_two_way(*args, runner.bind_proof(*args), lateral_grid=GRID)
+  with pytest.raises(runner.TwoWayError, match="outside_low_speed_domain"):
+    evaluate_stopping(args, low)
+
+
+def test_fullrange_future_unused_gt_and_postrequest_oem_flag_do_not_change_feedback():
+  args, model = approach_stopping_fixture()
+  first = evaluate_approach(args, model)
+  tape = args[0]["tape"]
+  for key in ("v", "a"):
+    tape[key][1:] = 999.
+  tape["steering_angle"] = np.r_[args[2]["initial"]["state"]["angle"], np.full(199, 999.)]
+  tape["future_recorded_output"] = np.full(200, -999.)
+  tape["cruise_standstill"][tape["t"] > 7.4] = True
+  schedule = args[2]["publication_schedule"]
+  schedule["inputs"]["cruise_standstill"][len(schedule["prefix_node_t"]):] = tape["cruise_standstill"]
+  schedule["sha256"] = runner._body_hash(schedule)
+  changed = evaluate_approach(args, model)
+  assert changed["status"] == first["status"] == "complete"
+  for key in first["trace"]:
+    np.testing.assert_array_equal(first["trace"][key], changed["trace"][key], err_msg=key)
+  assert first["event_attempts"] == changed["event_attempts"]
+
+
+def test_fullrange_censor_and_unsupported_cells_keep_attempts_not_partial_support():
+  args, model = approach_stopping_fixture()
+  args[2]["censor_t"] = float(args[0]["tape"]["t"][7])
+  result = evaluate_approach(args, model)
+  assert result["status"] == "censored" and result["used_steps"] == 7 and result["supported_steps"] == 5
+  assert result["macro_indices"] == [0]
+  args, model = approach_stopping_fixture()
+  for key, cell in model["cells"].items():
+    if key.split("|")[-1].split(":")[16] != "1":
+      cell["supported"] = False
+  model["supported_cells"] = sum(cell["supported"] for cell in model["cells"].values())
+  model["model_sha256"] = runner.low_plant.identity_hash({k: v for k, v in model.items() if k != "model_sha256"})
+  result = evaluate_approach(args, model)
+  assert result["status"] == "unsupported" and result["reason"] == "macro_unsupported:cell_support"
+  assert result["used_steps"] > result["supported_steps"] >= 5
+  assert result["macro_indices"] == list(range(0, result["supported_steps"], 5))
+
+
+def test_fullrange_search_retains_fixed_population_and_failed_parameter_rows():
+  args, model = approach_stopping_fixture()
+  w, report, env, moving, lr, lat, out = args
+  proofs = {w["id"]: runner.bind_proof(*args, approach_stop_model=model)}
+  result = runner.validation_search([w], report, {w["id"]: env}, moving, lr, lat, out, proofs,
+    grid=[{"long": None, "lateral": {"factor": 2., "friction": .1}}, {"long": None, "lateral": {"factor": 99., "friction": .1}}],
+    lateral_grid=GRID, approach_stop_model=model)
+  assert result["baseline"]["results"][w["id"]]["status"] == "complete"
+  assert len(result["rows"]) == 2 and result["rows"][1]["coverage"] == 0.
+  assert result["rows"][1]["failures"] and result["rows"][1]["common_window_ids"] == [w["id"]]
+  assert result["selection"] is None and result["complete_controller_candidate"] is None and not result["production_enabled"]
+
+
+@pytest.mark.skipif(os.name != "posix" or os.environ.get("RUN_NATIVE_TWO_WAY_APPROACH_API") != "1",
+                    reason="Opt-in serialized actual fullrange approach API; synthetic support only")
+def test_actual_three_adapter_approach_crossing_and_hold():
+  """Actual APIs, predeclared3.5m/s synthetic cells; no physical tuning proof.
+
+  A/A changes only unused future measured columns and post-request OEM flags.
+  No CP/gain/cell retuning follows failure; the native stopping entry may erase
+  positive PID differences, so universal A/B brake-command divergence is absent.
+  """
+  import hashlib
+  from pathlib import Path
+
+  repo = Path(os.environ["NATIVE_TWO_WAY_SOURCE_ROOT"]).resolve()
+  raw_manifest = Path(os.environ["NATIVE_TWO_WAY_APPROACH_SOURCE_MANIFEST"]).read_bytes()
+  expected_digest = os.environ["NATIVE_TWO_WAY_APPROACH_SOURCE_MANIFEST_SHA256"]
+  assert len(expected_digest) == 64 and all(c in "0123456789abcdef" for c in expected_digest)
+  assert hashlib.sha256(raw_manifest).hexdigest() == expected_digest
+  manifest = json.loads(raw_manifest)
+  assert manifest["research_helpers"] == runner.helper_hashes()
+  assert manifest["stopping_research_helpers"] == runner.helper_hashes(include_low_speed=True)
+  assert manifest["test_sha256"] == hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+  pin, head = manifest["opendbc_gitlink"], manifest["superproject_head"]
+  # Host-expected maps bind content before imports; output verifies bootstrap.
+  out = runner.output.load_runtime(repo, manifest["output_sources"], pin, head,
+                                   expected_bootstrap=manifest["output_bootstrap"])
+  lat = runner.lateral.load_runtime(repo, manifest["lateral_sources"], pin)
+  lr = runner.long.load_native_runtime(repo, manifest["long_sources"], pin)
+  assert lr.actual_native and lat.bindings.actual_native and out.bindings.actual_native
+  from opendbc.car.structs import car
+  from opendbc.car.hyundai.values import HyundaiFlags
+  from openpilot.cereal import custom
+
+  cp = car.CarParams.new_message(
+    carFingerprint="HYUNDAI_ELANTRA_2024", brand="hyundai", radarUnavailable=False,
+    mass=1360., wheelbase=2.72, centerToFront=1.088, rotationalInertia=2500.,
+    steerRatio=13.5, steerRatioRear=0., tireStiffnessFront=80000., tireStiffnessRear=80000.,
+    steerActuatorDelay=.1, steerLimitTimer=.4, minSteerSpeed=0., steerAtStandstill=False,
+    steerControlType="torque", flags=int(HyundaiFlags.RAISED_LIMITS),
+    openpilotLongitudinalControl=True, longitudinalActuatorDelay=.5, stopAccel=-2.)
+  torque = cp.lateralTuning.init("torque")
+  torque.latAccelFactor, torque.latAccelOffset, torque.friction = 2.5, 0., .1
+  cp.longitudinalTuning.kiBP, cp.longitudinalTuning.kiV = [0., 30.], [.05, .1]
+  firmware = cp.init("carFw", 1)[0]
+  firmware.ecu, firmware.fwVersion = "eps", b"\x00\xff\x80"
+  sp = custom.CarParamsSP.new_message(enableGasInterceptor=False)
+  sp.neuralNetworkLateralControl.model.path = str(repo/runner.lateral.ASSET)
+
+  args, categorical = approach_stopping_fixture()
+  window, report, env = args[:3]
+  args[4:] = [lr, lat, out]
+  window.update(cp=cp.to_dict(), sp=sp.to_dict(), opendbc_gitlink=pin)
+  env.update(cp_raw=np.frombuffer(cp.to_bytes(), np.uint8).copy(), sp_raw=np.frombuffer(sp.to_bytes(), np.uint8).copy(),
+             opendbc_gitlink=pin, static_identity_sha256=old.static_identity(window["cp"], window["sp"]))
+  categorical.update(opendbc_gitlink=pin, static_identity_sha256=env["static_identity_sha256"])
+  categorical["model_sha256"] = runner.low_plant.identity_hash({k: v for k, v in categorical.items() if k != "model_sha256"})
+  tape, horizon = window["tape"], np.asarray(lat.bindings.horizon)
+  tape["rdf_horizon"] = horizon
+  tape["rdf_plan"][:, :, 0] = np.minimum(2*horizon, 1.5)
+  tape["rdf_position"] = tape["rdf_plan"][:, :, :3].copy()
+  env["lateral_delay_witness"]["packet_lateral_control_params"][:, 0] = 3.5
+  from test_controller_native_search import uncertainty
+  window["stop_target_uncertainty"] = uncertainty(window)
+  assert window["cp"]["flags"] & int(HyundaiFlags.RAISED_LIMITS)
+  assert window["cp"]["minSteerSpeed"] == 0 and window["cp"]["steerAtStandstill"] is False
+  assert window["cp"]["carFw"][0]["fwVersion"] == b"\x00\xff\x80"
+  assert runner.low_plant.predict_approach_macro.__module__ == "controller_multirate_joint_stop_hold"
+  first = evaluate_approach(args, categorical)
+
+  # Initial raw-CS category/eligibility, cells, causal schedule and model inputs
+  # remain fixed. These later recorded values never supply simulated feedback.
+  tape["v"][1:], tape["a"][1:] = 99., -99.
+  tape["unused_future_recorded_angle"] = np.full(len(tape["t"]), 77.)
+  tape["unused_future_recorded_yaw"] = np.full(len(tape["t"]), -9.)
+  tape["unused_future_recorded_output"] = np.full(len(tape["t"]), -3.)
+  tape["unused_future_recorded_hardware_standstill"] = np.ones(len(tape["t"]), bool)
+  tape["cruise_standstill"][tape["t"] > 7.4] = True
+  schedule = env["publication_schedule"]
+  prefix = len(schedule["prefix_node_t"])
+  schedule["inputs"]["cruise_standstill"][prefix:] = tape["cruise_standstill"]
+  schedule["sha256"] = runner._body_hash(schedule)
+  second = evaluate_approach(args, categorical)
+  for result in (first, second):
+    assert result["status"] == "complete", (result["reason"], result["used_steps"], result["supported_steps"])
+    assert result["supported_steps"] == result["used_steps"] == 200 and result["macro_indices"] == list(range(0, 200, 5))
+    trace, receipt = result["trace"], result["output_receipt"]
+    assert trace["v"][0] == 3.5 and np.any(trace["v"] < 3.)
+    assert result["categorical_plant_kind"] == runner.low_plant.APPROACH_KIND
+    assert result["categorical_plant_model_sha256"] == categorical["model_sha256"]
+    assert result["source_binding"]["approach_stop_model"] == runner.long.value_hash(categorical)
+    assert receipt["actual_native"] and not receipt["failed"]
+    assert receipt["source_hashes"] == manifest["output_sources"] and receipt["bootstrap_sources"] == manifest["output_bootstrap"]
+    assert receipt["apply_calls"] == int(schedule["apply_call"].sum())
+    assert result["source_binding"]["helpers"] == manifest["stopping_research_helpers"]
+    assert result["source_binding"]["long_sources"] == manifest["long_sources"]
+    assert result["source_binding"]["lateral_sources"] == manifest["lateral_sources"]
+    stop_indices = np.flatnonzero(trace["native_state"] == 2)
+    assert len(stop_indices) and np.all(np.diff(stop_indices) == 1)
+    origin = int(stop_indices[0])
+    event_t = float(schedule["compute_t"][prefix+origin])
+    outcome = result["stopping_result"]
+    assert outcome["native_stop_compute_t"] == trace["native_compute_t"][origin] == event_t
+    assert outcome["stop_request_node_t"] == trace["t"][origin] > event_t
+    assert event_t-trace["native_compute_t"][0] >= .5
+    assert any(((trace["native_feedback_v"][i:i+5] >= 2.) & (trace["native_state"][i:i+5] == 1)).all()
+               for i in range(0, origin-4, 5))
+    assert tape["rdf_should_stop"][int(trace["rdf_index"][origin])]
+    if outcome["model_target"] is not None:
+      assert outcome["model_target"]["request_t"] == event_t
+    if not outcome["target_feasible"]:
+      assert "model_stopping_target_feasibility_unverified" in result["selection_rejections"]
+    # Native positive PID entry clamps to0 before the pinned1m/s3 stopping ramp.
+    assert trace["accel_request"][origin-1] >= 0.
+    assert trace["accel_request"][origin] == pytest.approx(-.01, rel=0, abs=1e-9)
+    np.testing.assert_allclose(np.diff(trace["accel_request"][stop_indices]), -.01, rtol=0, atol=1e-9)
+    assert np.all((-3.5 <= trace["accel_request"]) & (trace["accel_request"] <= 2.))
+    assert result["hold_motion"]["supported_zero_speed_s"] >= .5
+    held = np.flatnonzero(trace["hardware_standstill"] == 1)
+    assert len(held) and np.all(trace["v"][held] == 0.)
+    assert np.ptp(trace["angle"][held]) > 0 and np.ptp(trace["yaw"][held]) > 0
+    assert not trace["effective_active"][held[-1]] and not trace["request"][held[-1]] and trace["can_torque"][held[-1]] == 0
+    counts, active = trace["can_torque"], trace["effective_active"]
+    assert np.max(np.abs(counts)) <= 409 and np.min(counts[active]) < 0
+    assert np.max(np.abs(np.diff(counts)[active[1:]])) <= 7
+    reported_counts = trace["published_torque"]*409.
+    previous = np.rint(reported_counts)
+    np.testing.assert_allclose(reported_counts, previous, rtol=0, atol=1e-9)
+    lower = np.where(previous > 0, np.maximum(previous-7, -3), previous-3)
+    upper = np.where(previous > 0, previous+3, np.minimum(previous+7, 3))
+    assert np.all(counts[active] >= lower[active]) and np.all(counts[active] <= upper[active])
+    assert abs(counts[0]) <= 3*prefix
+    np.testing.assert_array_equal(trace["consumed_cc_index"], np.arange(200)-1)
+    np.testing.assert_array_equal(trace["published_accel"][1:], trace["held_accel_after_apply"][:-1])
+    np.testing.assert_array_equal(trace["published_torque"][1:], counts[:-1]/409.)
+    assert any(not e["publication"]["published_event_valid"] for e in result["event_attempts"] if e.get("event") == "co_publish")
+    first_zero = int(held[0])
+    captured = {e["node_index"]: e["captured_state"] for e in result["event_attempts"] if e.get("event") == "cs_capture"}
+    assert captured[first_zero]["hardware_standstill"] is False and captured[first_zero+1]["hardware_standstill"] is True
+    assert not result["selection_eligible"] and result["complete_controller_candidate"] is None and not result["production_enabled"]
+    assert "fullrange_categorical_contact_response_unvalidated" in result["selection_rejections"]
+  for key in first["trace"]:
+    np.testing.assert_array_equal(first["trace"][key], second["trace"][key], err_msg=key)
+  assert first["output_receipt"] == second["output_receipt"] and first["event_attempts"] == second["event_attempts"]
+  assert first["fixed_reference_sha256"] == second["fixed_reference_sha256"]
+  assert report["split"]["test"] == ["route-x"]  # Synthetic reservation, no data opened.

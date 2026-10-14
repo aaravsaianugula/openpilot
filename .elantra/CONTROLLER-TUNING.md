@@ -495,3 +495,25 @@ source/test snapshots remain preserved. No actual-data fit, held-out array,
 native controller job or device execution occurred. Connecting the new kind to
 the shared native recurrence remains the next step. Current full tune selection
 and production stay disabled. See `validation-categorical-approach-component-checkpoint.json`.
+
+### Native categorical approach integration
+
+An explicit `approach_stop_model` now selects one admitted 31-feature categorical
+plant for the whole native approach, stop and hold recurrence. It spans supported
+TRAIN speed cells across 3 m/s without switching models or resetting controllers.
+The legacy low-speed option retains its 3 m/s refusal. Both options preserve
+independent hardware standstill, continuous native handles, causal publications,
+skipped applies, exact 50 ms response commits and fixed 409/native envelopes.
+
+Seventy-six host cases passed, with the two older native opt-in cases skipped;
+all earlier cases remain unchanged. Ruff, root review and bounded independent
+source/clock review were clean. One new actual LongControl/V0/Hyundai output case
+passed in 12.68 s on pinned x86 POSIX (child/outer exits 0, no skip). Its synthetic
+3.5 m/s approach crosses 3 m/s and reaches hold using the same plant and handles.
+Future-unused measured feedback does not affect the traces. Source/dependency/
+snapshot equality, Params isolation and owned-process cleanup passed.
+
+These are synthetic algorithm/API checks. No real joint plant, accepted current
+tune or physical driving improvement follows. Model-target feasibility remains
+separate from stopline ground truth; source, uncertainty and physical response
+gates keep selection disabled. See `validation-native-approach-checkpoint.json`.

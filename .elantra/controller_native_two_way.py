@@ -41,13 +41,24 @@ def helper_hashes(*, include_low_speed=False):
   return result
 
 
-def bind_proof(window, report, env, model, lr, lat, out, *, low_speed_model=None):
+def _choose_stop_model(window, low_speed_model, approach_stop_model):
+  if low_speed_model is not None and approach_stop_model is not None:
+    raise TwoWayError("low_speed_model and approach_stop_model are mutually exclusive")
+  if window.get("regime", "moving") != "stopping" and (low_speed_model is not None or approach_stop_model is not None):
+    raise TwoWayError("categorical stopping model supplied to moving-only window")
+  return approach_stop_model if approach_stop_model is not None else low_speed_model
+
+
+def bind_proof(window, report, env, model, lr, lat, out, *, low_speed_model=None, approach_stop_model=None):
+  selected = _choose_stop_model(window, low_speed_model, approach_stop_model)
   result = {"window": long.value_hash(window), "report": long.value_hash(report), "envelope": long.value_hash(env),
           "model": long.value_hash(model), "long_sources": dict(lr.source_hashes), "lateral_sources": dict(lat.sources),
           "output_sources": dict(out.sources), "output_bootstrap": dict(out.bootstrap),
-          "helpers": helper_hashes(include_low_speed=low_speed_model is not None)}
+          "helpers": helper_hashes(include_low_speed=selected is not None)}
   if low_speed_model is not None:
     result["low_speed_model"] = long.value_hash(low_speed_model)
+  if approach_stop_model is not None:
+    result["approach_stop_model"] = long.value_hash(approach_stop_model)
   return result
 
 
@@ -268,20 +279,26 @@ def _macro_prefix(cc, co, can, start, end, *, stopping=False):
         raise TwoWayError(name+" invalid/inactive/request-false macro prefix")
 
 
-def _low_population(model, report, env):
+def _low_population(model, report, env, *, approach=False):
   """Validate only the used31-state model; no legacy or unused moving cells."""
-  if (not isinstance(model, dict) or model.get("kind") != low_plant.KIND or model.get("features") != list(low_plant.FEATURES)
+  kind = low_plant.APPROACH_KIND if approach else low_plant.KIND
+  if not isinstance(model, dict):
+    raise TwoWayError("source-bound categorical31-state TRAIN population unavailable")
+  domain_differs = ((model.get("initial_speed_domain") != "retained_train_global_and_cell_bounds"
+                     or "low_speed_max_initial_mps" in model) if approach else
+                    model.get("low_speed_max_initial_mps") != low_plant.LOW_SPEED_MAX_MPS)
+  if (model.get("kind") != kind or model.get("features") != list(low_plant.FEATURES)
       or model.get("split") != report["split"] or any(model.get(k) is not True for k in
         ("source_eligible", "source_pin_verified", "static_policy_timing_verified"))
       or any(model.get(k) != env.get(k) for k in ("cohort", "opendbc_gitlink", "static_identity_sha256", "policy_identity_sha256"))
       or (model.get("macro_dt_s"), model.get("native_dt_s"), model.get("micro_nodes")) != (.05, .01, 5)
-      or model.get("low_speed_max_initial_mps") != low_plant.LOW_SPEED_MAX_MPS
+      or domain_differs
       or model.get("native_policy_source_sha256") != low_plant.NATIVE_POLICY_SHA or model.get("card_source_sha256") != CARD_SHA
       or model.get("model_sha256") != low_plant.identity_hash({k: v for k, v in model.items() if k != "model_sha256"})
       or type(model.get("min_samples")) is not int or model["min_samples"] < 100
       or type(model.get("min_routes")) is not int or model["min_routes"] < 2
       or not model.get("record_hashes") or any(not isinstance(v, str) or not shared._SHA.fullmatch(v) for v in model["record_hashes"])):
-    raise TwoWayError("source-bound low-speed31-state TRAIN population unavailable")
+    raise TwoWayError("source-bound categorical31-state TRAIN population unavailable")
   _population_structure(model, report, 31, categorical=True)
 
 
@@ -387,8 +404,9 @@ def _envelope(w, env, lat, compute_start):
   return {k: float(v) for k, v in state.items()}
 
 
-def _admit(w, report, env, model, lr, lat, out, proof, parameters, grid, low_speed_model):
-  if proof != bind_proof(w, report, env, model, lr, lat, out, low_speed_model=low_speed_model):
+def _admit(w, report, env, model, lr, lat, out, proof, parameters, grid, low_speed_model, approach_stop_model):
+  categorical_model = _choose_stop_model(w, low_speed_model, approach_stop_model)
+  if proof != bind_proof(w, report, env, model, lr, lat, out, low_speed_model=low_speed_model, approach_stop_model=approach_stop_model):
     raise TwoWayError("source/input/model/helper binding differs")
   p, selected, rdf = _native_inputs(w, report, lr, lat, out, parameters, grid)
   t = np.asarray(w["tape"]["t"])
@@ -401,14 +419,12 @@ def _admit(w, report, env, model, lr, lat, out, proof, parameters, grid, low_spe
   state = _envelope(w, env, lat, float(min(s[e+"_t"][0] for e in EVENTS)))
   stopping = w.get("regime", "moving") == "stopping"
   if stopping:
-    _low_population(low_speed_model, report, env)
-    if state["v"] > low_plant.LOW_SPEED_MAX_MPS:
+    _low_population(categorical_model, report, env, approach=approach_stop_model is not None)
+    if approach_stop_model is None and state["v"] > low_plant.LOW_SPEED_MAX_MPS:
       raise TwoWayError("categorical_standstill_transition_unavailable_outside_low_speed_domain")
-  elif low_speed_model is not None:
-    raise TwoWayError("low-speed model supplied to moving-only window")
   else:
     _population(model, report, env)
-  used_model = low_speed_model if stopping else model
+  used_model = categorical_model if stopping else model
   initial_features = np.array([state[k] for k in plant.STATE_KEYS]+[env["roll"]["value"]])
   if (initial_features < np.asarray(used_model["feature_min"])[:6]).any() or (initial_features > np.asarray(used_model["feature_max"])[:6]).any():
     raise TwoWayError("initial state/physical roll outside five-state plant support")
@@ -457,10 +473,11 @@ def _admit(w, report, env, model, lr, lat, out, proof, parameters, grid, low_spe
 
 
 def evaluate_two_way(window, report, envelope, model, long_runtime, lat_runtime, output_runtime, proof, *, parameters=None, lateral_grid,
-                     low_speed_model=None):
+                     low_speed_model=None, approach_stop_model=None):
   try:
     p, selected, effective, state, schedule, rdf, fixed = _admit(
-      window, report, envelope, model, long_runtime, lat_runtime, output_runtime, proof, parameters, lateral_grid, low_speed_model)
+      window, report, envelope, model, long_runtime, lat_runtime, output_runtime, proof, parameters, lateral_grid,
+      low_speed_model, approach_stop_model)
   except (ValueError, TypeError, KeyError, AttributeError) as error:
     raise TwoWayError("admission refused: "+str(error)) from error
   cp, sp = long_runtime.static_builder(effective, window["sp"])
@@ -477,6 +494,9 @@ def evaluate_two_way(window, report, envelope, model, long_runtime, lat_runtime,
                target_ay=fixed["target_ay"].copy(), physical_reference=fixed["acceleration"].copy(),
                fixed_speed=fixed["speed"].copy(), fixed_path=fixed["path"].copy())
   stopping = window.get("regime", "moving") == "stopping"
+  categorical_model = approach_stop_model if approach_stop_model is not None else low_speed_model
+  categorical_predict = low_plant.predict_approach_macro if approach_stop_model is not None else low_plant.predict_macro
+  categorical_speed_max = None if approach_stop_model is not None else low_plant.LOW_SPEED_MAX_MPS
   hardware_standstill = envelope["initial"]["hardware_standstill"] if stopping else None
   if stopping:
     trace.update(hardware_standstill=np.full(len(t), np.nan), effective_active=np.zeros(len(t), bool),
@@ -629,9 +649,9 @@ def evaluate_two_way(window, report, envelope, model, long_runtime, lat_runtime,
       if used % MICRO == 0:
         sl = slice(used-MICRO, used)
         if stopping:
-          if state["v"] > low_plant.LOW_SPEED_MAX_MPS:
+          if categorical_speed_max is not None and state["v"] > categorical_speed_max:
             raise TwoWayError("categorical_standstill_transition_unavailable_outside_low_speed_domain")
-          predicted = low_plant.predict_macro(low_speed_model, state, trace["accel_request"][sl], trace["published_accel"][sl],
+          predicted = categorical_predict(categorical_model, state, trace["accel_request"][sl], trace["published_accel"][sl],
             trace["can_torque"][sl], trace["effective_active"][sl], trace["request"][sl], envelope["roll"]["value"], hardware_standstill)
           next_state = predicted if isinstance(predicted, plant.Unsupported) else predicted["state"]
           next_hardware = None if isinstance(predicted, plant.Unsupported) else predicted["hardware_standstill"]
@@ -683,10 +703,17 @@ def evaluate_two_way(window, report, envelope, model, long_runtime, lat_runtime,
   if stopping:
     result.update(stopping_result=outcome, hold_motion=motion, geometry_prefix_mask=fixed["geometry"].copy(),
       unknown_geometry_macro_indices=np.arange(0, len(t), MICRO)[~fixed["geometry"][::MICRO]].tolist(),
-      stop_request_index=fixed["request_index"], low_speed_domain_contract="initialmacro v<=3m/s only; no above-domain categorical transition",
+      stop_request_index=fixed["request_index"], categorical_plant_kind=categorical_model["kind"],
+      categorical_plant_model_sha256=categorical_model["model_sha256"],
       independent_initial_standstill_witness_ns=envelope["initial"]["hardware_standstill_t_ns"])
     result["selection_rejections"].extend(["contact_and_hold_unvalidated", "independent_categorical_state_dynamics_unvalidated",
-      "high_speed_to_low_speed_categorical_transition_unimplemented", "frozen_OEM_cruise_standstill_unverified"])
+      "frozen_OEM_cruise_standstill_unverified"])
+    if approach_stop_model is None:
+      result["low_speed_domain_contract"] = "initialmacro v<=3m/s only; no above-domain categorical transition"
+      result["selection_rejections"].append("high_speed_to_low_speed_categorical_transition_unimplemented")
+    else:
+      result["categorical_domain_contract"] = "ONE source-bound approach model across retained TRAIN speed/cell domains; no3m/s switch or fallback"
+      result["selection_rejections"].append("fullrange_categorical_contact_response_unvalidated")
     result["limitations"].extend(["2m/s aligned approach and0.5s approach/hold requirements are declared research support, not native settings",
       "Initial category is latest valid raw CS before earliest cold-prefix capture; held prefix state remains unvalidated",
       "Published request features are independent of earlier consumed/applied CC and held software reports",
@@ -824,11 +851,16 @@ def _stop_constraints(results, baseline, declared):
   return reasons
 
 
-def validation_search(windows, report, envelopes, model, lr, lat, out, proofs, *, grid, lateral_grid, low_speed_model=None):
+def validation_search(windows, report, envelopes, model, lr, lat, out, proofs, *, grid, lateral_grid,
+                      low_speed_model=None, approach_stop_model=None):
+  if low_speed_model is not None and approach_stop_model is not None:
+    raise TwoWayError("low_speed_model and approach_stop_model are mutually exclusive")
   if not windows or len({w["id"] for w in windows}) != len(windows) or not isinstance(grid, (list, tuple)) or not 0 < len(grid) <= 64:
     raise TwoWayError("unique validation windows and declared finite1..64 grid required")
   common, rows = sorted(w["id"] for w in windows), []
   stop_ids = sorted(w["id"] for w in windows if w.get("regime") == "stopping")
+  if not stop_ids and (low_speed_model is not None or approach_stop_model is not None):
+    raise TwoWayError("categorical stopping model supplied to moving-only windows")
   if stop_ids:
     try:
       identities = {(shared.static_identity(w["cp"], w["sp"]),
@@ -844,7 +876,8 @@ def validation_search(windows, report, envelopes, model, lr, lat, out, proofs, *
       try:
         result = evaluate_two_way(window, report, envelopes[key], model, lr, lat, out, proofs[key],
                                   parameters=parameters, lateral_grid=lateral_grid,
-                                  low_speed_model=low_speed_model if window.get("regime") == "stopping" else None)
+                                  low_speed_model=low_speed_model if window.get("regime") == "stopping" else None,
+                                  approach_stop_model=approach_stop_model if window.get("regime") == "stopping" else None)
       except Exception as error:
         result = {"window_id": key, "status": "rejected", "reason": str(error), "error_type": type(error).__name__,
                   "traceback": traceback.format_exc()}
