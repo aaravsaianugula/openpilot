@@ -28,7 +28,19 @@ class ControlsExt(ModelStateBase):
     self.blinker_pause_lateral = BlinkerPauseLateral()
 
     cloudlog.info("controlsd_ext is waiting for CarParamsSP")
-    self.CP_SP = messaging.log_from_bytes(params.get("CarParamsSP", block=True), custom.CarParamsSP)
+    if getattr(self, "observer", None) is None:
+      self.CP_SP = messaging.log_from_bytes(params.get("CarParamsSP", block=True), custom.CarParamsSP)
+    else:
+      startup_ref = self.observer.begin_startup_reference("paramsCarParamsSP")
+      startup_raw, startup_outcome = None, "readFailed"
+      try:
+        startup_raw = params.get("CarParamsSP", block=True)
+        startup_outcome = "parseFailed"
+        self.CP_SP = messaging.log_from_bytes(startup_raw, custom.CarParamsSP)
+        startup_outcome = "complete"
+      finally:
+        self.observer.end_startup_reference(startup_ref, startup_raw, startup_outcome)
+        startup_raw = None
     cloudlog.info("controlsd_ext got CarParamsSP")
 
     self.sm_services_ext = ['radarState', 'selfdriveStateSP']

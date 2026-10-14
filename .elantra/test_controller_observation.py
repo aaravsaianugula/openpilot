@@ -362,3 +362,282 @@ def test_overlay_registration_covers_every_runtime_schema_service_and_hook():
   assert "openpilot/selfdrive/controls/lib/controller_observation.py" in values["OVERLAY_ADDED"]
   assert {"openpilot/cereal/custom.capnp", "openpilot/cereal/log.capnp", "openpilot/cereal/services.py",
           "openpilot/selfdrive/controls/controlsd.py", "openpilot/selfdrive/car/card.py"} <= set(values["OVERLAY_MODIFIED"])
+
+
+def drain(o):
+  result = []
+  while o._pending and not o.failed:
+    o.flush_one(lambda service, record: result.append(record))
+  return result
+
+
+def test_startup_exact_bytes_are_worker_hashed_released_and_never_exported(monkeypatch, isolated_schema):
+  import hashlib
+  o = obs.Observer("controls", clock=iter(range(2**53+1, 2**53+1000, 7)).__next__, epoch=b"e"*16, start_worker=False)
+  private = b"VIN-and-firmware-private-raw-buffer"
+  expected = hashlib.sha256(private).digest()
+  token = o.begin_startup_reference("paramsCarParams")
+  real_hash, calls = hashlib.sha256, []
+  monkeypatch.setattr(obs.hashlib, "sha256", lambda raw: (calls.append(raw), real_hash(raw))[1])
+  o.end_startup_reference(token, private, "complete")
+  assert calls == [] and o._startup_reserved_bytes == len(private)
+  output = drain(o)
+  assert calls == [private] and o._startup_released_bytes == len(private)
+  begin, end = (r["startup_reference"] for r in output)
+  assert begin["id"] == end["id"] == 1 and begin["begin_ns"] == end["begin_ns"] == 2**53+1
+  assert end["end_ns"] > begin["begin_ns"] and end["digest_ready_ns"] > end["end_ns"]
+  assert end["sha256"] == expected and end["status"] == "ready" and end["byte_count"] == len(private)
+  for record in output:
+    assert "raw_bytes" not in record["startup_reference"] and private not in repr(record).encode()
+    raw = obs.encode_record(record, isolated_schema, publisher_ns=2**53+900)
+    assert len(raw) <= 1024 and private not in raw
+    with isolated_schema.Event.from_bytes(raw) as event:
+      ref = event.controlsObservation.observation.startupReference
+      assert ref.present and ref.source == "paramsCarParams" and ref.decoder == "carParams"
+      assert not event.controlsObservation.observation.policyComplete and not event.controlsObservation.observation.sourceAuthenticated
+
+
+@pytest.mark.parametrize("raw,outcome,status", [(b"x"*65537, "complete", "oversize"), (bytearray(b"x"), "complete", "nonbytes"),
+  (None, "readFailed", "readFailed"), (b"invalid", "parseFailed", "parseFailed"), (None, "serializationFailed", "serializationFailed")],
+  ids=["oversize", "mutable", "read_failure", "parse_failure", "serialize_failure"])
+def test_startup_invalid_buffers_and_original_failure_outcomes_never_get_valid_digest(raw, outcome, status):
+  o = observer()
+  token = o.begin_startup_reference("paramsCarParams")
+  o.end_startup_reference(token, raw, outcome)
+  end = drain(o)[-1]["startup_reference"]
+  assert end["status"] == status and end["sha256"] == b"" and end["digest_ready_ns"] == 0
+  assert o._startup_reserved_bytes == o._startup_released_bytes == 0
+
+
+def test_startup_cp_sp_independent_lifetime_and_queue_loss_have_no_valid_fallback():
+  o = observer()
+  cp = o.begin_startup_reference("paramsCarParams")
+  o.end_startup_reference(cp, b"CP", "complete")
+  sp = o.begin_startup_reference("paramsCarParamsSP")
+  o.end_startup_reference(sp, b"SP", "complete")
+  assert cp != sp and len(o._pending) == 4
+  assert o.begin_startup_reference("paramsCarParams") is None
+  output = drain(o)
+  assert len(output) == 4 and o._startup_jobs == 2
+  assert {r["startup_reference"]["source"] for r in output} == {"paramsCarParams", "paramsCarParamsSP"}
+  tiny = observer(capacity=1)
+  token = tiny.begin_startup_reference("paramsCarParams")
+  tiny.end_startup_reference(token, b"secret", "complete")
+  assert tiny.dropped and tiny.loss
+  assert tiny._startup_reserved_bytes == tiny._startup_released_bytes
+  assert all("raw_bytes" not in r["startup_reference"] for r in tiny._pending)
+
+
+def test_startup_digest_and_publisher_failure_release_all_buffers_without_retry(monkeypatch):
+  o = observer()
+  token = o.begin_startup_reference("paramsCarParams")
+  o.end_startup_reference(token, b"CP", "complete")
+  monkeypatch.setattr(obs.hashlib, "sha256", lambda raw: (_ for _ in ()).throw(ValueError("secret failure")))
+  output = drain(o)
+  assert output[-1]["startup_reference"]["status"] == "digestFailed"
+  assert output[-1]["startup_reference"]["sha256"] == b"" and o._startup_released_bytes == 2
+  stopped = observer()
+  cp = stopped.begin_startup_reference("paramsCarParams")
+  stopped.end_startup_reference(cp, b"CP-private", "complete")
+  sp = stopped.begin_startup_reference("paramsCarParamsSP")
+  stopped.end_startup_reference(sp, b"SP-private", "complete")
+  assert not stopped.flush_one(lambda *a: (_ for _ in ()).throw(RuntimeError("publisher failed")))
+  assert stopped.failed and stopped._startup_reserved_bytes == stopped._startup_released_bytes
+  assert all("raw_bytes" not in r["startup_reference"] for r in stopped._pending)
+
+
+def startup_fragment(path, cls, targets, namespace):
+  tree = ast.parse((ROOT/path).read_text())
+  constructor = next(n for c in tree.body if isinstance(c, ast.ClassDef) and c.name == cls
+                     for n in c.body if isinstance(n, ast.FunctionDef) and n.name == "__init__")
+  selected = []
+  for node in constructor.body:
+    assigned = [target for n in ast.walk(node) if isinstance(n, ast.Assign) for target in n.targets]
+    if any((isinstance(t, ast.Name) and t.id in targets) or (isinstance(t, ast.Attribute) and t.attr in targets) for t in assigned):
+      selected.append(node)
+  wrapper = ast.parse("def run(self):\n  return locals()\n").body[0]
+  wrapper.body = [*selected, *wrapper.body]
+  exec(compile(ast.fix_missing_locations(ast.Module(body=[wrapper], type_ignores=[])), str(path), "exec"), namespace)
+  return namespace["run"]
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize("source", ["cp", "sp"])
+def test_actual_startup_one_get_parse_order_values_and_disabled_no_capture(enabled, source):
+  calls, raw, parsed = [], b"exact-original-private", object()
+  o = observer() if enabled else None
+  target = SimpleNamespace(observer=o, params=SimpleNamespace(get=lambda key, **kw: (calls.append(("get", key, kw)), raw)[1]))
+  def parse(value, decoder):
+    assert value is raw
+    calls.append(("parse", decoder))
+    return parsed
+  path, cls, field, key, decoder = (("openpilot/selfdrive/controls/controlsd.py", "Controls", "CP", "CarParams", "CP") if source == "cp" else
+    ("openpilot/sunnypilot/selfdrive/controls/controlsd_ext.py", "ControlsExt", "CP_SP", "CarParamsSP", "SP"))
+  run = startup_fragment(path, cls, {field}, {"messaging": SimpleNamespace(log_from_bytes=parse),
+      "car": SimpleNamespace(CarParams="CP"), "custom": SimpleNamespace(CarParamsSP="SP"), "params": target.params})
+  run(target)
+  assert getattr(target, field) is parsed and calls == [("get", key, {"block": True}), ("parse", decoder)]
+  if enabled:
+    assert [r["stage"] for r in o._pending] == ["startupBegin", "startupEnd"]
+    assert drain(o)[-1]["startup_reference"]["status"] == "ready"
+
+
+@pytest.mark.parametrize("failure", ["read", "parse"])
+def test_original_startup_exception_is_preserved_and_failure_reference_unresolved(failure):
+  exception, calls = RuntimeError("private original error"), []
+  def get(*a, **k):
+    calls.append("get")
+    if failure == "read":
+      raise exception
+    return b"CP"
+  def parse(*a):
+    calls.append("parse")
+    raise exception
+  o = observer()
+  target = SimpleNamespace(observer=o, params=SimpleNamespace(get=get))
+  run = startup_fragment("openpilot/selfdrive/controls/controlsd.py", "Controls", {"CP"},
+      {"messaging": SimpleNamespace(log_from_bytes=parse), "car": SimpleNamespace(CarParams="CP")})
+  with pytest.raises(RuntimeError) as captured:
+    run(target)
+  assert captured.value is exception and calls == (["get"] if failure == "read" else ["get", "parse"])
+  reference = drain(o)[-1]["startup_reference"]
+  assert reference["status"] == ("readFailed" if failure == "read" else "parseFailed") and reference["sha256"] == b""
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_actual_card_existing_cp_sp_serialize_once_and_independent_brackets(enabled):
+  calls, cp, sp = [], b"CP-original", b"SP-original"
+  target = SimpleNamespace(observer=observer("card") if enabled else None,
+      CP=SimpleNamespace(to_bytes=lambda: (calls.append("cp_bytes"), cp)[1]), CP_SP="SP-input")
+  def convert(value):
+    assert value == "SP-input"
+    calls.append("sp_convert")
+    return SimpleNamespace(to_bytes=lambda: (calls.append("sp_bytes"), sp)[1])
+  run = startup_fragment("openpilot/selfdrive/car/card.py", "Car", {"cp_bytes", "CP_SP_capnp", "cp_sp_bytes"}, {"convert_to_capnp": convert})
+  result = run(target)
+  assert result["cp_bytes"] is cp and result["cp_sp_bytes"] is sp and calls == ["cp_bytes", "sp_convert", "sp_bytes"]
+  if enabled:
+    output = drain(target.observer)
+    assert len(output) == 4 and {r["startup_reference"]["source"] for r in output} == {"serializedCarParams", "serializedCarParamsSP"}
+
+
+def test_startup_extension_hook_is_overlay_registered():
+  tree = ast.parse((ROOT/".elantra/sync.py").read_text())
+  value = next(ast.literal_eval(n.value) for n in tree.body if isinstance(n, ast.Assign) and
+               isinstance(n.targets[0], ast.Name) and n.targets[0].id == "OVERLAY_MODIFIED")
+  assert "openpilot/sunnypilot/selfdrive/controls/controlsd_ext.py" in value
+
+
+def test_startup_tokens_begin_snapshot_and_cross_epoch_or_duplicate_end_are_refused():
+  o, other = observer(), observer()
+  token = o.begin_startup_reference("paramsCarParams")
+  first = dict(o._pending[0]["startup_reference"])
+  cross = other.begin_startup_reference("paramsCarParams")
+  o.end_startup_reference(cross, b"wrong", "complete")
+  assert o._startup_jobs == 0
+  o.end_startup_reference(token, b"right", "complete")
+  o.end_startup_reference(token, b"duplicate", "complete")
+  assert o._startup_jobs <= 1 and len(o._pending) == 2
+  assert o._pending[0]["startup_reference"] == first
+
+
+@pytest.mark.parametrize("ticks", [[100, 99], [True, 101], [100, None]])
+def test_startup_bad_bracket_clock_is_unavailable_never_replaced_or_hashed(ticks):
+  o = obs.Observer("controls", clock=iter(ticks).__next__, epoch=b"e"*16, start_worker=False)
+  token = o.begin_startup_reference("paramsCarParams")
+  o.end_startup_reference(token, b"CP", "complete")
+  output = drain(o)
+  assert all(r["startup_reference"]["sha256"] == b"" for r in output)
+  assert o._startup_jobs == 0 and (o.errors or o.loss)
+
+
+def test_startup_worker_failure_before_new_enqueue_releases_the_racing_buffer():
+  o = observer()
+  token = o.begin_startup_reference("paramsCarParams")
+  capture = o.capture
+  def fail_before_enqueue(stage, **kwargs):
+    if stage == "startupEnd":
+      o.failed = True
+      o._discard_startup_bytes()  # worker failure cleanup runs before the new raw job is appended
+    return capture(stage, **kwargs)
+  o.capture = fail_before_enqueue
+  o.end_startup_reference(token, b"private-racing-buffer", "complete")
+  assert o._startup_reserved_bytes == o._startup_released_bytes
+  assert all("raw_bytes" not in r["startup_reference"] for r in o._pending)
+
+
+def test_startup_worker_import_failure_releases_both_queued_jobs(monkeypatch):
+  import builtins
+  o = observer()
+  for source in ("paramsCarParams", "paramsCarParamsSP"):
+    token = o.begin_startup_reference(source)
+    o.end_startup_reference(token, b"x"*65536, "complete")
+  original_import = builtins.__import__
+  def fail_worker_import(name, *args, **kwargs):
+    if name == "openpilot.cereal":
+      raise ImportError("fixture stops BEFORE actual publisher/import/runtime")
+    return original_import(name, *args, **kwargs)
+  monkeypatch.setattr(builtins, "__import__", fail_worker_import)
+  o._worker()
+  assert o.failed and o._startup_reserved_bytes == o._startup_released_bytes == 131072
+  assert all("raw_bytes" not in r["startup_reference"] for r in o._pending)
+
+
+def test_startup_digest_ready_clock_failure_is_clock_unavailable_not_digest_failure():
+  o = obs.Observer("controls", clock=iter([100, 200]).__next__, epoch=b"e"*16, start_worker=False)
+  token = o.begin_startup_reference("paramsCarParams")
+  o.end_startup_reference(token, b"CP", "complete")
+  end = drain(o)[-1]["startup_reference"]
+  assert end["status"] == "clockInvalid" and end["sha256"] == b"" and end["digest_ready_ns"] == 0
+  assert o._startup_reserved_bytes == o._startup_released_bytes == 2
+
+
+@pytest.mark.parametrize("begin_ns", [200, 100])
+def test_startup_begin_clock_tie_or_regression_cannot_become_ready_at_valid_end(begin_ns):
+  o = obs.Observer("controls", clock=iter([200, begin_ns, 300, 400]).__next__, epoch=b"e"*16, start_worker=False)
+  o.capture("initializeBegin")
+  token = o.begin_startup_reference("paramsCarParams")
+  o.end_startup_reference(token, b"CP", "complete")
+  references = [r["startup_reference"] for r in drain(o) if "startup_reference" in r]
+  assert references[0]["begin_status"] == references[-1]["begin_status"] == "invalid"
+  assert references[-1]["status"] == "clockInvalid" and references[-1]["sha256"] == b""
+  assert o._startup_jobs == 0
+
+
+def test_startup_maximum_bytes_empty_known_count_and_worker_publication_clock(isolated_schema):
+  o = observer()
+  cp = o.begin_startup_reference("paramsCarParams")
+  o.end_startup_reference(cp, b"x"*65536, "complete")
+  sp = o.begin_startup_reference("paramsCarParamsSP")
+  o.end_startup_reference(sp, b"", "complete")
+  output = drain(o)
+  assert o._startup_reserved_bytes == o._startup_released_bytes == 65536
+  empty = output[-1]["startup_reference"]
+  assert empty["byte_count_known"] and empty["byte_count"] == 0 and len(empty["sha256"]) == 32
+  end = output[1]["startup_reference"]
+  assert end["begin_status"] == end["end_status"] == "available"
+  raw = obs.encode_record(output[1], isolated_schema, publisher_ns=end["end_ns"])
+  with isolated_schema.Event.from_bytes(raw) as event:
+    ref = event.controlsObservation.observation.startupReference
+    assert ref.status == "clockInvalid" and ref.sha256 == b"" and not event.valid
+    assert ref.wire == "capnpUnpackedMessage"
+
+
+@pytest.mark.parametrize("failure", ["cp", "sp"])
+def test_actual_card_serialize_exception_identity_preserved(failure):
+  exception, calls = RuntimeError("private serializer error"), []
+  def cp_bytes():
+    calls.append("cp_bytes")
+    if failure == "cp":
+      raise exception
+    return b"CP"
+  def convert(value):
+    calls.append("sp_convert")
+    raise exception
+  target = SimpleNamespace(observer=observer("card"), CP=SimpleNamespace(to_bytes=cp_bytes), CP_SP="SP")
+  run = startup_fragment("openpilot/selfdrive/car/card.py", "Car", {"cp_bytes", "CP_SP_capnp", "cp_sp_bytes"}, {"convert_to_capnp": convert})
+  with pytest.raises(RuntimeError) as captured:
+    run(target)
+  assert captured.value is exception and calls == (["cp_bytes"] if failure == "cp" else ["cp_bytes", "sp_convert"])
+  end = drain(target.observer)[-1]["startup_reference"]
+  assert end["status"] == "serializationFailed" and end["sha256"] == b""

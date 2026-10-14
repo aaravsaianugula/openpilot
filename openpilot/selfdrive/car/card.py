@@ -169,15 +169,36 @@ class Car:
       self.params.put("CarParamsPrevRoute", prev_cp, block=True)
 
     # Write CarParams for controls and radard
-    cp_bytes = self.CP.to_bytes()
+    if self.observer is None:
+      cp_bytes = self.CP.to_bytes()
+    else:
+      startup_ref = self.observer.begin_startup_reference("serializedCarParams")
+      startup_raw, startup_outcome = None, "serializationFailed"
+      try:
+        cp_bytes = self.CP.to_bytes()
+        startup_raw, startup_outcome = cp_bytes, "complete"
+      finally:
+        self.observer.end_startup_reference(startup_ref, startup_raw, startup_outcome)
+        startup_raw = None
     self.params.put("CarParams", cp_bytes, block=True)
     self.params.put("CarParamsCache", cp_bytes)
     self.params.put("CarParamsPersistent", cp_bytes)
 
     # Write CarParamsSP for controls
     # convert to pycapnp representation for caching and logging
-    self.CP_SP_capnp = convert_to_capnp(self.CP_SP)
-    cp_sp_bytes = self.CP_SP_capnp.to_bytes()
+    if self.observer is None:
+      self.CP_SP_capnp = convert_to_capnp(self.CP_SP)
+      cp_sp_bytes = self.CP_SP_capnp.to_bytes()
+    else:
+      startup_ref = self.observer.begin_startup_reference("serializedCarParamsSP")
+      startup_raw, startup_outcome = None, "serializationFailed"
+      try:
+        self.CP_SP_capnp = convert_to_capnp(self.CP_SP)
+        cp_sp_bytes = self.CP_SP_capnp.to_bytes()
+        startup_raw, startup_outcome = cp_sp_bytes, "complete"
+      finally:
+        self.observer.end_startup_reference(startup_ref, startup_raw, startup_outcome)
+        startup_raw = None
     self.params.put("CarParamsSP", cp_sp_bytes, block=True)
     self.params.put("CarParamsSPCache", cp_sp_bytes)
     self.params.put("CarParamsSPPersistent", cp_sp_bytes)

@@ -510,6 +510,7 @@ struct ControllerObservationRecordV1 {
   references @27 :List(MessageReference);
   tx @28 :List(TxFrame);  # ordered CI.apply output, not proven panda transmission/delivery
   faults @29 :List(Fault);
+  startupReference @30 :StartupReference;
 
   enum Producer { controls @0; card @1; }
   enum Availability { unknown @0; }
@@ -518,7 +519,7 @@ struct ControllerObservationRecordV1 {
     loopStart @0; updateBegin @1; updateEnd @2; consumeEnd @3;
     computeBegin @4; computeEnd @5; paramsRefreshBegin @6; paramsRefreshEnd @7;
     publishBegin @8; publishEnd @9; publishFailed @10; applyBegin @11; applyEnd @12;
-    applySkipped @13; initializeBegin @14; initializeEnd @15;
+    applySkipped @13; initializeBegin @14; initializeEnd @15; startupBegin @16; startupEnd @17;
   }
   enum Service {
     none @0; lateralDelay @1; vehicleParameters @2; lateralTorqueParameters @3;
@@ -544,6 +545,33 @@ struct ControllerObservationRecordV1 {
     seen @6 :Bool; updated @7 :Bool; valid @8 :Bool; alive @9 :Bool; freqOk @10 :Bool;
   }
   struct TxFrame { address @0 :UInt32; src @1 :UInt8; payloadLength @2 :UInt8; payloadCaptured @3 :Bool; }
+  # Exact startup buffer only: NOT current CP, source authentication, semantic or paired-static identity.
+  struct StartupReference {
+    present @0 :Bool;
+    referenceId @1 :UInt64;
+    source @2 :Source;
+    decoder @3 :Decoder;
+    wire @4 :Wire;
+    beginNs @5 :UInt64;
+    endNs @6 :UInt64;
+    beginStatus @7 :Availability;
+    endStatus @8 :Availability;
+    outcome @9 :Outcome;
+    status @10 :Status;
+    byteCount @11 :UInt64;
+    byteCountKnown @12 :Bool;
+    sha256 @13 :Data;  # empty or32-byte digest; NEVER original CP/SP bytes
+    digestReadyNs @14 :UInt64;
+    enum Source { paramsCarParams @0; paramsCarParamsSP @1; serializedCarParams @2; serializedCarParamsSP @3; }
+    enum Decoder { carParams @0; carParamsSP @1; }
+    enum Wire { capnpUnpackedMessage @0; }
+    enum Availability { unknown @0; available @1; invalid @2; }
+    enum Outcome { pending @0; complete @1; readFailed @2; parseFailed @3; serializationFailed @4; }
+    enum Status {
+      pending @0; ready @1; nonbytes @2; oversize @3; readFailed @4; parseFailed @5; serializationFailed @6;
+      clockInvalid @7; digestFailed @8; publisherFailed @9; priorLoss @10;
+    }
+  }
 }
 
 struct CustomReserved12 @0x9ccdc8676701b412 {

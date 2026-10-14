@@ -37,7 +37,19 @@ class Controls(ControlsExt):
     self.observer = create_observer("controls")
     self.params = Params()
     cloudlog.info("controlsd is waiting for CarParams")
-    self.CP = messaging.log_from_bytes(self.params.get("CarParams", block=True), car.CarParams)
+    if self.observer is None:
+      self.CP = messaging.log_from_bytes(self.params.get("CarParams", block=True), car.CarParams)
+    else:
+      startup_ref = self.observer.begin_startup_reference("paramsCarParams")
+      startup_raw, startup_outcome = None, "readFailed"
+      try:
+        startup_raw = self.params.get("CarParams", block=True)
+        startup_outcome = "parseFailed"
+        self.CP = messaging.log_from_bytes(startup_raw, car.CarParams)
+        startup_outcome = "complete"
+      finally:
+        self.observer.end_startup_reference(startup_ref, startup_raw, startup_outcome)
+        startup_raw = None
     cloudlog.info("controlsd got CarParams")
 
     # Initialize sunnypilot controlsd extension and base model state

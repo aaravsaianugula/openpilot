@@ -1128,3 +1128,25 @@ raw samples are retained in `validation-clock-observer-ipc-checkpoint.json`
 and the bound compact-metrics artifact. This short desktop experiment is not
 a comma timing, real-time, durable-logging or deployment acceptance result.
 The observer remains default-off and has not been deployed.
+
+### Startup CP/SP byte references
+
+The default-off observer now brackets the existing controls CP/SP reads and
+parses, and the card CP/SP serializations, independently. It retains at most two
+original immutable buffers of 64 KiB each for worker hashing. Only fixed tags,
+clocks, lengths, outcomes and 32-byte digests are exported; raw CP/SP, VIN and
+firmware remain private. Disabled branches preserve the original reads, calls
+and exceptions, and the extension hook is registered in the overlay.
+
+Twenty-nine prior observer contracts remain unchanged. Twenty-nine new startup cases
+cover hashing and release, privacy, bounded failure paths, actual hook fragments
+and clocks. Review caught a tied/regressing begin clock that could later appear
+valid; the first failing cases and its narrow fix are retained. Ruff and all 115
+Elantra guards passed. Exact checks and source bindings are in
+`validation-startup-static-reference-checkpoint.json`.
+
+A byte digest identifies that startup buffer only. It does not identify current
+mutable CP, an atomic CP/SP pair, runtime source, complete torque policy or a
+qualified physical plant. All source/policy/predictive eligibility flags stay
+false. The supplement has not been deployed or activated; a separate bounded
+local IPC test is being prepared for its worker/wire path.

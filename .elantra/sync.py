@@ -118,6 +118,7 @@ OVERLAY_MODIFIED = [
     "openpilot/cereal/services.py",
     "openpilot/selfdrive/controls/controlsd.py",
     "openpilot/selfdrive/car/card.py",
+    "openpilot/sunnypilot/selfdrive/controls/controlsd_ext.py",
     "openpilot/common/params_keys.h",
     "openpilot/system/updated/updated.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/settings.py",
