@@ -1256,6 +1256,25 @@ def test_mixed_population_requires_identical_full_static_and_policy_before_facto
       lr, lat, out, proofs, grid=[{"long": None, "lateral": None}], lateral_grid=GRID, low_speed_model=low)
 
 
+def test_search_does_not_rank_unvalidated_plant_with_finite_tracking_objective(monkeypatch):
+  args = fixture()
+  w, report, env, model, lr, lat, out = args
+  # A caller's unbound success label cannot establish predictive plant evidence.
+  report["plant_predictive_validation"] = {"predictive_validated": True}
+  # Isolate the ranking gate from separate turn-population score requirements.
+  monkeypatch.setattr(runner.shared, "_objective", lambda *args: .25)
+  result = runner.validation_search([w], report, {w["id"]: env}, model, lr, lat, out,
+    {w["id"]: runner.bind_proof(*args)}, grid=[{"long": None, "lateral": {"factor": 2., "friction": .1}}], lateral_grid=GRID)
+  assert result["baseline"]["results"][w["id"]]["status"] == "complete"
+  assert np.isfinite(result["rows"][0]["joint_target_objective"])
+  assert all("diagnostic_rank" not in row for row in [result["baseline"], *result["rows"]])
+  assert result["ranking_status"] == "unavailable"
+  assert result["ranking_rejections"] == ["joint_plant_predictive_validation_unavailable"]
+  assert all("joint_plant_predictive_validation_unavailable" in row["selection_rejections"]
+             for row in [result["baseline"], *result["rows"]])
+  assert result["selection"] is None and result["complete_controller_candidate"] is None and not result["production_enabled"]
+
+
 def approach_stopping_fixture(sign=1):
   """Predeclared synthetic3.5m/s approach, +/-CAN cells; no empirical evidence."""
   import controller_multirate_joint_stop_hold as categorical

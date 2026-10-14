@@ -1039,3 +1039,9 @@ These are synthetic algorithm/API checks. No real joint plant, accepted current
 tune or physical driving improvement follows. Model-target feasibility remains
 separate from stopline ground truth; source, uncertainty and physical response
 gates keep selection disabled. See `validation-native-approach-checkpoint.json`.
+
+The search retains candidate objectives, traces and failures but no longer assigns
+diagnostic ranks without predictive plant-validation evidence. Four affected
+finite-search regression cases and Ruff passed. An unbound caller success label
+cannot enable ranking. This change affects search reporting only; the verified
+native control recurrence is unchanged.

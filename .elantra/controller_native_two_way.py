@@ -894,14 +894,15 @@ def validation_search(windows, report, envelopes, model, lr, lat, out, proofs, *
       row["selection_rejections"].extend(_stop_constraints(row["results"], before["results"], stop_ids))
     row["joint_target_objective"] = (stop._objective(row["metrics"], before["metrics"]) if stop_ids else
                                      shared._objective(row["metrics"], before["metrics"]))
-    row["selection_rejections"].extend(["no_validated_two_way_stop_hold_or_coherence", "diagnostic_only"])
+    row["selection_rejections"].extend(["no_validated_two_way_stop_hold_or_coherence", "diagnostic_only",
+                                        "joint_plant_predictive_validation_unavailable"])
     if len(common) < long.research.MIN_WINDOWS:
       row["selection_rejections"].append("insufficient_fixed_common_population")
     row["selection_rejections"] = sorted(set(row["selection_rejections"]))
     row["common_window_ids"], row["coverage"] = list(common), (len(common)-len(row["metrics"]["missing_windows"]))/len(common)
     rows.append(row)
-  ranked = sorted((r for r in rows[1:] if r["joint_target_objective"] is not None), key=lambda r: r["joint_target_objective"])
-  for rank, row in enumerate(ranked, 1):
-    row["diagnostic_rank"] = rank
+  # Tracking against frozen targets cannot rank an unvalidated response plant.
+  # Preserve every objective/trace until an authenticated predictive gate exists.
   return {"status": "insufficient_evidence", "baseline": rows[0], "rows": rows[1:], "common_window_ids": common,
+          "ranking_status": "unavailable", "ranking_rejections": ["joint_plant_predictive_validation_unavailable"],
           "attempted_windows": len(common), "selection": None, "complete_controller_candidate": None, "production_enabled": False}
