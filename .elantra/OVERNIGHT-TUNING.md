@@ -968,3 +968,35 @@ No real fit or native hook ran. Next integration must extend the shared native
 event recurrence through approach/stop/hold without the old LongCache, preserving
 shouldStop, continuous handles, causal flags, censoring and fixed geometry prefixes.
 Full candidate selection and production remain disabled.
+
+### Shared native approach, stopping and hold
+
+The 31-feature low-speed model now feeds the same native event recurrence as
+LongControl, lateral compute/apply and Hyundai request/report processing. One
+continuous handle per controller survives approach, stop and hold. Hardware
+standstill is an independently predicted category; inactive zero torque and
+request faults remain distinct. Mixed search windows require identical full
+CP/SP and typed policy identities before factories. No scalar LongCache is used.
+
+The native stop origin now uses the actual compute clock and consumed CS
+feedback. Request distance integrates the covered simulated state under the
+declared ZOH assumption; feedback speed, simulated physical speed and later
+node time are separate. Stop/hold duration uses conservative supported nodes.
+Model-target feasibility remains distinct from stopline ground truth.
+
+Fifty-five host checks passed before the final timing amendment; 15 affected
+checks passed on the corrected source, with scoped Ruff and independent review.
+One corrected actual three-adapter stop/hold case passed in 10.45 s on pinned x86
+POSIX. It checks 200 ticks and 40 macros per trial, native PID-to-stopping/ramp,
+category publication, the 409 ceiling, signed 3-up/7-down bounds and
+future-unused-GT invariance.
+Its arbitrary response cells and route/support labels are synthetic fixtures.
+The first run's artificial zero-to-post-warmup CAN assertion failure is retained;
+only that assertion changed, with genuine prior published CAN now checked.
+No gains, native source or response fixtures were retuned.
+
+This path starts within the declared 3 m/s domain. A source-predicted category
+transition from higher-speed approach is still unimplemented. Real source/policy,
+roll uncertainty, contact/hold, ZOH and joint response coherence remain unvalidated.
+No current full tune is selected; production is false. Exact evidence is in
+`validation-native-stop-three-adapter-checkpoint.json` under the tuning tree.
