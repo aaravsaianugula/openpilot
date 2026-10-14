@@ -464,6 +464,15 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
   rightLaneChangeEdgeBlock @2 :Bool;
   # Default-off instance references only; no compiled-byte/source authentication.
   modelAssetReference @3 :ModelAssetReferenceV1;
+  # Separate opt-in version; legacy @3 is never reinterpreted or dual-published.
+  modelHeldDelayBinaryReference @4 :ModelHeldDelayBinaryReferenceV1;
+
+  struct ModelHeldDelayBinaryReferenceV1 {
+    # Fixed976B ELMW payload; full version decoder required. No per-field addressability.
+    # Matching metadata fences do not admit ownership/source/held-lineage proof.
+    codecVersion @0 :UInt16;
+    payload @1 :Data;
+  }
 
   struct ModelAssetReferenceV1 {
     present @0 :Bool; processEpoch @1 :Data; runner @2 :Runner;

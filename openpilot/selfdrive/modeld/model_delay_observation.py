@@ -287,7 +287,7 @@ class _Read:
 
 class DelayConsumer(_Clock):
   """One already-reserved token; only its constructor/then owning main touches it."""
-  def __init__(self, identity, epoch, clock):
+  def __init__(self, identity, epoch, clock, *, binary=False):
     if type(identity) is not int or identity not in (1, 2) or type(epoch) is not bytes or len(epoch) != 16:
       raise ValueError("unknown reserved consumer identity")
     super().__init__(clock)
@@ -297,6 +297,20 @@ class DelayConsumer(_Clock):
     self.last_read, self.constructor_written = None, False
     self.constructor = self.cached = MappingProxyType({"value": 0., "kind": "unknown", "read_id": 0,
       "read_known": False, "write_ns": 0, "clock_status": "unavailable", "origin": "unknown"})
+    self.held = None
+    if binary:
+      from openpilot.selfdrive.modeld.model_observation_binary import HeldCacheTracker
+      self.held = HeldCacheTracker(self)
+
+  def begin_refresh(self, sm):
+    return self.held.begin(sm) if self.held is not None else None
+
+  def offer_argument(self, token, value):
+    return self.held.offer(token, value) if self.held is not None else value
+
+  def finish_refresh(self, token, sm):
+    if self.held is not None:
+      self.held.finish(token, sm)
 
   def error(self):
     self.dropped, self.errors = min(U64, self.dropped+1), min(U64, self.errors+1)
@@ -342,6 +356,8 @@ class DelayConsumer(_Clock):
       self.constructor = self.cached  # immutable even when first captured value is unknown
 
   def cache_failed(self):
+    if self.held is not None:
+      self.held.failed()
     token = self.last_read
     if (token is not None and token.completed and token.retained and not token.write_seen
         and token.row["site"] == "delayCache" and token.row["outcome"] == "returned"):
@@ -370,6 +386,7 @@ class DelayJournal(_Clock):
     super().__init__(clock)
     self.epoch, self.consumers = epoch, {}
     self.current = self.staged = None
+    self.draft = self.staged_anchor = None
     self.final_started = False
     self.dropped = self.errors = self.last_attempt = 0
     self.loss, self.overflow_known = False, True
@@ -504,9 +521,9 @@ class DelayJournal(_Clock):
     data["postprocessActionOffsetsKnown"] = _float(lat_action) and _float(long_action)
     data["postprocessSmoothingBranch"] = branch if type(branch) is str and branch in ("used", "bypassed") else "unknown"
 
-  def stage(self, header, token):
+  def stage(self, header, token, *, commit=True):
     current = self.current
-    if (current is None or current["discarded"] or self.staged is not None or current["consumer"] is None
+    if (current is None or current["discarded"] or self.staged is not None or self.draft is not None or current["consumer"] is None
         or current["attempt"] != header.attemptSequence or current["instance"] != header.activeInstanceId):
       self.error()
       raise ValueError("unavailable current prepared reference")
@@ -526,12 +543,30 @@ class DelayJournal(_Clock):
     data["reads"] = [pack_read(row) for row in consumer.pending]  # hard bound4, fixed scalars only
     data["present"] = True
     header.modelDelayReference = data
-    self.staged = (token, consumer, tuple(row["readId"] for row in consumer.pending), current["attempt"])
+    draft = (token, consumer, tuple(row["readId"] for row in consumer.pending), current["attempt"])
+    if commit:
+      self.staged = draft
+    else:
+      self.draft = draft
     self.final_started = False
     header.dropped = min(U64, header.dropped+self.dropped+sum(c.dropped for c in self.consumers.values()))
     header.errors = min(U64, header.errors+self.errors+sum(c.errors for c in self.consumers.values()))
     header.epochLoss = header.epochLoss or data["epochLoss"]
     header.referenceCaptureComplete = header.referenceCaptureComplete and not data["epochLoss"]
+    return draft
+
+  def commit_stage(self, draft, anchor):
+    if draft is None or draft is not self.draft or self.staged is not None:
+      raise ValueError("unavailable binary stage")
+    self.staged, self.staged_anchor, self.draft = draft, anchor, None
+
+  def abort_stage(self, token):
+    if self.draft is not None and self.draft[0] is token:
+      self.draft = None
+    if self.staged is not None and self.staged[0] is token:
+      self.staged = self.staged_anchor = None
+      self.final_started = False
+    self.error()  # No read/anchor retirement on encoding or attachment failure.
 
   def final_send_started(self, token):
     if self.staged is None or token is not self.staged[0] or self.final_started:
@@ -546,6 +581,7 @@ class DelayJournal(_Clock):
         if self.current is not None:
           self.current["failure"] = "finalSendRaised"
       self.staged = None
+      self.staged_anchor = None
       self.final_started = False
     self.error()
 
@@ -555,7 +591,10 @@ class DelayJournal(_Clock):
       return False
     _, consumer, ids, attempt = self.staged
     consumer.pending = [row for row in consumer.pending if row["readId"] not in ids]
+    if consumer.held is not None:
+      consumer.held.retire(self.staged_anchor)
     if self.current is not None and self.current["attempt"] == attempt:
       self.current = None
     self.staged, self.final_started = None, False
+    self.staged_anchor = None
     return True

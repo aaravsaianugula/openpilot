@@ -819,3 +819,79 @@ No actual card, Params, model, IPC, native/device runtime, activation or deploym
 occurred. CPython handoff/timing, delivery, read-to-use origin, full policy,
 authenticated source, transport and calibrated-roll uncertainty remain unverified.
 Source/policy/predictive eligibility stay false; no plant or tune is accepted.
+
+### Default-off optional binary held-delay draft
+
+`ELANTRA_MODEL_HELD_DELAY_BINARY_OBSERVER` selects this experimental mode only
+for the exact string `1`, sampled at the existing capture factory. It takes
+precedence over the two older model-observer flags. New optional field
+`modelHeldDelayBinaryReference @4` carries version 1 and an exact 976-byte ELMW
+payload; legacy `modelAssetReference @3`, its type and ordinals stay unchanged
+and absent in binary mode. The complete matching decoder rejects conflicting
+legacy/new fields, absent or malformed payloads and unknown versions.
+
+The source keeps the original argument/getter/cast/assignment once and its
+original stock or tinygrad refresh cadence. Observer-only fences use at most
+16 scalar metadata accesses (28 Python lookups) per refresh. Current preparation
+continues to observe publication B independently of an earlier held observation
+A. Matching fences cannot exclude an already-partial or untracked update;
+publication association remains Unsupported, with sourceReferenceKnown and
+valid false. No ownership boolean, equal scalar or local generation substitutes
+for an independently admitted completed-update witness.
+
+Two consumers, four emitted read rows and four asset references stay bounded.
+Encoding/attachment failures do not retire the exact staged read prefix or
+anchor revision. Actual-target invalidation is best effort; inability remains
+unknown/loss. Only the entered final SP send returning retires locally, without
+a durable-delivery or ACK claim. No extra Params, service data, arrays, source,
+assets, publisher, thread, service or polling path is added.
+
+The new host file has 29 distinct cases with passing coverage across scoped
+runs: the first 29-case run had 16 passes and 13 fixture failures, then the 13
+affected cases passed after test-only fixes. Four genuine draft findings have
+focused first reds and scoped independent source closure. Final Ruff and all
+115 overlay guards passed. Literal-only style edits have conservative whole-AST
+equivalence; no post-style full-29 rerun is claimed. The older tinygrad original
+AST literal already mismatched the immediate-before tree and remains unchanged;
+the new projection check explicitly binds this patch's immediate-before state.
+
+This is source/host preparation, not accepted held lineage or a controller tune.
+The distinct @4/default-off/Event footprints still need affected schema profiles;
+prior C-layout 1008-byte evidence does not prove this placement. Enabled cost,
+backpressure, raw earlier NumPy/native bit provenance, loaded source/assets,
+policy, clock domains and physical/predictive eligibility remain unverified.
+No new schema/model/controller/Params/IPC/native/device execution, activation,
+deployment, road test, vehicle actuation or panda flash occurred. Selection and
+full candidate remain None; production remains false. Exact receipts are in
+`validation-model-held-delay-binary-source-host-checkpoint.json` and
+`recent-clips/observer-held-delay-binary-integration-proposal-v1/implementation-v2/`.
+
+### 2026-10-14: optional binary field schema closure
+
+ONE reviewed Windows Python313/pycapnp invocation completed old three/new five
+profiles and eight strict decoder rejection cases. Both child exits, parent and
+outer exit were 0. Legacy standalone headers retained their exact bytes/hashes
+(496 B asset, 1024 B delay). The additional optional outer pointer costs 8 B:
+both-off Event 56 -> 64 B, legacy asset 536 -> 544 B, legacy delay 1064 -> 1072 B.
+Binary and combined modes emit only @4: standalone header 1008 B within the
+unchanged 1024 B bound, actual unpacked Event 1056 B. The independently rooted
+body copy is 1032 B; actual nested-body size remains unavailable and is never
+inferred from that copy or an Event delta. Applicable native fields, optional
+presence, legacy packing and binary decoder readback passed for these fixtures.
+
+Four new artifact-only host tests and final five-file Ruff passed separately.
+Root reviewed 85 named bindings, source equality and exact direct-exit/drain
+evidence without rerunning SDK or old tests. Numeric PID 43820 was later reused
+by unrelated conhost.exe; the saved present snapshot and identity reconciliation
+are preserved, along with the failed collector. No descendant, fsync or durable
+delivery claim is made. The earlier failed schema attempt remains failed with
+its exact exception cause unknown.
+
+This closes the affected optional-field schema/size gate for the frozen
+default-off source. It does not establish full producer behavior, enabled cost,
+backpressure, loaded source/assets, raw NumPy/native bit provenance, completed
+publication ownership or physical gain. Association remains Unsupported;
+selection/full candidate remain None and production remains false. No device,
+model/controller/Params/IPC/native execution, activation or deployment occurred.
+Evidence: `validation-model-held-delay-optional-wire-measurement-checkpoint.json`
+and `recent-clips/model-held-delay-optional-wire-api-diagnosis-proposal-v1/`.

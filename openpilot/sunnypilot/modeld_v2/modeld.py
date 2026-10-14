@@ -507,12 +507,20 @@ def main(demo=False):
         if delay_consumer is None:
           model.lat_delay = get_lat_delay(params, sm["lateralDelay"].lateralDelay)
         else:
+          if asset_observation.binary:
+            refresh_token = delay_consumer.begin_refresh(sm)
           try:
-            model.lat_delay = get_lat_delay(params, sm["lateralDelay"].lateralDelay, policy_capture=delay_consumer)
+            if asset_observation.binary:
+              model.lat_delay = get_lat_delay(params, delay_consumer.offer_argument(refresh_token, sm["lateralDelay"].lateralDelay),
+                                              policy_capture=delay_consumer)
+            else:
+              model.lat_delay = get_lat_delay(params, sm["lateralDelay"].lateralDelay, policy_capture=delay_consumer)
           except BaseException:
             delay_consumer.cache_failed()
             raise
           delay_consumer.delay_written(model.lat_delay, delay_consumer.delay_origin)
+          if asset_observation.binary:
+            delay_consumer.finish_refresh(refresh_token, sm)
       model.PLANPLUS_CONTROL = params.get("PlanplusControl", return_default=True)
       camera_offset_helper.set_offset(params.get("CameraOffset", return_default=True))
     lat_delay = model.lat_delay + model.LAT_SMOOTH_SECONDS

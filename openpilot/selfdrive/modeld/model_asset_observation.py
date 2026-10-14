@@ -26,13 +26,14 @@ def _finite(value):
 
 class _LoadReference:
   """Private single-loader token; completed scalar snapshot is immutable."""
-  def __init__(self, identity, chestnut, clock, epoch, *, delay_enabled=False):
+  def __init__(self, identity, chestnut, clock, epoch, *, delay_enabled=False, binary=False):
     self.id, self.chestnut, self.clock, self.epoch = identity, chestnut, clock, epoch
     self.begin_ns = None
     self.selection = "unknown"
     self.completed = None
     self.invalid = False
     self.delay_enabled, self._delay_consumer, self._delay_requested = delay_enabled, None, False
+    self.binary = binary
 
   def delay_consumer(self):
     if not self.delay_enabled:
@@ -45,7 +46,7 @@ class _LoadReference:
     self._delay_requested = True
     try:
       from openpilot.selfdrive.modeld.model_delay_observation import DelayConsumer
-      self._delay_consumer = DelayConsumer(self.id, self.epoch, self.clock)
+      self._delay_consumer = DelayConsumer(self.id, self.epoch, self.clock, binary=self.binary)
       return self._delay_consumer
     except Exception:
       self.invalid = True
@@ -91,7 +92,7 @@ class _LoadReference:
 
 
 class ModelAssetCapture:
-  def __init__(self, runner, *, clock=time.monotonic_ns, epoch=None, delay_enabled=False):
+  def __init__(self, runner, *, clock=time.monotonic_ns, epoch=None, delay_enabled=False, binary=False):
     if runner not in ("stock", "tinygrad"):
       raise ValueError("unknown model runner")
     self.runner, self.clock = runner, clock
@@ -104,6 +105,9 @@ class ModelAssetCapture:
     self.pending, self.loaded_ids = [], set()
     self.last_clock = self.staged = None
     self.delay = None
+    if type(binary) is not bool or (binary and delay_enabled is not True):
+      raise ValueError("unknown binary observation flag")
+    self.binary = binary
     if type(delay_enabled) is not bool:
       raise ValueError("unknown delay observation flag")
     if delay_enabled:
@@ -130,7 +134,7 @@ class ModelAssetCapture:
       self.error()
       return None
     self.instances += 1
-    return _LoadReference(self.instances, chestnut, self.clock, self.epoch, delay_enabled=self.delay is not None)
+    return _LoadReference(self.instances, chestnut, self.clock, self.epoch, delay_enabled=self.delay is not None, binary=self.binary)
 
   def consumer_for(self, model):
     if self.delay is None:
@@ -209,12 +213,17 @@ class ModelAssetCapture:
 
   def stage(self, sp, model_event, driving_event, model):
     header = None
+    binary_target = token = None
     try:
       if self.staged is not None or self.publications >= U64:
         raise ValueError("overlapping model publication")
       self.publications += 1
       ref = self._identity(model)
-      header = sp.modelDataV2SP.modelAssetReference
+      if self.binary:
+        from openpilot.selfdrive.modeld.model_observation_binary import AssetPacket
+        header = AssetPacket()
+      else:
+        header = sp.modelDataV2SP.modelAssetReference
       header.present = False
       observed = self.now()
       times = (model_event.logMonoTime, driving_event.logMonoTime, sp.logMonoTime)
@@ -250,13 +259,34 @@ class ModelAssetCapture:
         item.longSmoothSeconds, item.longSmoothKnown = data.get("long", 0.), data.get("long_known", False)
       header.referenceCaptureComplete = not self.loss and observed is not None
       token = (self.epoch, self.publications, tuple(row["sequence"] for row in self.pending))
+      draft = None
       if self.delay is not None:
-        self.delay.stage(header, token)
+        draft = self.delay.stage(header, token, commit=not self.binary)
       header.present = True
+      if self.binary:
+        from openpilot.selfdrive.modeld.model_delay_observation import unpack_read
+        from openpilot.selfdrive.modeld.model_observation_binary import encode_semantic
+        header.modelDelayReference["reads"] = [unpack_read(row) for row in header.modelDelayReference["reads"]]
+        parent = header.packet()
+        anchor = draft[1].held.snapshot
+        wire = encode_semantic(parent, dict(anchor))
+        binary_target = sp.modelDataV2SP.modelHeldDelayBinaryReference
+        binary_target.codecVersion, binary_target.payload = wire["codecVersion"], wire["payload"]
+        self.delay.commit_stage(draft, anchor)
       self.staged = token
       return token
     except Exception:
       self.error()
+      if self.binary and self.delay is not None:
+        self.delay.abort_stage(token)
+      if binary_target is not None:
+        # Independently attempt both fixed invalidations: a setter can write then
+        # raise. Inability remains sticky unknown/loss, never valid fallback.
+        for name, value in (("codecVersion", 0), ("payload", b"")):
+          try:
+            setattr(binary_target, name, value)
+          except Exception:
+            self.error()
       if header is not None:
         try:
           header.present = False
@@ -285,10 +315,11 @@ class ModelAssetCapture:
 
 
 def create_model_asset_capture(runner):
-  delay_enabled = os.environ.get("ELANTRA_MODEL_DELAY_REFERENCE_OBSERVER") == "1"
+  binary = os.environ.get("ELANTRA_MODEL_HELD_DELAY_BINARY_OBSERVER") == "1"
+  delay_enabled = binary or os.environ.get("ELANTRA_MODEL_DELAY_REFERENCE_OBSERVER") == "1"
   if os.environ.get("ELANTRA_MODEL_ASSET_OBSERVER") != "1" and not delay_enabled:
     return None
   try:
-    return ModelAssetCapture(runner, delay_enabled=delay_enabled)
+    return ModelAssetCapture(runner, delay_enabled=delay_enabled, binary=binary)
   except Exception:
     return None  # unavailable, never authenticated/complete
