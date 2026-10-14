@@ -1195,6 +1195,30 @@ source and predictive eligibility stay false; no activation or deployment occurr
 
 The controls-policy IPC attempt retained all 9,331 planned received messages and
 300 loop samples but exited 1 because its validator expected incorrect service
-labels on the four startup references. That failed run remains preserved. Corrected
-offline validation of retained evidence is pending; it will not rewrite the original
-exit or be described as a successful fresh execution.
+labels on the four startup references. That failed run remains preserved. The corrected
+validator passed the retained evidence in one separate Windows-host offline check:
+9,331 received messages, including 4,527 typed policy rows, and 300 retained ticks.
+The four expected startup service labels were the only validator change; six
+independent retained-header regression cases passed. Reconstructed 400/160-byte
+synthetic CP/SP fixtures matched independently known digests before the unchanged
+full startup gates. Windows serializer 2.2.4 differs from the measured WSL 2.1.0;
+byte equality is not timing equivalence. Original IPC exits remain 1, and no new
+IPC/producer run occurred. Exact bindings are in
+`validation-clock-observer-policy-ipc-checkpoint.json`.
+
+The retained synthetic worst-case loop p99/max were 2.029/2.173 ms; tick-start
+lateness peaked at 1.080 ms, with zero of 300 samples at least 10 ms late. No
+per-call or causal overhead claim follows. Final publisher counter assignment
+was unavailable after the original exception. The owned process was gone and
+its namespace was later observed absent; removal timing/cause is unknown, with
+no namespace cleanup by us. Source/input hashes and the original failure are
+preserved; deployment and car timing remain unverified.
+
+A source-only active-model reference proposal is now available under
+`recent-clips/observer-model-asset-reference-proposal-v1/proposal.json`. It separates
+actual loaded instances, activation and fallback from declared bundle metadata.
+A manifest-only environment override can differ from the declared bundle. Successful
+unpickling does not prove complete stream/EOF identity. Reference-only default-off source preparation is now approved; no model-asset
+observation runtime or byte hashing has executed. Same-reader hashing, extra
+asset reads and the proposed startup cost are outside that preparation approval.
+The compiled-byte identity contract remains unknown.
