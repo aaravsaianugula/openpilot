@@ -35,10 +35,14 @@ CAMERA_PRODUCERS = {
     ARCHIVE_CAMERA_COMMIT: ARCHIVE_CAMERA_SHA256,
     # Exact current camera.py is byte-identical; device/sensor/raster checks still apply.
     "13aedc522518fe1b62651d9a8a320e931efc335c": ARCHIVE_CAMERA_SHA256,
+    # Route 000000d8--96f34d20f0 (sunnypilot elantra-lateral): camera.py is byte-identical at this commit.
+    "840b9ea8cb9e731bbced229d60c75612f3c348f8": ARCHIVE_CAMERA_SHA256,
 }
 MAX_STREAM_BYTES = 2 * 1024**3
 PRIVATE_ROOT = Path("D:/comma_four")
 ROUTES_ROOT = PRIVATE_ROOT / "routes"
+# Segment rlogs and videos are only read, in place: the device-layout archive and the original F: archive.
+FOOTAGE_ROOTS = (ROUTES_ROOT, Path("F:/routes"))
 # u-blox fix as published by ubloxd; units per cereal log.capnp GpsLocationData.
 GNSS_FIELDS = (
     "latitude",  # degree
@@ -276,9 +280,11 @@ def payload_issue(service: str, data: dict) -> str | None:
             return tag in value or any(tagged_unknown(child, tag) for child in value.values())
         return isinstance(value, list) and any(tagged_unknown(child, tag) for child in value)
 
-    if tagged_unknown(data, "nonfinite_float"):
+    # locationd logs native NaN pose std: the optional pose keeps its explicit tags and never shadows the yaw contract.
+    checked = pick(data, REQUIRED[service]) if service == "liveLocationKalman" else data
+    if tagged_unknown(checked, "nonfinite_float"):
         return "nonfinite_native_payload"
-    if tagged_unknown(data, "unknown_enum_raw"):
+    if tagged_unknown(checked, "unknown_enum_raw"):
         return "unknown_native_enum"
     if service in ("carControl", "carOutput"):
         field = "actuators" if service == "carControl" else "actuatorsOutput"
@@ -729,10 +735,20 @@ def context_declarations(path: Path) -> dict:
 
 
 def private_output(path: Path) -> Path:
-    """The context carries GNSS: it stays in the drive-data tree, never inside routes/."""
+    """The context carries GNSS: it stays in the drive-data tree, never inside a footage root."""
     resolved = path.resolve()
-    if not resolved.is_relative_to(PRIVATE_ROOT.resolve()) or resolved.is_relative_to(ROUTES_ROOT.resolve()):
+    if not resolved.is_relative_to(PRIVATE_ROOT.resolve()) or any(
+        resolved.is_relative_to(root.resolve()) for root in FOOTAGE_ROOTS
+    ):
         raise ValueError("GNSS-bearing context must be written under D:/comma_four, outside routes/")
+    return resolved
+
+
+def archive_input(path: Path) -> Path:
+    """A segment input is read only from inside a registered footage root."""
+    resolved = path.resolve()
+    if not any(resolved.is_relative_to(root.resolve()) for root in FOOTAGE_ROOTS):
+        raise ValueError(f"Segment inputs are read only from {', '.join(map(str, FOOTAGE_ROOTS))}: {path}")
     return resolved
 
 
@@ -762,6 +778,8 @@ def main() -> int:
     if args.output.exists() or (args.camera_manifest_output is not None and args.camera_manifest_output.exists()):
         raise FileExistsError("Output already exists; preserve prior evidence")
     private_output(args.output)
+    if args.camera_manifest_output is not None:
+        private_output(args.camera_manifest_output)
     manifest = None
     schema_hash = file_sha256(args.schema)
     if args.manifest is not None:
@@ -775,7 +793,7 @@ def main() -> int:
         paths = args.rlog
         for segment in manifest["source_segments"]:
             for camera in ("narrow", "wide"):
-                if file_sha256(Path(segment[f"local_{camera}_path"])) != segment[f"{camera}_sha256"]:
+                if file_sha256(archive_input(Path(segment[f"local_{camera}_path"]))) != segment[f"{camera}_sha256"]:
                     raise ValueError("Original video digest differs from manifest")
     else:
         if args.rlog or not args.segment_rlog or args.camera_manifest_output is None:
@@ -785,7 +803,7 @@ def main() -> int:
             first_route, first_segment = args.segment_rlog[0].parent.name.rsplit("--", 1)
             if args.prefix_rlog[-1].parent.name != f"{first_route}--{int(first_segment) - 1}":
                 raise ValueError("Prefix must immediately precede the first video segment")
-    source_rlogs = {path.parent.name: file_sha256(path) for path in paths}
+    source_rlogs = {path.parent.name: file_sha256(archive_input(path)) for path in paths}
     if not paths or len(source_rlogs) != len(paths):
         raise ValueError("Unique original rlogs are required")
     if manifest is not None and source_rlogs != manifest["provenance"]["source_rlogs"]:

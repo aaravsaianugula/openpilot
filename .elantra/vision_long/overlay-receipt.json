@@ -23,7 +23,7 @@
     ".elantra/vision_long_publisher/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     ".elantra/vision_long_publisher/comma_context_publisher.py": "2c3878171756b4e517b7de4f6bd32702b70dbafbc76a539f0efc41c41974f2d6",
     ".elantra/vision_long_publisher/extract_camera_context.py": "289ab07cfd7713ac293564910b83707711d46630b9af27aa5e35b50fdc879510",
-    ".elantra/vision_long_publisher/extract_companion_context.py": "fdca0a760dc549d4deee21b4be65791c6a036243c9b9153395b3dc99af388562",
+    ".elantra/vision_long_publisher/extract_companion_context.py": "b738e7a4dc160e261cae2164462146a281c6972ef2e54c712e38034dd02119eb",
     ".elantra/vision_long_publisher/extract_projection_height.py": "623d529c651e06b9a62f81004c447b02a3d4a6792d8a1f708d83f793e0de1800",
     ".elantra/vision_long_publisher/native_source_identity.py": "82ddd998a906bc176a2d185eec834ab3e8259e006bdaa79d3b447f2b2f340020",
     "native-overlay.patch": "4552e2ac8eafbea231d2224e1e23a99757c596c29dfecea67e43a9e784a40500",
@@ -52,8 +52,8 @@
       "relative_imports": []
     },
     "extract_companion_context.py": {
-      "source_sha256": "15a19c99f5eb551c96970e93b3fa0a9f7fe0debd075677d79a461b6805e72020",
-      "exported_sha256": "fdca0a760dc549d4deee21b4be65791c6a036243c9b9153395b3dc99af388562",
+      "source_sha256": "370492dd60b6d9e261dc6e84eb8b36a39197f44239e27551f88a5a5ecea16798",
+      "exported_sha256": "b738e7a4dc160e261cae2164462146a281c6972ef2e54c712e38034dd02119eb",
       "relative_imports": [
         "from tools.extract_camera_context import",
         "from tools.extract_projection_height import"
