@@ -200,9 +200,10 @@ python .elantra/verify_published.py          # check what is live on GitHub
 
 ## What is in this directory
 
-Nothing here ships to the car. `.elantra/` is the overlay's own tooling: the guards that hold the
-port's invariants, the scanners that read recorded drives, and the tests for both. Three things
-decide where a tool can run, and they trip people up:
+Almost nothing here ships to the car. `.elantra/` is the overlay's own tooling: the guards that
+hold the port's invariants, the scanners that read recorded drives, and the tests for both. The
+one exception is the Vision Long companion package (below), which the carcontroller can import.
+Three things decide where a tool can run, and they trip people up:
 
 - **The C safety suite needs a compiler**, and this laptop has none. Device only.
 - **`opendbc/car/tests/*` collapse on Windows** — `get_interface_attr` splits `os.walk` output on
@@ -248,6 +249,27 @@ Two invariants the scanners depend on:
   recovered ceiling, which works because `STEER_MAX` is a gain, so
   `torqueOutputCan / actuators.torque` returns it even on a gentle drive.
 
+### Vision Long companion — `vision_long/`, `vision_long_publisher/`
+
+Branch `vision-long-companion` only. These are vision-long's reviewed consumer, bridge and
+publisher modules, exported by its `tools/prepare_native_overlay.py` and byte-identical to the
+hashes in `vision_long/overlay-receipt.json`. **Do not edit them here**: a change is made in
+vision-long, re-pinned there and regenerated. The opendbc half is the generated
+`carcontroller.py` / `hyundaican.py`, carried on opendbc's `vision-long-companion` branch;
+`sync.py` lists `carcontroller.py` in `OPENDBC_DELTA_PATHS` so a rebuild keeps it.
+
+The carcontroller looks for `vision_long/native-runtime.json` once, in its constructor, on
+`HYUNDAI_ELANTRA_2024` with openpilot longitudinal on classic CAN:
+
+- **absent** (as shipped): the companion never runs; every CAN message is native.
+- **malformed or unprovisioned**: the bootstrap fails closed to native.
+- **valid**: the diagnostic return transport may start. Its gate refuses every session, so a
+  JSON file cannot grant braking authority; that needs a separately qualified in-process
+  provider (`bind_native_controller`), which this package does not include.
+
+The cap is braking-only: it can lower `aReqRaw`/`aReqValue`, never raise them, and leaves
+`StopReq`, the AEB fields and the checksum native. A driver override or pedal gives exact native.
+
 ### Tests
 
 Run these as **scripts, not under pytest** — they are `main()`-style harnesses that exit non-zero
@@ -263,6 +285,7 @@ Only `test_torque_projection.py` is a real pytest module.
 | `test_steer_headroom.py` | The headroom indicator's decision logic, 72 cases |
 | `test_torque_projection.py` | The projection tool, including its refusal to price anything above 409 (**pytest**) |
 | `test_port_panel.py` | The port panel's decision logic |
+| `test_vision_long_companion.py` | The companion seam against the real CarController and the base-commit controller: no config and every malformed config give byte-identical native CAN; a bound consumer fed caps across the whole range never raises an SCC12 field, keeps `StopReq` exact, and gives exact native under override. Needs `opendbc_repo` checked out with its history |
 
 ```bash
 # the whole laptop-side gate, exit codes intact -- never pipe these through `tail`,
@@ -274,6 +297,7 @@ python .elantra/test_scanner_decoders.py
 python .elantra/test_steer_headroom.py
 python .elantra/test_guard_opendbc_pin.py
 python -m pytest .elantra/test_torque_projection.py -q
+python .elantra/test_vision_long_companion.py
 python -m ruff check .elantra/
 ```
 

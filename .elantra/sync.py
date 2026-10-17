@@ -62,6 +62,7 @@ OPENDBC_ROLLBACK = ROLLBACK_BRANCH
 # branch, which is now the delta source.
 OPENDBC_DELTA_PATHS = (
     "docs/CARS.md",
+    "opendbc/car/hyundai/carcontroller.py",
     "opendbc/car/hyundai/fingerprints.py",
     "opendbc/car/hyundai/hyundaican.py",
     "opendbc/car/hyundai/interface.py",
