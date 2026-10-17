@@ -62,10 +62,16 @@ from opendbc.car import DT_CTRL, Bus, gen_empty_fingerprint, structs
 from opendbc.car.hyundai import carcontroller as patched_carcontroller
 from opendbc.car.hyundai.interface import CarInterface
 from opendbc.car.hyundai.values import CAR, DBC
+from opendbc.sunnypilot.car.hyundai.escc import ESCC_MSG
 from vision_long.integration import CameraReference, ControlGate, ProposalPacket, sign_packet
 from vision_long.native_bootstrap import bind_native_controller
 from vision_long.native_bridge import NativeReturnBridge
-from vision_long.native_consumer import NativeCycle, NativeScc12Consumer
+from vision_long.native_consumer import (
+    UNAUTHENTICATED_LATCH_COUNT,
+    UNAUTHENTICATED_WINDOW_NS,
+    NativeCycle,
+    NativeScc12Consumer,
+)
 
 SCC12_ADDR = 0x421
 FRAME_NS = int(DT_CTRL * 1e9)  # 100 Hz controller
@@ -136,13 +142,16 @@ class Sandbox:
         if config is not None:
             (root / ".elantra/vision_long/native-runtime.json").write_bytes(config)
         self.support = str(root / ".elantra")
+        # The controller APPENDS its support directory, so this tree's own .elantra (put first
+        # for the imports above) would otherwise be found first and refused as a collision.
+        self.saved_path = list(sys.path)
+        sys.path[:] = [entry for entry in sys.path if entry != str(HERE)]
         forget_companion_modules()
         self.module = load_module("vision_long_sandbox_carcontroller", controller)
 
     def close(self) -> None:
         forget_companion_modules()
-        while self.support in sys.path:
-            sys.path.remove(self.support)
+        sys.path[:] = self.saved_path
         self.tmp.cleanup()
 
 
@@ -159,8 +168,10 @@ def native_reference() -> type:
     return base_controller.CarController
 
 
-def interface_with(controller_class: type) -> CarInterface:
+def interface_with(controller_class: type, *, escc: bool = False) -> CarInterface:
     fingerprint = gen_empty_fingerprint()
+    if escc:
+        fingerprint[0][ESCC_MSG] = 8  # The ESCC module on bus 0 forwards the car's own AEB into SCC12.
     CP = CarInterface.get_params(CAR.HYUNDAI_ELANTRA_2024, fingerprint, [], alpha_long=True,
                                                               is_release=False, docs=False)
     CP_SP = CarInterface.get_params_sp(CP, CAR.HYUNDAI_ELANTRA_2024, fingerprint, [], alpha_long=True,
@@ -196,6 +207,12 @@ def step(interface: CarInterface, frame: dict, now_ns: int):
     interface.CS.out.brakePressed = frame["brake"]
     interface.CS.out.gasPressed = frame["gas"]
     interface.CS.out.standstill = frame["standstill"]
+    interface.CS.out.accFaulted = frame.get("acc_fault", False)
+    # The car's own AEB, as ESCC carries it: the four SCC12 fields update_scc12 copies.
+    aeb = frame.get("aeb")
+    active = int(aeb is not None)
+    interface.CS.escc_cmd_act = interface.CS.escc_aeb_dec_cmd_act = interface.CS.escc_aeb_warning = active
+    interface.CS.escc_aeb_dec_cmd = 0 if aeb is None else aeb
     CC = structs.CarControl()
     CC.enabled = frame["enabled"]
     CC.longActive = frame["long_active"]
@@ -316,22 +333,23 @@ class MalformedConfigTests(unittest.TestCase):
 class BrakingOnlyTests(unittest.TestCase):
     """A bound consumer fed caps across the whole range never raises a native SCC12 field."""
 
-    def drive(self, seed: int):
+    def drive(self, seed: int, *, escc: bool = False, frames: list[dict] | None = None):
         """Lockstep patched and reference controllers; returns (frame, native, companion, eligible)."""
         rng = random.Random(seed)
         gate = ControlGate(KEY, SESSION, BUILD, CAP_ACCEL_MIN, CAP_ACCEL_MAX)
         clock = {"now": 0}
         consumer = NativeScc12Consumer(gate, completion_clock=lambda: clock["now"])
-        patched = interface_with(patched_carcontroller.CarController)
+        patched = interface_with(patched_carcontroller.CarController, escc=escc)
         patched.CC.vision_long_consumer = consumer  # the trusted bridge's job, done by the test
-        reference = interface_with(native_reference())
+        reference = interface_with(native_reference(), escc=escc)
+        self.assertEqual(bool(patched.CC.ESCC.enabled), escc)
         decoder_native, decoder_companion = Scc12Decoder(), Scc12Decoder()
         rows = []
         sequence = 0
         pending: list[tuple[int, bytes]] = []
         last_sent: float | None = None
         base = 3_000_000_000
-        for index, frame in enumerate(scenario(seed)):
+        for index, frame in enumerate(scenario(seed) if frames is None else frames):
             now = base + index * FRAME_NS
             clock["now"] = now
             if index % PACKET_FRAMES == 0:
@@ -388,6 +406,54 @@ class BrakingOnlyTests(unittest.TestCase):
             if frame["override"] or frame["brake"] or frame["gas"]:
                 self.assertFalse(eligible, frame)
                 self.assertEqual(companion_message, native_message, frame)
+
+    def assert_braking_only(self, native: dict, companion: dict) -> None:
+        self.assertLessEqual(companion["aReqRaw"], native["aReqRaw"] + 1e-6)
+        self.assertLessEqual(companion["aReqValue"], native["aReqValue"] + 1e-6)
+        for signal in native:
+            if signal not in ("aReqRaw", "aReqValue", "CR_VSM_ChkSum"):
+                self.assertEqual(companion[signal], native[signal], signal)  # StopReq and every AEB field
+
+    def test_the_cars_own_aeb_passes_through_exactly_and_is_never_weakened(self):
+        rng = random.Random(9)
+        frames = scenario(seed=9)
+        for frame in frames:
+            if rng.random() < 0.3:
+                frame["aeb"] = round(rng.uniform(0.05, 1.0), 2)  # CR_VSM_DecCmd, in g
+        aeb_frames = eligible_aeb_frames = 0
+        for frame, _, _, eligible, native, companion in self.drive(seed=9, escc=True, frames=frames):
+            with self.subTest(frame=frame):
+                self.assert_braking_only(native, companion)
+                if "aeb" in frame:
+                    aeb_frames += 1
+                    eligible_aeb_frames += eligible
+                    self.assertEqual(native["AEB_CmdAct"], 1)
+                    self.assertEqual(native["CF_VSM_DecCmdAct"], 1)
+        # Not vacuous: AEB really reached SCC12, and the companion was in the path during it.
+        self.assertGreater(aeb_frames, 0)
+        self.assertGreater(eligible_aeb_frames, 0)
+
+    def test_acc_fault_frames_are_native_exact_once_disengaged_and_braking_only_before(self):
+        # The controller never reads accFaulted; selfdrived disengages on it. A fault frame that
+        # still carries an engaged CarControl may only brake; a disengaged one is exact native.
+        rng = random.Random(10)
+        frames = scenario(seed=10)
+        for frame in frames:
+            if rng.random() < 0.2:
+                frame["acc_fault"] = True
+                frame["enabled"] = frame["long_active"] = rng.random() < 0.5
+        engaged_faults = disengaged_faults = 0
+        for frame, native_message, companion_message, eligible, native, companion in self.drive(seed=10, frames=frames):
+            with self.subTest(frame=frame):
+                self.assert_braking_only(native, companion)
+                if frame.get("acc_fault") and not frame["enabled"]:
+                    disengaged_faults += 1
+                    self.assertFalse(eligible)
+                    self.assertEqual(companion_message, native_message)
+                elif frame.get("acc_fault"):
+                    engaged_faults += 1
+        self.assertGreater(disengaged_faults, 0)
+        self.assertGreater(engaged_faults, 0)
 
 
 STATUS_PREFIX = "vision_long_companion "
@@ -485,6 +551,73 @@ class StatusLogTests(unittest.TestCase):
             status_line("braking_only", "enabled", "staged_without_invented_native_evidence"),
             status_line("diagnostic_only", "disabled", "native_session_closed"),
         ])
+
+    def test_a_fault_latched_consumer_logs_latched_native_and_sends_exact_native_bytes(self):
+        gate = ControlGate(KEY, SESSION, BUILD, CAP_ACCEL_MIN, CAP_ACCEL_MAX)
+        clock = {"now": 0}
+        bridge = NativeReturnBridge(lambda session: gate, completion_clock=lambda: clock["now"],
+                                    trusted_clock_id=CAMERA_CLOCK)
+        patched = interface_with(patched_carcontroller.CarController)
+        reference = interface_with(native_reference())
+        frames = scenario(seed=11)
+        latch_reason = f"unauthenticated_return_packets:{UNAUTHENTICATED_LATCH_COUNT}_within_{UNAUTHENTICATED_WINDOW_NS}_ns"
+        with StatusCapture() as capture:
+            bind_native_controller(patched.CC, bridge)
+            bridge.open_session(SESSION, CAMERA_CLOCK)
+            now = 3_000_000_000
+            for index, frame in enumerate(frames[:200]):
+                clock["now"] = now
+                if index == 20:
+                    for _ in range(UNAUTHENTICATED_LATCH_COUNT):
+                        bridge.return_packet(SESSION, b"not an authenticated packet")
+                expected = snapshot(step(reference, frame, now))
+                actual = snapshot(step(patched, frame, now))
+                consumer = patched.CC.vision_long_consumer
+                self.assertIsNotNone(consumer, index)
+                if index > 20:
+                    self.assertEqual(consumer.fault_reason, latch_reason, index)
+                    self.assertIsNone(patched.CC.vision_long_boundary, index)
+                    self.assertEqual(actual, expected, ("latched output differs from native", index, frame))
+                now += FRAME_NS
+        # The session opens before the first cycle, so there is no awaiting_session line.
+        self.assertEqual(capture.messages(), [
+            status_line("braking_only", "enabled", "staged_without_invented_native_evidence"),
+            status_line("braking_only", "latched_native", latch_reason),
+        ])
+
+
+class SupportPathTests(unittest.TestCase):
+    """The companion package is found last on sys.path and only from its fixed location."""
+
+    CONFIG = json.dumps(MalformedConfigTests.VALID_SHAPE).encode()  # Gets past the import; no key.
+
+    def test_the_support_directory_is_appended_and_shadows_nothing(self):
+        sandbox = Sandbox(self.CONFIG)
+        try:
+            before = list(sys.path)
+            patched = interface_with(sandbox.module.CarController)
+            self.assertEqual(patched.CC.vision_long_bootstrap_status, "native_bootstrap_failed:FileNotFoundError")
+            self.assertEqual(sys.path, before + [sandbox.support])
+            self.assertEqual(Path(sys.modules["vision_long"].__file__).resolve().parent,
+                             Path(sandbox.support) / "vision_long")
+        finally:
+            sandbox.close()
+
+    def test_a_foreign_vision_long_earlier_on_the_path_is_refused_without_importing_it(self):
+        sandbox = Sandbox(self.CONFIG)
+        foreign = tempfile.TemporaryDirectory()
+        try:
+            package = Path(foreign.name) / "vision_long"
+            package.mkdir()
+            (package / "__init__.py").write_text('raise SystemExit("a foreign vision_long was imported")\n')
+            sys.path.insert(0, foreign.name)
+            patched = interface_with(sandbox.module.CarController)
+            self.assertEqual(patched.CC.vision_long_bootstrap_status, "native_bootstrap_failed:RuntimeError")
+            self.assertIsNone(patched.CC.vision_long_bridge)
+            self.assertNotIn("vision_long", sys.modules)
+        finally:
+            sandbox.close()
+            foreign.cleanup()
 
 
 if __name__ == "__main__":

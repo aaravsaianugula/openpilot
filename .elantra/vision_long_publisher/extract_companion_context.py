@@ -713,6 +713,21 @@ def write_context_index(output: Path, metadata: dict, frames: Iterable[dict], *,
     return result
 
 
+def context_declarations(path: Path) -> dict:
+    """The declarations file's records, validated by the replay/live stage loaders, for the context's top level.
+
+    The records travel unchanged inside ``companion_context_v1``, so the context's SHA256 pin covers them.
+    """
+    # Imported here: vision_long.native_context imports this module's constants, so a top-level import is a cycle.
+    from vision_long.session_stages import load_declarations, read_declarations_file
+
+    records = read_declarations_file(path)
+    load_declarations(records)
+    if not isinstance(records, dict):
+        raise ValueError("Declarations must be a JSON object")
+    return records
+
+
 def private_output(path: Path) -> Path:
     """The context carries GNSS: it stays in the drive-data tree, never inside routes/."""
     resolved = path.resolve()
@@ -733,7 +748,14 @@ def main() -> int:
     parser.add_argument("--opendbc-car", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--stream-context", action="store_true", help="Write bounded JSONL parts and a context index")
+    parser.add_argument(
+        "--declarations",
+        type=Path,
+        help="Declared calibration/GNSS (and optional ego_speed) records, validated and written into the context",
+    )
     args = parser.parse_args()
+    # Validated before any archive work: a malformed declaration never produces a context.
+    declarations = context_declarations(args.declarations) if args.declarations is not None else None
     import capnp  # type: ignore[import-untyped]  # replay environment only; no stubs
     import zstandard  # type: ignore[import-not-found]  # replay environment only
 
@@ -844,6 +866,8 @@ def main() -> int:
         "gnss_policy": "private_location_receiver_estimates_not_hard_bounds",
         "service_counts": counts,
     }
+    if declarations is not None:
+        result["declarations"] = declarations
     args.output.parent.mkdir(parents=True, exist_ok=True)
     if args.stream_context:
         result = write_context_index(args.output, result, frames)

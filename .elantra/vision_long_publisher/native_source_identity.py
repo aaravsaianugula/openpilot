@@ -4,13 +4,26 @@ Exactly two layouts are accepted:
 
 * ``base``: the pinned openpilot and opendbc commits are ancestors of HEAD and the tracked
   native tree is byte-identical to them (changes elsewhere under ``.elantra/`` are allowed).
-* ``overlay``: the same ancestry, every installed file the overlay receipt lists matches its
-  SHA256 on disk, and every tracked difference from the pinned base is one of those files,
-  the receipt itself, the ``opendbc_repo`` gitlink, or an ``.elantra/`` path outside the two
-  companion packages.
+* ``overlay``: the same ancestry, the receipt names only paths in ``INSTALLED_FILES`` (the
+  exact set ``tools/prepare_native_overlay.py`` installs) or its review-only files, every
+  installed file it lists matches its SHA256 on disk, and every tracked difference from the
+  pinned base is one of those files, the receipt itself, the ``opendbc_repo`` gitlink, or an
+  ``.elantra/`` path outside the two companion packages.
+
+In both layouts no untracked file may sit in a companion package (bar the runtime opt-in and
+bytecode) or in the native trees (the superproject outside ``.elantra/``, and opendbc), where
+only the tracked ``.gitignore`` files, themselves diff-checked, may exclude build output.
+
+What this guards against: running against a checkout that is not the reviewed build, and
+drift from it (a hand edit, a stray or leftover file, a half-applied or wrong-base overlay,
+an overlay that grew a path such as ``opendbc/safety``, ``panda`` or a lateral file). It is
+not a defence against an attacker with write access to the tree: whoever can write the
+files can also rewrite the receipt's hashes, or this check. The path set is hard-coded here
+so a re-sealed receipt can never widen what the overlay may touch.
 
 msgq is not overlaid and stays an exact commit pin. A file cannot hold the hash of the
 commit that contains it, so the receipt's per-file hashes are the identity, never HEAD.
+Other submodules are identified by their gitlink only.
 """
 
 import hashlib
@@ -26,9 +39,46 @@ OVERLAY_RECEIPT = ".elantra/vision_long/overlay-receipt.json"
 RECEIPT_SCHEMA = "vision_long_native_overlay_v1"
 OPENDBC_DIRECTORY = "opendbc_repo"
 COMPANION_PACKAGES = (".elantra/vision_long/", ".elantra/vision_long_publisher/")
-INSTALLED_PREFIXES = (".elantra/", OPENDBC_DIRECTORY + "/")
 # The only untracked file a companion package may hold: the explicit diagnostic opt-in.
 UNTRACKED_RUNTIME_CONFIG = ".elantra/vision_long/native-runtime.json"
+# Exactly the files tools/prepare_native_overlay.py installs (a test pins the two equal). Nothing
+# under opendbc/safety, panda or the lateral path may ever be added here.
+INSTALLED_FILES = frozenset(
+    {
+        "opendbc_repo/opendbc/car/hyundai/carcontroller.py",
+        "opendbc_repo/opendbc/car/hyundai/hyundaican.py",
+        ".elantra/sync.py",
+        UNTRACKED_RUNTIME_CONFIG,
+        *(
+            ".elantra/vision_long/" + name
+            for name in (
+                "__init__.py",
+                "camera_io.py",
+                "control_authority.py",
+                "integration.py",
+                "native_bootstrap.py",
+                "native_bridge.py",
+                "native_consumer.py",
+                "native_context.py",
+                "transport.py",
+            )
+        ),
+        *(
+            ".elantra/vision_long_publisher/" + name
+            for name in (
+                "__init__.py",
+                "comma_context_publisher.py",
+                "extract_camera_context.py",
+                "extract_companion_context.py",
+                "extract_projection_height.py",
+                "native_source_identity.py",
+            )
+        ),
+    }
+)
+# Generated next to the overlay for review; never installed, never hashed on disk.
+REVIEW_ONLY_FILES = frozenset({"native-overlay.patch", "LICENSE-opendbc"})
+NATIVE_TREE_EXCLUDE = ":(exclude).elantra/"
 MAX_RECEIPT_BYTES = 64 * 1024
 MAX_OVERLAY_FILE_BYTES = 4 * 1024 * 1024
 SHA256_HEX = re.compile(r"[0-9a-f]{64}")
@@ -71,15 +121,23 @@ def _tracked_changes(directory: Path, commit: str) -> set[str]:
     return _paths(_git_output(directory, "diff", "--name-only", "-z", "--ignore-submodules=dirty", commit, "--"))
 
 
+def _without_bytecode(paths: set[str]) -> set[str]:
+    return {path for path in paths if not (PurePosixPath(path).parent.name == "__pycache__" and path.endswith(".pyc"))}
+
+
 def _untracked_companion_files(root: Path) -> set[str]:
     # No --exclude-standard: an ignored file in a package the car process imports still counts.
     listed = _git_output(root, "ls-files", "--others", "-z", "--", *COMPANION_PACKAGES)
-    return {
-        path
-        for path in _paths(listed)
-        if path != UNTRACKED_RUNTIME_CONFIG
-        and not (PurePosixPath(path).parent.name == "__pycache__" and path.endswith(".pyc"))
-    }
+    return _without_bytecode(_paths(listed)) - {UNTRACKED_RUNTIME_CONFIG}
+
+
+def _untracked_native_files(root: Path) -> set[str]:
+    # The device builds in place, so ignored build output is expected here. Only the tracked
+    # .gitignore files decide what is ignored; .git/info/exclude and core.excludesFile never do.
+    ignore = "--exclude-per-directory=.gitignore"
+    native = _git_output(root, "ls-files", "--others", ignore, "-z", "--", ".", NATIVE_TREE_EXCLUDE)
+    opendbc = _git_output(root / OPENDBC_DIRECTORY, "ls-files", "--others", ignore, "-z")
+    return _without_bytecode(_paths(native) | {OPENDBC_DIRECTORY + "/" + path for path in _paths(opendbc)})
 
 
 def _relative_path(value: object) -> str:
@@ -114,8 +172,10 @@ def _installed_files(root: Path) -> dict[str, str]:
         relative = _relative_path(path)
         if type(digest) is not str or SHA256_HEX.fullmatch(digest) is None:
             raise RuntimeError("Overlay receipt digest is invalid: " + relative)
-        if relative.startswith(INSTALLED_PREFIXES):
+        if relative in INSTALLED_FILES:
             installed[relative] = digest
+        elif relative not in REVIEW_ONLY_FILES:
+            raise RuntimeError("Overlay receipt names a path outside the generated overlay: " + relative)
     if not installed:
         raise RuntimeError("Overlay receipt lists no installed files")
     return installed
@@ -143,6 +203,9 @@ def verify_native_source_identity(root: Path) -> Literal["base", "overlay"]:
     untracked = _untracked_companion_files(root)
     if untracked:
         raise RuntimeError("Untracked file in a companion package: " + sorted(untracked)[0])
+    untracked = _untracked_native_files(root)
+    if untracked:
+        raise RuntimeError("Untracked file in a native tree: " + sorted(untracked)[0])
     opendbc_changes = _tracked_changes(opendbc, pins["opendbc"])
     native_changes = {
         path

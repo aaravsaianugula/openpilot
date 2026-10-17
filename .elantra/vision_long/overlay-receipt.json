@@ -8,7 +8,7 @@
     ".elantra/sync.py": "b8f1eed4d6aac6dfaaf6eefcfb16ccda490101a75fa43d0ecc5abdc58bdaca8c"
   },
   "output_files": {
-    "opendbc_repo/opendbc/car/hyundai/carcontroller.py": "da1130610f77b24eee8f3457a4bec19281224d6b77b3bb871e6149413c6321c0",
+    "opendbc_repo/opendbc/car/hyundai/carcontroller.py": "2fcbc3568c9679e08304a8dc02866b5cb5129d1923e91f0f5494eafe3cb3d6a5",
     "opendbc_repo/opendbc/car/hyundai/hyundaican.py": "d347937dbc70a9820809607a3e3edc5903e60e478e0517ea882b0eefce07dc55",
     ".elantra/sync.py": "be1cab37b6f3d5027e5549ef6fb2292aaf586d9f55b4c96cbbc461c604218776",
     ".elantra/vision_long/__init__.py": "07cd13605904881778e3ba35841c8b945f8ee67e36c87a850e7f19d98a66f369",
@@ -23,10 +23,10 @@
     ".elantra/vision_long_publisher/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     ".elantra/vision_long_publisher/comma_context_publisher.py": "2c3878171756b4e517b7de4f6bd32702b70dbafbc76a539f0efc41c41974f2d6",
     ".elantra/vision_long_publisher/extract_camera_context.py": "289ab07cfd7713ac293564910b83707711d46630b9af27aa5e35b50fdc879510",
-    ".elantra/vision_long_publisher/extract_companion_context.py": "2960b52fd8c43e3c79cd994538fb4d869330e6142142672c709952ad5bacc062",
+    ".elantra/vision_long_publisher/extract_companion_context.py": "fdca0a760dc549d4deee21b4be65791c6a036243c9b9153395b3dc99af388562",
     ".elantra/vision_long_publisher/extract_projection_height.py": "623d529c651e06b9a62f81004c447b02a3d4a6792d8a1f708d83f793e0de1800",
-    ".elantra/vision_long_publisher/native_source_identity.py": "2ce38fe0a401a4d6e83b9ba5389fc701ba30c4455b5d2383287b41658efb5492",
-    "native-overlay.patch": "708edadcaa872615e2d3b986d9bacc9f8c0628845dac31ba508df4b9e6385ca9",
+    ".elantra/vision_long_publisher/native_source_identity.py": "82ddd998a906bc176a2d185eec834ab3e8259e006bdaa79d3b447f2b2f340020",
+    "native-overlay.patch": "4552e2ac8eafbea231d2224e1e23a99757c596c29dfecea67e43a9e784a40500",
     "LICENSE-opendbc": "6543c4a66b46affddae1b9ae1e1992687f0b7191e74ba3a7235388b9f42a6d13"
   },
   "installed": false,
@@ -52,8 +52,8 @@
       "relative_imports": []
     },
     "extract_companion_context.py": {
-      "source_sha256": "16c12eb6865600a47cb92ff750eee0d43ae6636aa0588fa2d147ed8816037ae7",
-      "exported_sha256": "2960b52fd8c43e3c79cd994538fb4d869330e6142142672c709952ad5bacc062",
+      "source_sha256": "15a19c99f5eb551c96970e93b3fa0a9f7fe0debd075677d79a461b6805e72020",
+      "exported_sha256": "fdca0a760dc549d4deee21b4be65791c6a036243c9b9153395b3dc99af388562",
       "relative_imports": [
         "from tools.extract_camera_context import",
         "from tools.extract_projection_height import"
@@ -65,8 +65,8 @@
       "relative_imports": []
     },
     "native_source_identity.py": {
-      "source_sha256": "2ce38fe0a401a4d6e83b9ba5389fc701ba30c4455b5d2383287b41658efb5492",
-      "exported_sha256": "2ce38fe0a401a4d6e83b9ba5389fc701ba30c4455b5d2383287b41658efb5492",
+      "source_sha256": "82ddd998a906bc176a2d185eec834ab3e8259e006bdaa79d3b447f2b2f340020",
+      "exported_sha256": "82ddd998a906bc176a2d185eec834ab3e8259e006bdaa79d3b447f2b2f340020",
       "relative_imports": []
     }
   },
