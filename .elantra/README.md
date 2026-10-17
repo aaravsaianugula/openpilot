@@ -270,6 +270,17 @@ The carcontroller looks for `vision_long/native-runtime.json` once, in its const
 The cap is braking-only: it can lower `aReqRaw`/`aReqValue`, never raise them, and leaves
 `StopReq`, the AEB fields and the checksum native. A driver override or pedal gives exact native.
 
+The state is logged through `carlog` (card forwards it to cloudlog, so it lands in the rlog's
+`logMessage`) once at startup and again only when it changes, never per cycle:
+`vision_long_companion mode=diagnostic_only authority=disabled reason=disabled_no_runtime_config`
+as shipped. `authority=enabled` (`mode=braking_only`) is logged whenever a consumer is in the
+SCC12 path. No param is written.
+
+The publishers (embedded and vision-long's standalone ones) accept this branch by its overlay,
+not its HEAD: the pinned base commits must be ancestors of HEAD, every installed file listed in
+`vision_long/overlay-receipt.json` must match its SHA256, and nothing else that ships may differ
+from the base (other `.elantra/` files excepted). See `vision_long_publisher/native_source_identity.py`.
+
 ### Tests
 
 Run these as **scripts, not under pytest** — they are `main()`-style harnesses that exit non-zero
@@ -285,7 +296,7 @@ Only `test_torque_projection.py` is a real pytest module.
 | `test_steer_headroom.py` | The headroom indicator's decision logic, 72 cases |
 | `test_torque_projection.py` | The projection tool, including its refusal to price anything above 409 (**pytest**) |
 | `test_port_panel.py` | The port panel's decision logic |
-| `test_vision_long_companion.py` | The companion seam against the real CarController and the base-commit controller: no config and every malformed config give byte-identical native CAN; a bound consumer fed caps across the whole range never raises an SCC12 field, keeps `StopReq` exact, and gives exact native under override. Needs `opendbc_repo` checked out with its history |
+| `test_vision_long_companion.py` | The companion seam against the real CarController and the base-commit controller: no config and every malformed config give byte-identical native CAN; a bound consumer fed caps across the whole range never raises an SCC12 field, keeps `StopReq` exact, and gives exact native under override; the status line is logged once at startup and on each change, never per cycle. Needs `opendbc_repo` checked out with its history |
 
 ```bash
 # the whole laptop-side gate, exit codes intact -- never pipe these through `tail`,

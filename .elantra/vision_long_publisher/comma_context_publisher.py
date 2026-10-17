@@ -11,7 +11,6 @@ import json
 import math
 import select
 import socket
-import subprocess
 import sys
 import threading
 import time
@@ -19,11 +18,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 from .extract_companion_context import REQUIRED, extract_record
+from .native_source_identity import verify_native_source_identity
 from vision_long.camera_io import copy_nv12
 from vision_long.integration import CameraReference
 from vision_long.native_bridge import NativeReturnBridge
 from vision_long.native_context import (
-    BUILD_PINS,
     SOURCE_PINS,
     CameraIdentity,
     NativeContextRecord,
@@ -53,13 +52,7 @@ def read_camera_frame(client: Any, camera: Literal["narrow", "wide"], session: s
 
 
 def verify_native_source(root: Path) -> None:
-    directories = {"openpilot": root, "opendbc": root / "opendbc_repo", "msgq": root / "msgq_repo"}
-    for name, commit in BUILD_PINS:
-        actual = subprocess.run(
-            ["git", "-C", str(directories[name]), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
-        )
-        if actual.stdout.strip() != commit:
-            raise RuntimeError("Native integration source identity changed: " + name)
+    verify_native_source_identity(root)
     for name, digest in SOURCE_PINS:
         source = root / name
         if (
@@ -193,7 +186,7 @@ def run_publisher(*, listen_ip, port, key, pairs, max_duration_s, bridge=None, s
                     bridge.open_session(publisher.session_id, boot + ":CLOCK_BOOTTIME")
                 if not publisher.wait_for_clock_sync(5):
                     raise RuntimeError("Peer failed initial measured clock exchange")
-                sequences = dict(narrow=0, wide=0)
+                sequences = {"narrow": 0, "wide": 0}
                 event_sequence = 0
                 for pair_sequence in range(1, pairs + 1):
                     if stop is not None and stop.is_set():
@@ -224,16 +217,16 @@ def run_publisher(*, listen_ip, port, key, pairs, max_duration_s, bridge=None, s
                     if pair_sequence % 20 == 0:
                         print(
                             json.dumps(
-                                dict(
-                                    session_id=publisher.session_id,
-                                    sent=sequences,
-                                    context=pair_sequence,
-                                    native_events=event_sequence,
-                                    native_queue_history="unknown_possible_loss",
-                                    source_clock_relation="unknown",
-                                    physical_capture_delay="unknown",
-                                    control_qualified=False,
-                                )
+                                {
+                                    "session_id": publisher.session_id,
+                                    "sent": sequences,
+                                    "context": pair_sequence,
+                                    "native_events": event_sequence,
+                                    "native_queue_history": "unknown_possible_loss",
+                                    "source_clock_relation": "unknown",
+                                    "physical_capture_delay": "unknown",
+                                    "control_qualified": False,
+                                }
                             ),
                             flush=True,
                         )
@@ -281,7 +274,7 @@ def start_embedded_publisher(bridge: NativeReturnBridge, *, listen_ip, port, key
     if not isinstance(bridge, NativeReturnBridge):
         raise ValueError("native_owned_bridge_required")
     return EmbeddedPublisher(
-        bridge, dict(listen_ip=listen_ip, port=port, key=key, pairs=pairs, max_duration_s=max_duration_s)
+        bridge, {"listen_ip": listen_ip, "port": port, "key": key, "pairs": pairs, "max_duration_s": max_duration_s}
     )
 
 

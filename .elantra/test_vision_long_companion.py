@@ -11,6 +11,8 @@ each is tested here against the REAL CarController, the real CAN packer and the 
     * With a consumer bound and caps arriving (including caps ABOVE native), SCC12 aReqRaw and
         aReqValue are never above native, StopReq and every other field stay exact, and a driver
         override gives exact native bytes.
+    * The state is visible: one carlog line (card forwards carlog to cloudlog) at startup and on
+        every change, "vision_long_companion mode=... authority=... reason=...", never per cycle.
 
 The native reference is the controller and CAN builder at the commit recorded in
 vision_long/overlay-receipt.json, read out of opendbc's own history and checked against the
@@ -27,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import logging
 import random
 import shutil
 import subprocess
@@ -60,6 +63,8 @@ from opendbc.car.hyundai import carcontroller as patched_carcontroller
 from opendbc.car.hyundai.interface import CarInterface
 from opendbc.car.hyundai.values import CAR, DBC
 from vision_long.integration import CameraReference, ControlGate, ProposalPacket, sign_packet
+from vision_long.native_bootstrap import bind_native_controller
+from vision_long.native_bridge import NativeReturnBridge
 from vision_long.native_consumer import NativeCycle, NativeScc12Consumer
 
 SCC12_ADDR = 0x421
@@ -383,6 +388,103 @@ class BrakingOnlyTests(unittest.TestCase):
             if frame["override"] or frame["brake"] or frame["gas"]:
                 self.assertFalse(eligible, frame)
                 self.assertEqual(companion_message, native_message, frame)
+
+
+STATUS_PREFIX = "vision_long_companion "
+CAMERA_CLOCK = "status-test-boot:CLOCK_BOOTTIME"
+
+
+class StatusCapture(logging.Handler):
+    """Every companion status line carlog emits while active, with its level."""
+
+    def __init__(self):
+        super().__init__(logging.DEBUG)
+        self.lines: list[tuple[int, str]] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        message = record.getMessage()
+        if message.startswith(STATUS_PREFIX):
+            self.lines.append((record.levelno, message))
+
+    def __enter__(self) -> StatusCapture:
+        logging.getLogger("carlog").addHandler(self)
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        logging.getLogger("carlog").removeHandler(self)
+
+    def messages(self) -> list[str]:
+        return [message for _, message in self.lines]
+
+
+def status_line(mode: str, authority: str, reason: str) -> str:
+    return f"vision_long_companion mode={mode} authority={authority} reason={reason}"
+
+
+def started_with_capture(controller_class: type) -> tuple[CarInterface, StatusCapture]:
+    """interface_with builds two controllers (the interface's own, then the one under test), so
+    capture exactly one construction: the controller card would run, as card builds it once."""
+    interface = interface_with(controller_class)
+    dbc_names = {bus: parser.dbc_name for bus, parser in interface.can_parsers.items()}
+    with StatusCapture() as capture:
+        interface.CC = controller_class(dbc_names, interface.CP, interface.CP_SP)
+    return interface, capture
+
+
+class StatusLogTests(unittest.TestCase):
+    """The companion's state is logged once at startup and on each change, never per cycle."""
+
+    def test_absent_config_logs_disabled_once_at_startup_and_never_per_cycle(self):
+        patched, capture = started_with_capture(patched_carcontroller.CarController)
+        self.assertEqual(capture.messages(), [status_line("diagnostic_only", "disabled", "disabled_no_runtime_config")])
+        with capture:
+            now = 0
+            for frame in scenario(seed=7)[:200]:
+                step(patched, frame, now)
+                now += FRAME_NS
+        self.assertEqual(len(capture.lines), 1)
+        # card's ForwardingHandler hands it to cloudlog; carlog's own level (INFO) lets it through.
+        self.assertGreaterEqual(capture.lines[0][0], logging.getLogger("carlog").getEffectiveLevel())
+
+    def test_malformed_config_logs_the_fail_closed_reason(self):
+        sandbox = Sandbox(b"{authority: true")
+        try:
+            _, capture = started_with_capture(sandbox.module.CarController)
+            self.assertEqual(capture.messages(), [status_line(
+                "diagnostic_only", "disabled", "native_bootstrap_failed:JSONDecodeError")])
+        finally:
+            sandbox.close()
+
+    def test_a_bound_session_logs_enabled_while_in_the_path_and_disabled_when_it_closes(self):
+        gate = ControlGate(KEY, SESSION, BUILD, CAP_ACCEL_MIN, CAP_ACCEL_MAX)
+        clock = {"now": 0}
+        bridge = NativeReturnBridge(lambda session: gate, completion_clock=lambda: clock["now"],
+                                                                trusted_clock_id=CAMERA_CLOCK)
+        patched = interface_with(patched_carcontroller.CarController)
+        frames = scenario(seed=8)
+        now = 3_000_000_000
+
+        def run(count: int) -> None:
+            nonlocal now
+            for _ in range(count):
+                clock["now"] = now
+                step(patched, frames[(now // FRAME_NS) % len(frames)], now)
+                now += FRAME_NS
+
+        with StatusCapture() as capture:
+            bind_native_controller(patched.CC, bridge)
+            run(5)
+            bridge.open_session(SESSION, CAMERA_CLOCK)
+            run(20)
+            self.assertIsNotNone(patched.CC.vision_long_consumer)
+            bridge.close_session(SESSION)
+            run(20)
+            self.assertIsNone(patched.CC.vision_long_consumer)
+        self.assertEqual(capture.messages(), [
+            status_line("diagnostic_only", "disabled", "awaiting_session"),
+            status_line("braking_only", "enabled", "staged_without_invented_native_evidence"),
+            status_line("diagnostic_only", "disabled", "native_session_closed"),
+        ])
 
 
 if __name__ == "__main__":

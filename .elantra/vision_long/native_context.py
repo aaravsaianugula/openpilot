@@ -110,9 +110,12 @@ class CameraIdentity:
             integer(getattr(self, name), name, 1 if name == "transport_sequence" else 0)
 
     def to_dict(self) -> dict:
-        return dict(
-            camera=self.camera, frame_id=self.frame_id, sof_ns=self.sof_ns, transport_sequence=self.transport_sequence
-        )
+        return {
+            "camera": self.camera,
+            "frame_id": self.frame_id,
+            "sof_ns": self.sof_ns,
+            "transport_sequence": self.transport_sequence,
+        }
 
 
 @dataclass(frozen=True)
@@ -136,13 +139,13 @@ class NativeEvent:
         return read_json(self.data_json)
 
     def to_dict(self) -> dict:
-        return dict(
-            service=self.service,
-            log_mono_ns=self.log_mono_ns,
-            valid=self.valid,
-            data=self.data,
-            observed_sequence=self.observed_sequence,
-        )
+        return {
+            "service": self.service,
+            "log_mono_ns": self.log_mono_ns,
+            "valid": self.valid,
+            "data": self.data,
+            "observed_sequence": self.observed_sequence,
+        }
 
 
 MAX_ECHO_COMMANDS = 32
@@ -202,9 +205,12 @@ class EchoedCommand:
             raise ValueError("invalid_echo_source")
 
     def to_dict(self) -> dict:
-        return dict(
-            decision_ns=self.decision_ns, apply_ns=self.apply_ns, accel_mps2=self.accel_mps2, companion=self.companion
-        )
+        return {
+            "decision_ns": self.decision_ns,
+            "apply_ns": self.apply_ns,
+            "accel_mps2": self.accel_mps2,
+            "companion": self.companion,
+        }
 
 
 def echo_active_age_ns(accepted: tuple[EchoedCommand, ...], echo_ns: int) -> int:
@@ -286,21 +292,21 @@ class ReceiverStateEcho:
             raise ValueError("echo_active_age_mismatch")
 
     def to_dict(self) -> dict:
-        return dict(
-            schema="receiver_state_echo_v1",
-            session_id=self.session_id,
-            build_id=self.build_id,
-            clock_id=self.clock_id,
-            echo_sequence=self.echo_sequence,
-            echo_ns=self.echo_ns,
-            window_start_ns=self.window_start_ns,
-            effect_delay_ns=self.effect_delay_ns,
-            handoff_period_ns=self.handoff_period_ns,
-            next_handoff_ns=self.next_handoff_ns,
-            accepted=[item.to_dict() for item in self.accepted],
-            pending=[item.to_dict() for item in self.pending],
-            active_age_ns=self.active_age_ns,
-        )
+        return {
+            "schema": "receiver_state_echo_v1",
+            "session_id": self.session_id,
+            "build_id": self.build_id,
+            "clock_id": self.clock_id,
+            "echo_sequence": self.echo_sequence,
+            "echo_ns": self.echo_ns,
+            "window_start_ns": self.window_start_ns,
+            "effect_delay_ns": self.effect_delay_ns,
+            "handoff_period_ns": self.handoff_period_ns,
+            "next_handoff_ns": self.next_handoff_ns,
+            "accepted": [item.to_dict() for item in self.accepted],
+            "pending": [item.to_dict() for item in self.pending],
+            "active_age_ns": self.active_age_ns,
+        }
 
     @classmethod
     def from_dict(cls, value: Any) -> "ReceiverStateEcho":
@@ -352,26 +358,26 @@ class NativeContextRecord:
             raise ValueError("invalid_receiver_echo")
 
     def to_dict(self) -> dict:
-        return dict(
-            schema="native_context_v1",
-            session_id=self.session_id,
-            boot_id=self.boot_id,
-            sequence=self.sequence,
-            event_clock_id=self.event_clock_id,
-            camera_clock_id=self.camera_clock_id,
-            cameras=[item.to_dict() for item in self.cameras],
-            events=[item.to_dict() for item in self.events],
-            source_pins=dict(self.source_pins),
-            build_pins=dict(self.build_pins),
-            drain_limited=self.drain_limited,
-            receiver_echo=self.receiver_echo.to_dict() if self.receiver_echo is not None else None,
-            native_queue_history="unknown_possible_loss",
-            physical_capture_delay="unknown",
-            source_clock_relation="unknown",
-            shared_camera_buffer_ownership="unknown_stable_generation_only",
-            compiled_native_binary_verified=False,
-            control_qualified=False,
-        )
+        return {
+            "schema": "native_context_v1",
+            "session_id": self.session_id,
+            "boot_id": self.boot_id,
+            "sequence": self.sequence,
+            "event_clock_id": self.event_clock_id,
+            "camera_clock_id": self.camera_clock_id,
+            "cameras": [item.to_dict() for item in self.cameras],
+            "events": [item.to_dict() for item in self.events],
+            "source_pins": dict(self.source_pins),
+            "build_pins": dict(self.build_pins),
+            "drain_limited": self.drain_limited,
+            "receiver_echo": self.receiver_echo.to_dict() if self.receiver_echo is not None else None,
+            "native_queue_history": "unknown_possible_loss",
+            "physical_capture_delay": "unknown",
+            "source_clock_relation": "unknown",
+            "shared_camera_buffer_ownership": "unknown_stable_generation_only",
+            "compiled_native_binary_verified": False,
+            "control_qualified": False,
+        }
 
     def to_bytes(self) -> bytes:
         return canonical_json(self.to_dict())
@@ -538,17 +544,17 @@ class NativeHistory:
         cutoff = min(item.sof_ns for item in cameras)
         result = {}
         for service, queue in self.history.items():
-            item: dict[str, Any] = dict(
-                status="unknown",
-                reason=self.fault or "source_clock_relation_unknown",
-                source=None,
-                data=None,
-                temporal_selection_status="unknown",
-                physical_capture_delay="unknown",
-                control_qualified=False,
-                history_evicted_through_ns=self.evicted_through[service],
-                history_retained_from_ns=queue[0].log_mono_ns if queue else None,
-            )
+            item: dict[str, Any] = {
+                "status": "unknown",
+                "reason": self.fault or "source_clock_relation_unknown",
+                "source": None,
+                "data": None,
+                "temporal_selection_status": "unknown",
+                "physical_capture_delay": "unknown",
+                "control_qualified": False,
+                "history_evicted_through_ns": self.evicted_through[service],
+                "history_retained_from_ns": queue[0].log_mono_ns if queue else None,
+            }
             result[service] = item
             if self.fault or relation is None:
                 continue
@@ -591,12 +597,12 @@ class NativeHistory:
             data = selected.data
             item.update(
                 data=data,
-                source=dict(
-                    service=service,
-                    log_mono_ns=selected.log_mono_ns,
-                    valid=selected.valid,
-                    observed_sequence=selected.observed_sequence,
-                ),
+                source={
+                    "service": service,
+                    "log_mono_ns": selected.log_mono_ns,
+                    "valid": selected.valid,
+                    "observed_sequence": selected.observed_sequence,
+                },
                 age_upper_ns=age,
             )
             missing = [field for field in REQUIRED[service] if field not in data]

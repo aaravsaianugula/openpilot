@@ -54,8 +54,8 @@ def main() -> int:
     parser.add_argument("--opendbc-car", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
-    import capnp
-    import zstandard
+    import capnp  # type: ignore[import-untyped]  # replay environment only; no stubs
+    import zstandard  # type: ignore[import-not-found]  # replay environment only
 
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     provenance = manifest["provenance"]
@@ -75,12 +75,12 @@ def main() -> int:
                 if timestamp in calibrations:
                     raise ValueError("Ambiguous calibration event identity")
                 data = event.extrinsicsCalibration
-                calibrations[timestamp] = dict(
-                    valid=bool(event.valid),
-                    status=str(data.calStatus),
-                    rpy=list(data.rpyCalib),
-                    height=list(data.height),
-                )
+                calibrations[timestamp] = {
+                    "valid": bool(event.valid),
+                    "status": str(data.calStatus),
+                    "rpy": list(data.rpyCalib),
+                    "height": list(data.height),
+                }
     frames = join_heights(manifest, calibrations)
     result = {
         "schema": "logged_camera_height_v1",

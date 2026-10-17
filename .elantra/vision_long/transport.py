@@ -607,7 +607,9 @@ class CameraPublisher(_Connection):
         _session(hello["client_nonce"])
         _clock_id(hello["clock_id"])
         self.session_id = str(uuid.uuid4())
-        self._control(_WELCOME, dict(client_nonce=hello["client_nonce"], session_id=self.session_id, clock_id=clock_id))
+        self._control(
+            _WELCOME, {"client_nonce": hello["client_nonce"], "session_id": self.session_id, "clock_id": clock_id}
+        )
         self._on_proposal = on_proposal
         self._closed, self._synced = threading.Event(), threading.Event()
         self.error: str | None = None
@@ -757,7 +759,7 @@ class CameraTransportClient(_Connection):
         client = cls(connection, codec, clock)
         try:
             nonce = str(uuid.uuid4())
-            client._control(_HELLO, dict(client_nonce=nonce, clock_id=clock_id))
+            client._control(_HELLO, {"client_nonce": nonce, "clock_id": clock_id})
             welcome = _json(codec.read_packet(connection), _WELCOME, {"client_nonce", "session_id", "clock_id"})
             if welcome["client_nonce"] != nonce:
                 raise TransportError("handshake_nonce_mismatch")
@@ -833,7 +835,7 @@ class CameraTransportClient(_Connection):
         nonce, sent = str(uuid.uuid4()), self.clock()
         timeout = self.socket.gettimeout()
         deadline = time.monotonic() + (timeout if timeout is not None else 5.0)
-        self._control(_CLOCK_REQUEST, dict(session_id=self.session_id, nonce=nonce, local_send_ns=sent))
+        self._control(_CLOCK_REQUEST, {"session_id": self.session_id, "nonce": nonce, "local_send_ns": sent})
         for _ in range(128):
             packet, received = self.codec.read_packet(self.socket, deadline), self.clock()
             if packet[0] in (_CAMERA, _CONTEXT):

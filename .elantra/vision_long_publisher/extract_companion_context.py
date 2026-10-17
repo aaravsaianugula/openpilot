@@ -138,7 +138,7 @@ REQUIRED = {
     "onroadEvents": ("events",),
 }
 # Explicit export freshness policy, not a claim that these are road-qualified limits.
-MAX_AGE_NS = {service: 200_000_000 for service in REQUIRED}
+MAX_AGE_NS = dict.fromkeys(REQUIRED, 200_000_000)
 MAX_AGE_NS.update(
     modelV2=250_000_000,
     radarState=250_000_000,
@@ -672,13 +672,13 @@ def write_context_index(output: Path, metadata: dict, frames: Iterable[dict], *,
         with (output.parent / name).open("xb") as handle:
             handle.write(buffer)
         parts.append(
-            dict(
-                path=name,
-                bytes=len(buffer),
-                sha256=hashlib.sha256(buffer).hexdigest(),
-                start_ordinal=count - part_count,
-                frame_count=part_count,
-            )
+            {
+                "path": name,
+                "bytes": len(buffer),
+                "sha256": hashlib.sha256(buffer).hexdigest(),
+                "start_ordinal": count - part_count,
+                "frame_count": part_count,
+            }
         )
         buffer.clear()
         part_count = 0
