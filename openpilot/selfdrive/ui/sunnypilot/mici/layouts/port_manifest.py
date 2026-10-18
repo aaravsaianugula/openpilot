@@ -4,20 +4,32 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 
-Pure logic behind the Elantra port update panel.
+Pure logic behind the Elantra port panel: the update gate and the Vision Long braking toggle.
 
 Kept free of pyray and ui_state on purpose: this is the part with actual decisions in it
-(is this build verified, may it be installed), and it needs to be testable without standing
-up a UI. `.elantra/test_port_panel.py` imports these directly, so the tests exercise the
-code that ships rather than a copy of it that can drift.
+(is this build verified, may it be installed, is braking switched on), and it needs to be
+testable without standing up a UI. `.elantra/test_port_panel.py` and
+`.elantra/test_vision_long_toggle.py` import these directly, so the tests exercise the code
+that ships rather than a copy of it that can drift.
 """
 
 from __future__ import annotations
 
 import datetime
 import json
+import os
+import tempfile
 
 CI_SUCCESS = "success"
+
+# Shared with the Vision Long companion (road contract): exactly the byte "1" is on; absent,
+# unreadable or anything else is off. A plain file rather than a Params key, because a new key
+# means a params_keys.h change and a native rebuild on the device.
+VISION_LONG_BRAKING_FILE = "/data/vision_long/braking"
+BRAKING_ON = b"1"
+BRAKING_OFF = b"0"
+BRAKING_DIR_MODE = 0o755
+BRAKING_FILE_MODE = 0o644
 
 
 def load_manifest(raw: str | bytes | None) -> dict:
@@ -88,3 +100,52 @@ def age(iso: str | None, now: datetime.datetime | None = None) -> str:
     if hours >= 2:
         return f"{hours} hours ago"
     return "just now"
+
+
+def braking_enabled(path: str | os.PathLike[str] = VISION_LONG_BRAKING_FILE) -> bool:
+    """True only when the state file holds exactly "1".
+
+    Absent, unreadable, a directory, or any other content is off: off is the state in which
+    the companion only watches, so an unreadable file can never switch braking on.
+    """
+    try:
+        with open(path, "rb") as stream:
+            content = stream.read(len(BRAKING_ON) + 1)
+    except OSError:
+        return False
+    return content == BRAKING_ON
+
+
+def set_braking(enabled: bool, path: str | os.PathLike[str] = VISION_LONG_BRAKING_FILE) -> None:
+    """Write the state atomically: a temporary file in the same folder, then a rename.
+
+    A reader sees either the old complete file or the new one, never a partial write. Any
+    failure raises; the previous state is left exactly as it was.
+    """
+    target = os.fspath(path)
+    folder = os.path.dirname(target)
+    os.makedirs(folder, mode=BRAKING_DIR_MODE, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=".braking.", dir=folder)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(BRAKING_ON if enabled else BRAKING_OFF)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, BRAKING_FILE_MODE)
+        os.replace(temporary, target)
+    except BaseException:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+        raise
+    if hasattr(os, "O_DIRECTORY"):
+        # Persist the rename itself, so the state survives the car losing power right after.
+        directory = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+
+def braking_summary(enabled: bool) -> str:
+    """The toggle's one-line state, in plain words."""
+    return "on: may brake harder" if enabled else "off: watching only"

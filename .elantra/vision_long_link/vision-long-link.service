@@ -1,0 +1,12 @@
+# Installed by .elantra/vision_long_install.sh into /etc/systemd/system; removed by the rollback.
+# Started by vision-long-link.timer at boot and every 30 s after, so a cable re-plug or a
+# flushed address is put right without anyone logging in. A rerun on a live link is a no-op.
+[Unit]
+Description=Vision Long USB link (CDC-NCM gadget, 192.168.250.1/24)
+After=local-fs.target
+# After a manual rollback the script is gone; the unit then does nothing instead of failing.
+ConditionPathExists=/data/openpilot/.elantra/vision_long_link/usb_link.py
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/venv/bin/python3 /data/openpilot/.elantra/vision_long_link/usb_link.py up

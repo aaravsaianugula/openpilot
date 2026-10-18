@@ -1,0 +1,12 @@
+# Installed by .elantra/vision_long_install.sh into /etc/systemd/system; removed by the rollback.
+# /var is tmpfs on the comma, so cron does not survive a reboot; this timer does.
+[Unit]
+Description=Bring up and re-assert the Vision Long USB link
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=30s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

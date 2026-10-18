@@ -1,0 +1,7 @@
+{
+  "schema": "native_runtime_v2",
+  "listen_ip": "192.168.250.1",
+  "port": 45556,
+  "key_file": "/data/vision_long/link.key",
+  "toggle_file": "/data/vision_long/braking"
+}

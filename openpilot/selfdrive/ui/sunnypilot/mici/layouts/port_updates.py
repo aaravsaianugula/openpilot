@@ -14,16 +14,21 @@ from being undone.
 Rollback works by pointing the stock updater at the master-previous branch, which the sync
 job keeps parked on the last build that passed. No new code runs in the update or finalize
 path; that path is what bricks devices and it stays untouched.
+
+The panel also carries the Vision Long braking switch. Its state is the file the companion
+reads, /data/vision_long/braking, not a Params key, so it stays as set across drives.
 """
 
 import subprocess
+import time
 
 import pyray as rl
 
-from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigParamControl, GreyBigButton
+from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigParamControl, BigToggle, GreyBigButton
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog
 from openpilot.selfdrive.ui.sunnypilot.mici.layouts.port_manifest import (
-  age, install_offered, load_manifest, update_blocked,
+  age, braking_enabled, braking_summary, install_offered, load_manifest, set_braking, update_blocked,
 )
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import FontWeight, gui_app
@@ -36,6 +41,9 @@ MAIN_BRANCH = "master"
 ROLLBACK_BRANCH = "master-previous"
 
 UPDATED_PROC = "openpilot.system.updated.updated"
+
+# The state file can also be switched over SSH, so the toggle re-reads it while it is visible.
+BRAKING_REFRESH_S = 1.0
 
 
 def _signal_updater(signal: str) -> None:
@@ -113,11 +121,56 @@ class PortStatusInfo(Widget):
       body.render()
 
 
+class VisionLongBrakingToggle(BigToggle):
+  """Switches Vision Long braking on or off by writing the file the companion reads."""
+
+  def __init__(self):
+    super().__init__(tr("vision long braking"), "", toggle_callback=self._on_toggle)
+    self._next_refresh = 0.0
+    self._write_error = ""
+    self._refresh()
+
+  def _refresh(self):
+    enabled = braking_enabled()
+    self.set_checked(enabled)
+    self.set_value(self._write_error or tr(braking_summary(enabled)))
+    self._next_refresh = time.monotonic() + BRAKING_REFRESH_S
+
+  def show_event(self):
+    super().show_event()
+    self._write_error = ""
+    self._refresh()
+
+  def _update_state(self):
+    super()._update_state()
+    if time.monotonic() >= self._next_refresh:
+      self._refresh()
+
+  def _on_toggle(self, checked: bool):
+    try:
+      set_braking(checked)
+    except OSError as error:
+      # Shown on the toggle until the next successful switch; the pill re-reads the file, so
+      # it keeps showing the state the companion actually sees.
+      cloudlog.exception("vision long braking toggle write failed")
+      self._write_error = tr("not saved: {}").format(error.strerror or type(error).__name__)
+    else:
+      self._write_error = ""
+    self._refresh()
+
+
 class ElantraPortLayoutMici(NavScroller):
   def __init__(self):
     super().__init__()
 
     self._status = PortStatusInfo()
+
+    self._vision_long_toggle = VisionLongBrakingToggle()
+    # Two short notes rather than one long one: a GreyBigButton is a fixed height and wraps.
+    self._vision_long_what = GreyBigButton(
+      "", tr("Braking only. It can only slow the car more than openpilot, never speed it up."))
+    self._vision_long_how = GreyBigButton(
+      "", tr("Stays on until you turn it off. Needs the laptop linked by USB cable."))
 
     # Default on. The sync job already refuses to publish a build from a red upstream commit,
     # so this is a second, visible line of defence rather than the only one.
@@ -147,6 +200,9 @@ class ElantraPortLayoutMici(NavScroller):
 
     self._scroller.add_widgets([
       self._status,
+      self._vision_long_toggle,
+      self._vision_long_what,
+      self._vision_long_how,
       self._verified_toggle,
       self._check_btn,
       self._install_btn,
