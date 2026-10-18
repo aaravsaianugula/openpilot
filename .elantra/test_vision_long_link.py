@@ -88,6 +88,54 @@ class LinkTests(unittest.TestCase):
     def bring_up(self, ip: FakeIp) -> str:
         return usb_link.bring_up(self.paths, ip, nmcli_present=True, link=link_marker)
 
+    def test_mac_attributes_refused_before_bind_still_bring_the_link_up(self):
+        # The comma 4's 4.9 kernel (found on the device 2026-10-18) answers every ncm.usb0 attribute
+        # with ENODEV ("Gadget function do not bind yet") until the gadget is bound. The MACs are
+        # optional (the kernel assigns them), so the link must still come up, and every other
+        # attribute error must still fail the bring-up.
+        import errno
+        from unittest import mock
+        self.kernel_assigns_interface()
+        function = self.gadget / "functions" / usb_link.FUNCTION
+        real_read, real_write = Path.read_text, Path.write_text
+
+        def refuse(path, *args, **kwargs):
+            if path.parent == function and path.name in ("dev_addr", "host_addr"):
+                raise OSError(errno.ENODEV, "No such device")
+            return None
+
+        def read(path, *args, **kwargs):
+            refuse(path)
+            return real_read(path, *args, **kwargs)
+
+        def write(path, *args, **kwargs):
+            refuse(path)
+            return real_write(path, *args, **kwargs)
+
+        (function / "dev_addr").write_text("")
+        (function / "host_addr").write_text("")
+        ip = FakeIp()
+        with mock.patch.object(Path, "read_text", read), mock.patch.object(Path, "write_text", write):
+            self.assertEqual(self.bring_up(ip), "usb0")
+        self.assertEqual((self.gadget / "UDC").read_text().strip(), UDC)
+        self.assertIn(["ip", "addr", "add", "192.168.250.1/24", "dev", "usb0"], ip.calls)
+
+    def test_other_attribute_errors_still_fail_the_bring_up(self):
+        import errno
+        from unittest import mock
+        self.kernel_assigns_interface()
+        function = self.gadget / "functions" / usb_link.FUNCTION
+        (function / "dev_addr").write_text("")
+        real_write = Path.write_text
+
+        def write(path, *args, **kwargs):
+            if path.parent == function and path.name == "dev_addr":
+                raise OSError(errno.EACCES, "Permission denied")
+            return real_write(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "write_text", write), self.assertRaises(OSError):
+            self.bring_up(FakeIp())
+
     def test_a_fresh_device_gets_the_ncm_gadget_bound_to_a600000_only(self):
         self.kernel_assigns_interface()
         ip = FakeIp()

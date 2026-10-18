@@ -21,6 +21,7 @@ what lets a systemd timer re-assert it after a cable re-plug or an address flush
 
 from __future__ import annotations
 
+import errno
 import logging
 import logging.handlers
 import os
@@ -113,6 +114,18 @@ def _write(path: Path, value: str) -> None:
         log.info("wrote %s = %s", path, value)
 
 
+def _write_mac(path: Path, value: str) -> None:
+    # The comma 4's 4.9 kernel answers every ncm attribute with ENODEV ("Gadget function do not
+    # bind yet") until the gadget is bound, and refuses writes once it is. The MACs are optional
+    # (the kernel assigns its own), so only that refusal is skipped; any other error still fails.
+    try:
+        _write(path, value)
+    except OSError as error:
+        if error.errno != errno.ENODEV:
+            raise
+        log.info("%s unavailable before bind on this kernel; the kernel assigns the address", path.name)
+
+
 def _mkdir(path: Path) -> None:
     if not path.is_dir():
         path.mkdir()
@@ -155,8 +168,8 @@ def _configure(paths: Paths, link: Callable[[Path, Path], None]) -> None:
         _write(strings / LANGUAGE / name, value)
     _mkdir(gadget / "functions")
     _mkdir(paths.function)
-    _write(paths.function / "dev_addr", DEV_ADDR)
-    _write(paths.function / "host_addr", HOST_ADDR)
+    for name, value in (("dev_addr", DEV_ADDR), ("host_addr", HOST_ADDR)):
+        _write_mac(paths.function / name, value)
     _mkdir(gadget / "configs")
     _mkdir(paths.config)
     _mkdir(paths.config / "strings")
