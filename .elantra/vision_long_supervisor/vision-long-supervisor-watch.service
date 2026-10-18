@@ -1,0 +1,10 @@
+# Installed with vision-long-supervisor.service. Started by vision-long-supervisor-watch.timer:
+# it starts the monitor if it is not running (a no-op when it is), so a monitor that systemd
+# stopped for any reason comes back within a minute.
+[Unit]
+Description=Start the Vision Long laptop monitor if it is not running
+ConditionPathExists=/data/openpilot/.elantra/vision_long_supervisor/monitor.py
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl start vision-long-supervisor.service
