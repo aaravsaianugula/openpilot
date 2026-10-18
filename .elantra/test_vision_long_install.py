@@ -46,6 +46,8 @@ class FakeComma(inst.System):
         self.guards_code = 0
         self.link = (inst.LINK_NO_CARRIER, "link waiting: usb0 configured but no carrier")
         self.calls: list[list[str]] = []
+        # Whether the runtime config existed each time the companion test ran.
+        self.config_during_companion_test: list[bool] = []
         # AGNOS mounts `/` read-only; /etc/systemd/system is writable only between remounts.
         self.root_writable = False
 
@@ -92,6 +94,9 @@ class FakeComma(inst.System):
             return ok
         if argv[0] == inst.PYTHON and argv[1] == ".elantra/guards.py":
             return inst.Result(self.guards_code, "PASSED" if self.guards_code == 0 else "FAILED: torque", "")
+        if argv[0] == inst.PYTHON and argv[1] == ".elantra/test_vision_long_companion.py":
+            self.config_during_companion_test.append(self.layout.runtime_config.exists())
+            return ok
         if argv[0] == inst.PYTHON and argv[1] == "-c":
             return inst.Result(0, "overlay\n", "")
         if argv[0] == inst.PYTHON and argv[-1] == "check":
@@ -327,6 +332,19 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(self.layout.key.read_bytes(), key)
         self.assertEqual(self.layout.runtime_config.read_bytes(), TEMPLATE)
 
+    def test_a_rerun_keeps_the_runtime_config_while_the_companion_test_runs(self):
+        inst.install(self.comma, self.layout, SHAS)
+        inst.install(self.comma, self.layout, SHAS)
+        # The companion test no longer depends on the config, so a rerun never takes it away.
+        self.assertEqual(self.comma.config_during_companion_test, [False, True])
+        self.assertEqual(self.layout.runtime_config.read_bytes(), TEMPLATE)
+
+    def test_a_fresh_install_still_refuses_a_stray_runtime_config(self):
+        self.layout.runtime_config.parent.mkdir(parents=True)
+        self.layout.runtime_config.write_bytes(TEMPLATE)
+        with self.assertRaisesRegex(inst.InstallError, "git status is not clean"):
+            inst.install(self.comma, self.layout, SHAS)
+
     # --- rollback -----------------------------------------------------------------------------
 
     def test_rollback_restores_the_base_and_keeps_key_toggle_and_logs(self):
@@ -383,10 +401,12 @@ class TemplateTests(unittest.TestCase):
     def test_the_shipped_template_carries_the_road_contract(self):
         self.assertEqual(inst.validate_template(TEMPLATE), TEMPLATE)
 
-    def test_extra_fields_are_allowed_but_contract_fields_are_not_negotiable(self):
-        self.assertTrue(inst.validate_template(b'{"schema": "native_runtime_v2", "listen_ip": "192.168.250.1", '
-                                               + b'"port": 45556, "key_file": "/data/vision_long/link.key", '
-                                               + b'"toggle_file": "/data/vision_long/braking", "pairs": 1}'))
+    def test_extra_fields_and_changed_contract_fields_are_both_refused(self):
+        # native_runtime_v2 refuses any field beyond the five, so the installer must too.
+        with self.assertRaisesRegex(inst.InstallError, "refuses: pairs"):
+            inst.validate_template(b'{"schema": "native_runtime_v2", "listen_ip": "192.168.250.1", '
+                                   + b'"port": 45556, "key_file": "/data/vision_long/link.key", '
+                                   + b'"toggle_file": "/data/vision_long/braking", "pairs": 1}')
         for broken in (b"[]", b"{", b'{"schema": "native_runtime_v2"}'):
             with self.subTest(broken=broken), self.assertRaises(inst.InstallError):
                 inst.validate_template(broken)

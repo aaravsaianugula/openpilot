@@ -5,33 +5,61 @@
   "base_files": {
     "opendbc_repo/opendbc/car/hyundai/carcontroller.py": "29fd6c14ee583b7f7a432481b549235ef56d2a58f08f28b3ed6b6fc8c7c79ac4",
     "opendbc_repo/opendbc/car/hyundai/hyundaican.py": "0140d44e0ac373d71c9e0e28d8c945555e6e8f0c4a78a5ddba274f76a40c30fa",
-    ".elantra/sync.py": "b8f1eed4d6aac6dfaaf6eefcfb16ccda490101a75fa43d0ecc5abdc58bdaca8c"
+    ".elantra/sync.py": "b8f1eed4d6aac6dfaaf6eefcfb16ccda490101a75fa43d0ecc5abdc58bdaca8c",
+    "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_manifest.py": "d4c2f635b6aaf4d8be397e48f6d9f279cf7370417641dbc7cf9f6be34d928ba7",
+    "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_updates.py": "fffb97fd28129c7afc832eb6d1e7b047b87310c897007253ca5ce3eec3574460"
   },
   "output_files": {
-    "opendbc_repo/opendbc/car/hyundai/carcontroller.py": "2fcbc3568c9679e08304a8dc02866b5cb5129d1923e91f0f5494eafe3cb3d6a5",
+    "opendbc_repo/opendbc/car/hyundai/carcontroller.py": "230e0ab0d25a21d6cce56a35c5c7dd373169e418a7b5bedfa3966a346cff0f50",
     "opendbc_repo/opendbc/car/hyundai/hyundaican.py": "d347937dbc70a9820809607a3e3edc5903e60e478e0517ea882b0eefce07dc55",
     ".elantra/sync.py": "be1cab37b6f3d5027e5549ef6fb2292aaf586d9f55b4c96cbbc461c604218776",
+    "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_manifest.py": "b48ae2a2ab50a9abee7b6b14a4d454c56fe9057eafc499f9b1287a3a551826f0",
+    "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_updates.py": "e1fb48a3c1d2e7c138ee4fa07af1f8d5fa569aa00a9af33afcc444466fa20c8f",
     ".elantra/vision_long/__init__.py": "07cd13605904881778e3ba35841c8b945f8ee67e36c87a850e7f19d98a66f369",
-    ".elantra/vision_long/camera_io.py": "67ae9d2b1edad246ed8ff251dbe9a431266059e90d63c4cc03a8b64c1ca200b0",
+    ".elantra/vision_long/braking_toggle.py": "4fa82dd72131e700e8d371b10ce01d4456b24c3d87bb6d10302bf68bcfbeb68a",
+    ".elantra/vision_long/camera_io.py": "ab2b32d0a4a178f5fee3c5428bab3b632a5383fc25212536ded3e6bb60a2ca70",
     ".elantra/vision_long/control_authority.py": "70d6326e113796a94c1c479792d1352392079738968c4f1e68e9756f9f1e56c3",
-    ".elantra/vision_long/integration.py": "d428e30129439d28b8e21c4f42d1153ca3b8147b025e492a1aadd22f6b85da0a",
-    ".elantra/vision_long/native_bootstrap.py": "3a212a7c1bfc9e2e9243d18b4b1f4865ffcdcfba3e0fbc2eacdd0e2750df5e58",
-    ".elantra/vision_long/native_bridge.py": "7d8af96cd00da6f91edb1b20dcb0f29511802d36795a7fc9cb2b4cb40476f1ba",
-    ".elantra/vision_long/native_consumer.py": "abcde996401e0f5677429d5e2bb46f29fc6c016d5650c74935020a1c0a0e2209",
+    ".elantra/vision_long/device_applied.py": "66b7b68c125f1bc925a2a6167ada94cde2c9f8de0facb30a5a1c40928a5792b3",
+    ".elantra/vision_long/integration.py": "b04ada8b8fa341ca9f8fb4051f1f0d0ebba8bad1a41ab1b61212d452a7683be0",
+    ".elantra/vision_long/native_bootstrap.py": "7eec47d403455f87c8b209c5fe4189961558b68f743234cc859c944c3b8653cf",
+    ".elantra/vision_long/native_bridge.py": "3648fa9f1ad9ce87dd4cd13feeb4433298c0a68ffb8ac0e4ac73e7ecc14d697b",
+    ".elantra/vision_long/native_consumer.py": "b8971a2f83c8863caa286c08ced5793504078e441bd740144e5ebc76bcd8fc9e",
     ".elantra/vision_long/native_context.py": "8501d04b6ae625cbdfcfffa2ee9a1244477ea46ef2d97858beda974fc058dcff",
-    ".elantra/vision_long/transport.py": "8153de36e25a86096c578604019c07d424206a8d4f3f931c570c35b27f30f318",
+    ".elantra/vision_long/transport.py": "a66b8b342fb862685450931279cb1739168b7ea16b081818e69e8e35f8a920e4",
     ".elantra/vision_long_publisher/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    ".elantra/vision_long_publisher/comma_context_publisher.py": "2c3878171756b4e517b7de4f6bd32702b70dbafbc76a539f0efc41c41974f2d6",
+    ".elantra/vision_long_publisher/comma_context_publisher.py": "a2385614176f005b354e4f80fd01791de2abda45684371c2fee48695495f4bc4",
     ".elantra/vision_long_publisher/extract_camera_context.py": "289ab07cfd7713ac293564910b83707711d46630b9af27aa5e35b50fdc879510",
-    ".elantra/vision_long_publisher/extract_companion_context.py": "b738e7a4dc160e261cae2164462146a281c6972ef2e54c712e38034dd02119eb",
+    ".elantra/vision_long_publisher/extract_companion_context.py": "75555bb3a96eeb8bf82078c4c75e562176a78209208245863507c812b27f7f83",
     ".elantra/vision_long_publisher/extract_projection_height.py": "623d529c651e06b9a62f81004c447b02a3d4a6792d8a1f708d83f793e0de1800",
-    ".elantra/vision_long_publisher/native_source_identity.py": "82ddd998a906bc176a2d185eec834ab3e8259e006bdaa79d3b447f2b2f340020",
-    "native-overlay.patch": "4552e2ac8eafbea231d2224e1e23a99757c596c29dfecea67e43a9e784a40500",
+    ".elantra/vision_long_publisher/native_source_identity.py": "dfb1813d9593c93572d195a29cbab2e21491a3769d65486140fe35c826765d19",
+    "native-overlay.patch": "1283ab131ef8586f65bf1cadcead37e2d08714ff25ebf57000227c830676cfa1",
     "LICENSE-opendbc": "6543c4a66b46affddae1b9ae1e1992687f0b7191e74ba3a7235388b9f42a6d13"
   },
   "installed": false,
-  "diagnostic_runtime_opt_in": false,
-  "json_can_enable_authority": false,
+  "runtime_opt_in": false,
+  "authority": {
+    "braking_only": true,
+    "gated_by": [
+      "the braking toggle file: content 1 is on; absent, unreadable or anything else is off",
+      "an admitted laptop session on the boot:CLOCK_BOOTTIME camera clock",
+      "the declared receiver and command-lag contract below",
+      "no card-lifetime fault latch"
+    ],
+    "toggle_file": "/data/vision_long/braking",
+    "declared_constants": {
+      "status": "declared_not_measured",
+      "build_id": "vision-long-road-v1",
+      "scc12_handoff_period_ns": 20000000,
+      "scc12_effect_delay_ns": 500000000,
+      "companion_min_accel_mps2": -3.5,
+      "native_max_accel_mps2": 2.0,
+      "command_lag_envelope_ns": 100000000,
+      "controller_completion_bound_ns": 5000000,
+      "unauthenticated_latch_count": 3,
+      "unauthenticated_window_ns": 1000000000
+    },
+    "off_means": "exact native SCC12 bytes; the pipeline runs in shadow and receiver echoes continue"
+  },
   "publisher_private_package": {
     "__init__.py": {
       "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -39,8 +67,8 @@
       "relative_imports": []
     },
     "comma_context_publisher.py": {
-      "source_sha256": "0884bdbd42f1399203acdc86514544c67bd9ccf04be17c64a70bdfbe2c4ef362",
-      "exported_sha256": "2c3878171756b4e517b7de4f6bd32702b70dbafbc76a539f0efc41c41974f2d6",
+      "source_sha256": "9a0d73b6ec9775081c9db3d3c908f0f1705975aebee5054675b1c4700ca2bc0d",
+      "exported_sha256": "a2385614176f005b354e4f80fd01791de2abda45684371c2fee48695495f4bc4",
       "relative_imports": [
         "from tools.extract_companion_context import",
         "from tools.native_source_identity import"
@@ -52,8 +80,8 @@
       "relative_imports": []
     },
     "extract_companion_context.py": {
-      "source_sha256": "370492dd60b6d9e261dc6e84eb8b36a39197f44239e27551f88a5a5ecea16798",
-      "exported_sha256": "b738e7a4dc160e261cae2164462146a281c6972ef2e54c712e38034dd02119eb",
+      "source_sha256": "e1fe92424abc2f8bea686e378c8cf4bae7807fc2d74a0295ac47ec1a30d5e110",
+      "exported_sha256": "75555bb3a96eeb8bf82078c4c75e562176a78209208245863507c812b27f7f83",
       "relative_imports": [
         "from tools.extract_camera_context import",
         "from tools.extract_projection_height import"
@@ -65,8 +93,8 @@
       "relative_imports": []
     },
     "native_source_identity.py": {
-      "source_sha256": "82ddd998a906bc176a2d185eec834ab3e8259e006bdaa79d3b447f2b2f340020",
-      "exported_sha256": "82ddd998a906bc176a2d185eec834ab3e8259e006bdaa79d3b447f2b2f340020",
+      "source_sha256": "dfb1813d9593c93572d195a29cbab2e21491a3769d65486140fe35c826765d19",
+      "exported_sha256": "dfb1813d9593c93572d195a29cbab2e21491a3769d65486140fe35c826765d19",
       "relative_imports": []
     }
   },
@@ -77,12 +105,15 @@
     }
   },
   "live_producer_qualified": false,
-  "missing_live_contracts": [
-    "trusted issued-camera/clock bridge",
-    "independent movement clearance",
-    "fresh native movement permission",
-    "fresh incoming AEB command-state observation",
-    "verified physical acceleration/response bounds"
+  "unmeasured": [
+    "physical braking response bounds of the CN7 SCC12 path (floor -3.5 m/s^2 is declared)",
+    "incoming AEB state qualification (only outbound SCC12 AEB fields are read, for reporting)",
+    "controller completion inside the declared 5 ms bound in the card process",
+    "SCC12 effect delay (500 ms declared from longitudinalActuatorDelay)",
+    "SCC12 handoff period jitter (20 ms declared)",
+    "post-handoff CAN delivery timing",
+    "laptop return latency on the USB NCM link",
+    "card-process load of the 20 Hz camera copies"
   ],
   "scope": "Pinned CN7 openpilot-long only; stock-long/CANFD remain native; no steering/safety changes"
 }

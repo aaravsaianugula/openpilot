@@ -28,6 +28,8 @@ from .extract_camera_context import extract as extract_camera_record
 from .extract_projection_height import digest as file_sha256
 
 ENCODERS = ("narrowRoadEncodeIdx", "wideRoadEncodeIdx")
+# The context's top-level simulation-only record; replay reads it only under its explicit context flag.
+CONTEXT_SIMULATION_EVALUATION_KEY = "simulation_qualified_evaluation"
 CAMERA_IDENTITIES = ("narrowRoadCameraState", "wideRoadCameraState", "deviceState")
 ARCHIVE_CAMERA_COMMIT = "e748a4dda814dd0dd171fe76f2feab2399bd429d"
 ARCHIVE_CAMERA_SHA256 = "1de3f9e6147f28195c71673ae5c8ec38e65ede997ac98d2e1e3b114eda873ec4"
@@ -734,6 +736,22 @@ def context_declarations(path: Path) -> dict:
     return records
 
 
+def context_simulation_evaluation(path: Path) -> dict:
+    """The declared-eval file's record, validated by replay's simulation loader, for the context's top level.
+
+    The record travels unchanged inside the context, so the context's SHA256 pin covers it. It is
+    simulation-only and never vehicle proof; live has no path that reads it.
+    """
+    # Imported here: the loader imports vision_long.native_context, which imports this module's constants.
+    from tools.simulation_evaluation import evaluation_from_record, read_simulation_evaluation_file
+
+    record, sha256 = read_simulation_evaluation_file(path)
+    evaluation_from_record(record, sha256)
+    if not isinstance(record, dict):
+        raise ValueError("Simulation evaluation must be a JSON object")
+    return record
+
+
 def private_output(path: Path) -> Path:
     """The context carries GNSS: it stays in the drive-data tree, never inside a footage root."""
     resolved = path.resolve()
@@ -769,9 +787,18 @@ def main() -> int:
         type=Path,
         help="Declared calibration/GNSS (and optional ego_speed) records, validated and written into the context",
     )
+    parser.add_argument(
+        "--simulation-evaluation",
+        type=Path,
+        help="SIMULATION ONLY, never vehicle proof: a declared-eval.json record, validated and written into the "
+        + "context for replay's --simulation-qualified-evaluation-from-context",
+    )
     args = parser.parse_args()
-    # Validated before any archive work: a malformed declaration never produces a context.
+    # Validated before any archive work: a malformed declaration or evaluation never produces a context.
     declarations = context_declarations(args.declarations) if args.declarations is not None else None
+    simulation_evaluation = (
+        context_simulation_evaluation(args.simulation_evaluation) if args.simulation_evaluation is not None else None
+    )
     import capnp  # type: ignore[import-untyped]  # replay environment only; no stubs
     import zstandard  # type: ignore[import-not-found]  # replay environment only
 
@@ -886,6 +913,8 @@ def main() -> int:
     }
     if declarations is not None:
         result["declarations"] = declarations
+    if simulation_evaluation is not None:
+        result[CONTEXT_SIMULATION_EVALUATION_KEY] = simulation_evaluation
     args.output.parent.mkdir(parents=True, exist_ok=True)
     if args.stream_context:
         result = write_context_index(args.output, result, frames)

@@ -45,8 +45,8 @@ STATE_DIR_MODE = 0o755
 FILE_MODE = 0o644
 SHA = re.compile(r"[0-9a-f]{40}")
 RUNTIME_CONFIG = ".elantra/vision_long/native-runtime.json"
-# The one documented spot for the runtime config's field list. The integration thread owns
-# its final fields; the installer only insists on the road-contract values below.
+# The runtime config is written from this template. The companion reads exactly the five
+# native_runtime_v2 fields below and refuses any other, so the template must be exactly them.
 TEMPLATE = ".elantra/vision_long_link/native-runtime.template.json"
 UNIT_SOURCE = ".elantra/vision_long_link"
 LINK_SCRIPT = ".elantra/vision_long_link/usb_link.py"
@@ -255,7 +255,8 @@ def _raise_if(failures: list[str], action: str) -> None:
 
 
 def validate_template(raw: bytes) -> bytes:
-    """The template must be a JSON object carrying every road-contract value unchanged."""
+    """The template must be a JSON object holding exactly the road-contract values: the companion's
+    native_runtime_v2 parser refuses any extra field, so one would install a config that fails closed."""
     try:
         value = json.loads(raw)
     except ValueError as error:
@@ -265,6 +266,9 @@ def validate_template(raw: bytes) -> bytes:
     wrong = sorted(name for name, expected in CONTRACT.items() if value.get(name) != expected)
     if wrong:
         raise InstallError("runtime config template disagrees with the road contract on: " + ", ".join(wrong))
+    extra = sorted(set(value) - set(CONTRACT))
+    if extra:
+        raise InstallError("runtime config template has fields native_runtime_v2 refuses: " + ", ".join(extra))
     return raw
 
 
@@ -435,10 +439,9 @@ def _apply_install(system: System, layout: Layout, shas: Shas, mode: str) -> lis
         layout.rollback_branch.write_text((branch.out.strip() if branch.code == 0 else DETACHED) + "\n")
         _git(system, layout.repo, "checkout", "-q", "-B", BRANCH, "FETCH_HEAD")
         _git(system, layout.repo, "submodule", "update", "--init", "opendbc_repo")
-    elif layout.runtime_config.exists():
-        # The companion test requires a tree without the config; it is rewritten below.
-        layout.runtime_config.unlink()
-    _verify_checkout(system, layout, shas.target_openpilot, shas.target_opendbc, set())
+    # A rerun keeps the config it finds (the companion test never reads it); it is rewritten below.
+    present = {"?? " + RUNTIME_CONFIG} if mode == "rerun" else set()
+    _verify_checkout(system, layout, shas.target_openpilot, shas.target_opendbc, present)
     _require(system, [PYTHON, ".elantra/guards.py", "--opendbc", "opendbc_repo", "--repo", "."],
              "guards", cwd=layout.repo, env=env)
     _require(system, [PYTHON, ".elantra/test_vision_long_companion.py"], "companion test", cwd=layout.repo, env=env)

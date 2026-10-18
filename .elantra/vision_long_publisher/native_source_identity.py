@@ -48,13 +48,18 @@ INSTALLED_FILES = frozenset(
         "opendbc_repo/opendbc/car/hyundai/carcontroller.py",
         "opendbc_repo/opendbc/car/hyundai/hyundaican.py",
         ".elantra/sync.py",
+        # The on-screen braking toggle; the device path is /data/openpilot/<this path>.
+        "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_manifest.py",
+        "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_updates.py",
         UNTRACKED_RUNTIME_CONFIG,
         *(
             ".elantra/vision_long/" + name
             for name in (
                 "__init__.py",
+                "braking_toggle.py",
                 "camera_io.py",
                 "control_authority.py",
+                "device_applied.py",
                 "integration.py",
                 "native_bootstrap.py",
                 "native_bridge.py",

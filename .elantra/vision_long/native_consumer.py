@@ -11,7 +11,7 @@ import logging
 import math
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .integration import (
     COMPANION_DISABLED_AFTER_FAULT,
@@ -20,6 +20,7 @@ from .integration import (
     NativeScc12FieldError,
     PreparedScc12,
     prepare_scc12,
+    scc12_emergency_active,
 )
 from .native_context import MAX_ECHO_COMMANDS, EchoedCommand, ReceiverStateEcho, echo_active_age_ns
 
@@ -30,6 +31,8 @@ SCC12_ALTERNATIVES = 2
 # latch stops an injector from toggling companion braking indefinitely.
 UNAUTHENTICATED_LATCH_COUNT = 3
 UNAUTHENTICATED_WINDOW_NS = 1_000_000_000
+# Decision reason while the device braking toggle is OFF: exact native output, the cap kept in shadow.
+BRAKING_TOGGLE_OFF = "braking_toggle_off"
 
 
 @dataclass(frozen=True)
@@ -143,8 +146,13 @@ class _FinalScc12Boundary:
         long_active: bool,
         driver_override: bool,
         standstill: bool,
+        toggle_on: bool,
     ):
         self.consumer = consumer
+        # The braking toggle as read at this cycle's start; OFF selects exact native at finalize.
+        self.toggle_on = toggle_on
+        self.shadow_decision: ControlDecision | None = None
+        self.shadow_output: dict | None = None
         self.recorder = consumer.recorder
         self.gate = consumer.gate
         self.cycle = cycle
@@ -251,14 +259,23 @@ class _FinalScc12Boundary:
         self._finished = True
         index, decision = self.prepared.finalize(self.completion_clock)
         self.consumer._absorb_gate_fault()
+        # The full pipeline runs either way: this is what the car gets while the toggle is ON.
+        self.shadow_decision, self.shadow_output = decision, self.prepared.values[index]
+        if not self.toggle_on:
+            # OFF wins: exact native fields, messages and actuators; the gate state moved as in shadow.
+            index, decision = 0, replace(self.prepared.decisions[0], reason=BRAKING_TOGGLE_OFF)
         self.decision = decision
         self.output = self.prepared.values[index]
-        if self.messages is not None and self.recorder is not None:
-            # An SCC12 tick: the selected alternative is what the receiver gets.
-            if isinstance(self.prepared, NativeFieldFallback):
-                self.recorder.poison("native_scc12_field_fault")
-            else:
-                self.recorder.record_handoff(self.cycle.now_ns, self.output["aReqValue"], decision.companion_eligible)
+        if self.messages is not None:
+            if self.recorder is not None:
+                # An SCC12 tick: the selected alternative is what the receiver gets.
+                if isinstance(self.prepared, NativeFieldFallback):
+                    self.recorder.poison("native_scc12_field_fault")
+                else:
+                    self.recorder.record_handoff(
+                        self.cycle.now_ns, self.output["aReqValue"], decision.companion_eligible
+                    )
+            self.consumer._report_applied(self)
         return self._handoffs[index]
 
 
@@ -279,10 +296,18 @@ class NativeScc12Consumer:
         completion_clock: Callable[[], int] | None = None,
         recorder: ReceiverStateRecorder | None = None,
         fault_log: logging.Logger | None = None,
+        braking_enabled: Callable[[], bool] | None = None,
+        applied_sink: Callable[[tuple], None] | None = None,
     ):
         """``fault_log`` receives the fault-latch error line. The car process passes
         opendbc's ``carlog`` (card.py forwards it to cloudlog); elsewhere it is this
-        module's standard logger."""
+        module's standard logger.
+
+        ``braking_enabled`` is the device braking toggle (a lock-free, I/O-free check);
+        OFF selects exact native output at every handoff. The bridge always supplies it;
+        None is only for embeddings with no device toggle (offline replay and tests).
+        ``applied_sink`` receives one plain ``device_applied.HandoffTuple`` per companion
+        packet at its first SCC12 handoff; it must neither block nor raise."""
         if not isinstance(gate, ControlGate):
             raise ValueError("Canonical authenticated control gate required")
         if recorder is not None and (
@@ -292,6 +317,17 @@ class NativeScc12Consumer:
             raise ValueError("Receiver recorder must belong to this gate's session and build")
         if fault_log is not None and not isinstance(fault_log, logging.Logger):
             raise ValueError("A standard logging.Logger is required for fault reporting")
+        if braking_enabled is not None and not callable(braking_enabled):
+            raise ValueError("A callable braking toggle is required")
+        if applied_sink is not None and not callable(applied_sink):
+            raise ValueError("A callable device-applied sink is required")
+        self.braking_enabled = braking_enabled
+        self.applied_sink = applied_sink
+        # Input pair of the newest staged authenticated packet, and whether an arbitrated
+        # packet (its pair, or None for unknown bytes) still owes its device-applied record.
+        self._newest_pair: int | None = None
+        self._report_pending = False
+        self._report_pair: int | None = None
         self.recorder = recorder
         self.gate = gate
         self.fault_log = logging.getLogger(__name__) if fault_log is None else fault_log
@@ -332,7 +368,7 @@ class NativeScc12Consumer:
         """
         if type(data) is not bytes:
             raise ValueError("Authenticated wire bytes required")
-        sequence, _ = self.gate.classify_packet(data)
+        sequence, pair, _ = self.gate.classify_packet(data)
         if sequence is None:
             self.unauthenticated_count += 1
             self._unauthenticated_unfolded += 1
@@ -349,19 +385,56 @@ class NativeScc12Consumer:
             return
         self._staged_sequence = sequence
         self._newest = data
+        self._newest_pair = pair
 
     def take_packet(self) -> bytes | None:
         """The packet for this arbitration: pending unknown bytes first, else the newest by sequence."""
         if self._unknown is not None:
             unknown, self._unknown = self._unknown, None
+            self._report_pending, self._report_pair = True, None
             return unknown
         newest, self._newest = self._newest, None
+        if newest is not None:
+            self._report_pending, self._report_pair = True, self._newest_pair
         return newest
+
+    def _report_applied(self, boundary: "_FinalScc12Boundary") -> None:
+        """One device-applied tuple for the newest arbitrated packet, at its first SCC12 handoff."""
+        if not self._report_pending or self.applied_sink is None:
+            return
+        self._report_pending = False
+        prepared, output, shadow, decision = (
+            boundary.prepared,
+            boundary.output,
+            boundary.shadow_output,
+            boundary.decision,
+        )
+        if prepared is None or output is None or shadow is None or decision is None:
+            raise ValueError("A finalized handoff is required for its device-applied record")
+        native = prepared.values[0]
+        packet = prepared.attempt.packet if isinstance(prepared, PreparedScc12) else None
+        self.applied_sink(
+            (
+                self._report_pair,
+                boundary.cycle.now_ns,
+                native["aReqValue"],
+                None if packet is None else packet.accel,
+                output["aReqValue"],
+                shadow["aReqValue"],
+                int(output["StopReq"]),
+                boundary.toggle_on,
+                self.fault_reason,
+                decision.reason,
+                boundary.driver_override,
+                scc12_emergency_active(native),
+            )
+        )
 
     def latch_fault(self, reason: str) -> None:
         self.fault_count += 1
         self.fault_reason = reason
         self._unknown = self._newest = None
+        self._newest_pair = None
         # Visible, never swallowed: one explicit error line on the platform log.
         self.fault_log.error(
             "vision_long companion disabled for session %s after native fault %s (fault_count=%d)",
@@ -416,4 +489,5 @@ class NativeScc12Consumer:
             self.last_cycle_status = "native_cycle_clock_mismatch"
             return None
         self.last_cycle_status = "native_cycle_bound"
-        return _FinalScc12Boundary(self, cycle, long_active, driver_override, standstill)
+        toggle_on = True if self.braking_enabled is None else self.braking_enabled()
+        return _FinalScc12Boundary(self, cycle, long_active, driver_override, standstill, toggle_on)

@@ -1,25 +1,29 @@
 #!/usr/bin/env python3
 """Tests for the Vision Long companion seam in the Hyundai carcontroller.
 
-The companion is braking-only. Three properties make it safe to ship in the car process, and
-each is tested here against the REAL CarController, the real CAN packer and the real consumer:
+The companion is braking-only. These properties make it safe to ship in the car process, and
+each is tested here against the REAL CarController, the real CAN packer, the real bridge and
+the real consumer:
 
     * No runtime config -> the companion code never runs. Every CAN message and every reported
         actuator is byte-identical to the unpatched native controller at the reviewed base commit.
-    * A malformed or unprovisioned config -> the bootstrap fails closed. Same byte-identical
-        native output, and the failure is visible in vision_long_bootstrap_status.
-    * With a consumer bound and caps arriving (including caps ABOVE native), SCC12 aReqRaw and
+    * A malformed, retired (v1) or unprovisioned config -> the bootstrap fails closed. Same
+        byte-identical native output, and the failure is visible in vision_long_bootstrap_status.
+    * Braking toggle ON with caps arriving (including caps ABOVE native): SCC12 aReqRaw and
         aReqValue are never above native, StopReq and every other field stay exact, and a driver
-        override gives exact native bytes.
+        override gives exact native bytes. Toggle OFF: exact native bytes, the pipeline in shadow.
     * The state is visible: one carlog line (card forwards carlog to cloudlog) at startup and on
         every change, "vision_long_companion mode=... authority=... reason=...", never per cycle.
+
+Every controller under test is a copy of the shipped one under a throwaway root (Sandbox), so
+the result never depends on whether the installer has written this tree's runtime config.
 
 The native reference is the controller and CAN builder at the commit recorded in
 vision_long/overlay-receipt.json, read out of opendbc's own history and checked against the
 receipt's hashes, so the comparison is against the code the car ran before this branch.
 
-Not tested here: the diagnostic publisher worker (it needs cereal/msgq on the device) and any
-live clock or physical qualification, which this package does not supply.
+Not tested here: the publisher worker (it needs cereal/msgq on the device) and any live clock
+or physical qualification, which this package does not supply.
 
         python .elantra/test_vision_long_companion.py
 """
@@ -46,8 +50,14 @@ OPENDBC = ROOT / "opendbc_repo"
 COMPANION = HERE / "vision_long"
 RECEIPT = COMPANION / "overlay-receipt.json"
 RUNTIME_CONFIG = COMPANION / "native-runtime.json"
+RUNTIME_TEMPLATE = HERE / "vision_long_link" / "native-runtime.template.json"
 CONTROLLER_PATH = "opendbc/car/hyundai/carcontroller.py"
 HYUNDAICAN_PATH = "opendbc/car/hyundai/hyundaican.py"
+PORT_UI = (
+    "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_manifest.py",
+    "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_updates.py",
+)
+REVIEW_ONLY = {"native-overlay.patch", "LICENSE-opendbc"}
 
 sys.path.insert(0, str(OPENDBC))
 sys.path.insert(0, str(HERE))
@@ -59,19 +69,21 @@ if not Path(opendbc.__file__).resolve().is_relative_to(OPENDBC):
 
 from opendbc.can import CANParser
 from opendbc.car import DT_CTRL, Bus, gen_empty_fingerprint, structs
-from opendbc.car.hyundai import carcontroller as patched_carcontroller
 from opendbc.car.hyundai.interface import CarInterface
 from opendbc.car.hyundai.values import CAR, DBC
 from opendbc.sunnypilot.car.hyundai.escc import ESCC_MSG
+from vision_long.device_applied import from_handoff
 from vision_long.integration import CameraReference, ControlGate, ProposalPacket, sign_packet
-from vision_long.native_bootstrap import bind_native_controller
-from vision_long.native_bridge import NativeReturnBridge
-from vision_long.native_consumer import (
-    UNAUTHENTICATED_LATCH_COUNT,
-    UNAUTHENTICATED_WINDOW_NS,
-    NativeCycle,
-    NativeScc12Consumer,
+from vision_long.native_bootstrap import (
+    DECLARED_STATUS,
+    ROAD_BUILD_ID,
+    AuthorityProvider,
+    NativeBinding,
+    bind_native_controller,
+    runtime_config,
 )
+from vision_long.native_bridge import NativeReturnBridge
+from vision_long.native_consumer import UNAUTHENTICATED_LATCH_COUNT, UNAUTHENTICATED_WINDOW_NS
 
 SCC12_ADDR = 0x421
 FRAME_NS = int(DT_CTRL * 1e9)  # 100 Hz controller
@@ -138,7 +150,9 @@ class Sandbox:
         controller = root / "opendbc_repo" / CONTROLLER_PATH
         controller.parent.mkdir(parents=True)
         shutil.copyfile(OPENDBC / CONTROLLER_PATH, controller)
-        shutil.copytree(COMPANION, root / ".elantra/vision_long")
+        # The installed runtime config (if any) never comes along: each sandbox states its own.
+        shutil.copytree(COMPANION, root / ".elantra/vision_long",
+                        ignore=shutil.ignore_patterns(RUNTIME_CONFIG.name, "__pycache__"))
         if config is not None:
             (root / ".elantra/vision_long/native-runtime.json").write_bytes(config)
         self.support = str(root / ".elantra")
@@ -155,6 +169,24 @@ class Sandbox:
         self.tmp.cleanup()
 
 
+class Shipped:
+    """The shipped controller with no runtime config, for the whole module run."""
+
+    sandbox: Sandbox
+
+    @classmethod
+    def controller(cls) -> type:
+        return cls.sandbox.module.CarController
+
+
+def setUpModule() -> None:
+    Shipped.sandbox = Sandbox(None)
+
+
+def tearDownModule() -> None:
+    Shipped.sandbox.close()
+
+
 def native_reference() -> type:
     """The base CarController wired to the base CAN builder, both from opendbc history."""
     holder = tempfile.TemporaryDirectory()
@@ -169,6 +201,12 @@ def native_reference() -> type:
 
 
 def interface_with(controller_class: type, *, escc: bool = False) -> CarInterface:
+    """An interface whose one controller is controller_class: no other controller is built, so
+    the in-tree one never reads this tree's runtime config."""
+
+    class Interface(CarInterface):
+        CarController = controller_class
+
     fingerprint = gen_empty_fingerprint()
     if escc:
         fingerprint[0][ESCC_MSG] = 8  # The ESCC module on bus 0 forwards the car's own AEB into SCC12.
@@ -178,10 +216,7 @@ def interface_with(controller_class: type, *, escc: bool = False) -> CarInterfac
                                                                           is_release_sp=False, docs=False)
     if not CP.openpilotLongitudinalControl:
         raise RuntimeError("the companion seam needs openpilot longitudinal on the Elantra")
-    interface = CarInterface(CP, CP_SP)
-    dbc_names = {bus: parser.dbc_name for bus, parser in interface.can_parsers.items()}
-    interface.CC = controller_class(dbc_names, CP, CP_SP)
-    return interface
+    return Interface(CP, CP_SP)
 
 
 def scenario(seed: int) -> list[dict]:
@@ -246,22 +281,47 @@ class Scc12Decoder:
 class DefaultIsNativeTests(unittest.TestCase):
     """No config file -> the companion never runs; the car gets exactly the base controller."""
 
-    def test_the_shipped_tree_carries_no_runtime_config(self):
-        self.assertFalse(RUNTIME_CONFIG.exists(),
-                                          "a runtime config in the delivery tree would start the companion on every boot")
+    def test_the_runtime_config_is_never_committed_and_is_exactly_v2_once_installed(self):
+        # The branch never ships it (that would start the companion on every boot); the installer
+        # writes it from the template, untracked, and then this test must still pass.
+        relative = RUNTIME_CONFIG.relative_to(ROOT).as_posix()
+        tracked = subprocess.run(("git", "ls-files", "--", relative), cwd=str(ROOT), capture_output=True, check=True)
+        self.assertEqual(tracked.stdout, b"")
+        committed = subprocess.run(("git", "cat-file", "-e", "HEAD:" + relative), cwd=str(ROOT), capture_output=True)
+        self.assertNotEqual(committed.returncode, 0, "HEAD carries a runtime config")
+        if RUNTIME_CONFIG.exists():
+            self.assertEqual(runtime_config(RUNTIME_CONFIG.read_bytes()), json.loads(RUNTIME_TEMPLATE.read_bytes()))
+
+    def test_the_installer_template_is_exactly_the_native_runtime_v2_schema(self):
+        template = RUNTIME_TEMPLATE.read_bytes()
+        self.assertEqual(runtime_config(template), json.loads(template))
+        self.assertEqual(set(json.loads(template)), {"schema", "listen_ip", "port", "key_file", "toggle_file"})
+        self.assertEqual(json.loads(template)["toggle_file"], receipt()["authority"]["toggle_file"])
 
     def test_the_installed_files_are_exactly_the_reviewed_generated_overlay(self):
         outputs = receipt()["output_files"]
-        for relative in ("opendbc_repo/" + CONTROLLER_PATH, "opendbc_repo/" + HYUNDAICAN_PATH):
+        packages = sorted(COMPANION.glob("*.py")) + sorted((HERE / "vision_long_publisher").glob("*.py"))
+        expected = {path.relative_to(ROOT).as_posix() for path in packages}
+        expected |= {"opendbc_repo/" + CONTROLLER_PATH, "opendbc_repo/" + HYUNDAICAN_PATH, ".elantra/sync.py", *PORT_UI}
+        self.assertEqual(set(outputs) - REVIEW_ONLY, expected)
+        for relative in sorted(expected):
             with self.subTest(relative=relative):
                 self.assertEqual(sha256((ROOT / relative).read_bytes()), outputs[relative])
-        for path in sorted(COMPANION.glob("*.py")) + sorted((HERE / "vision_long_publisher").glob("*.py")):
-            relative = path.relative_to(ROOT).as_posix()
-            with self.subTest(relative=relative):
-                self.assertEqual(sha256(path.read_bytes()), outputs[relative])
+
+    def test_the_receipt_states_braking_only_authority_and_what_is_unmeasured(self):
+        record = receipt()
+        self.assertFalse(record["installed"])
+        self.assertFalse(record["runtime_opt_in"])
+        self.assertFalse(record["live_producer_qualified"])
+        self.assertTrue(record["authority"]["braking_only"])
+        self.assertEqual(record["authority"]["declared_constants"]["status"], DECLARED_STATUS)
+        self.assertEqual(record["authority"]["declared_constants"]["build_id"], ROAD_BUILD_ID)
+        self.assertTrue(record["unmeasured"])
+        for retired in ("diagnostic_runtime_opt_in", "json_can_enable_authority", "missing_live_contracts"):
+            self.assertNotIn(retired, record)
 
     def test_absent_config_disables_the_companion_and_output_is_byte_identical_to_native(self):
-        patched = interface_with(patched_carcontroller.CarController)
+        patched = interface_with(Shipped.controller())
         reference = interface_with(native_reference())
         self.assertEqual(patched.CC.vision_long_bootstrap_status, "disabled_no_runtime_config")
         self.assertIsNone(patched.CC.vision_long_bridge)
@@ -279,7 +339,15 @@ class DefaultIsNativeTests(unittest.TestCase):
 class MalformedConfigTests(unittest.TestCase):
     """A config that is present but unusable fails closed to native, visibly."""
 
+    # The road contract's values, with a key that is never provisioned on any machine.
     VALID_SHAPE = {
+        "schema": "native_runtime_v2",
+        "listen_ip": "192.168.250.1",
+        "port": 45556,
+        "key_file": "/data/vision-long-test-key-that-does-not-exist",
+        "toggle_file": "/data/vision_long/braking",
+    }
+    RETIRED_V1 = {
         "schema": "native_diagnostic_return_v1",
         "listen_ip": "192.168.5.1",
         "port": 47100,
@@ -287,17 +355,32 @@ class MalformedConfigTests(unittest.TestCase):
         "pairs": 10,
         "max_duration_s": 60,
     }
+    SCHEMA = "native_bootstrap_failed:ValueError:native_runtime_config_schema"
+    # The unprovisioned key's message carries the platform's own spelling of the path.
+    MISSING_KEY = "native_bootstrap_failed:FileNotFoundError:[Errno_2]_No_such_file_or_directory:_"
     CASES = {
-        "not json": (b"{authority: true", "native_bootstrap_failed:JSONDecodeError"),
-        "empty": (b"", "native_bootstrap_failed:ValueError"),
-        "authority field": (json.dumps({**VALID_SHAPE, "authority": True}).encode(), "native_bootstrap_failed:ValueError"),
-        "wrong schema": (json.dumps({**VALID_SHAPE, "schema": "native_authority_v1"}).encode(),
-                                          "native_bootstrap_failed:ValueError"),
+        "not json": (b"{authority: true", "native_bootstrap_failed:JSONDecodeError:"
+                     + "Expecting_property_name_enclosed_in_double_quotes:_line_1_column_2_(char_1)"),
+        "empty": (b"", "native_bootstrap_failed:ValueError:native_runtime_config_size"),
+        "retired v1": (json.dumps(RETIRED_V1).encode(),
+                       "native_bootstrap_failed:ValueError:native_runtime_v1_retired_install_native_runtime_v2"),
+        "authority field": (json.dumps({**VALID_SHAPE, "authority": True}).encode(), SCHEMA),
+        "v1 bounds on v2": (json.dumps({**VALID_SHAPE, "pairs": 10}).encode(), SCHEMA),
+        "wrong schema": (json.dumps({**VALID_SHAPE, "schema": "native_authority_v1"}).encode(), SCHEMA),
         "key outside /data": (json.dumps({**VALID_SHAPE, "key_file": "/tmp/key"}).encode(),
-                                                    "native_bootstrap_failed:ValueError"),
-        "ipv6": (json.dumps({**VALID_SHAPE, "listen_ip": "::1"}).encode(), "native_bootstrap_failed:ValueError"),
-        "unprovisioned key": (json.dumps(VALID_SHAPE).encode(), "native_bootstrap_failed:FileNotFoundError"),
+                              "native_bootstrap_failed:ValueError:native_runtime_key_must_be_provisioned_under_data"),
+        "toggle outside /data": (json.dumps({**VALID_SHAPE, "toggle_file": "/tmp/braking"}).encode(),
+                                 "native_bootstrap_failed:ValueError:native_runtime_toggle_must_be_under_data"),
+        "ipv6": (json.dumps({**VALID_SHAPE, "listen_ip": "::1"}).encode(),
+                 "native_bootstrap_failed:ValueError:native_runtime_ipv4_required"),
+        "unprovisioned key": (json.dumps(VALID_SHAPE).encode(), MISSING_KEY),
     }
+
+    def assert_status(self, status: str, expected: str) -> None:
+        if expected == self.MISSING_KEY:
+            self.assertTrue(status.startswith(expected), status)
+        else:
+            self.assertEqual(status, expected)
 
     def test_every_malformed_config_fails_closed_to_byte_identical_native(self):
         reference_class = native_reference()
@@ -308,7 +391,7 @@ class MalformedConfigTests(unittest.TestCase):
                 try:
                     patched = interface_with(sandbox.module.CarController)
                     reference = interface_with(reference_class)
-                    self.assertEqual(patched.CC.vision_long_bootstrap_status, status)
+                    self.assert_status(patched.CC.vision_long_bootstrap_status, status)
                     self.assertIsNone(patched.CC.vision_long_bridge)
                     now = 0
                     for index, frame in enumerate(frames):
@@ -331,16 +414,25 @@ class MalformedConfigTests(unittest.TestCase):
 
 
 class BrakingOnlyTests(unittest.TestCase):
-    """A bound consumer fed caps across the whole range never raises a native SCC12 field."""
+    """A bound session fed caps across the whole range never raises a native SCC12 field."""
 
-    def drive(self, seed: int, *, escc: bool = False, frames: list[dict] | None = None):
-        """Lockstep patched and reference controllers; returns (frame, native, companion, eligible)."""
+    def drive(self, seed: int, *, escc: bool = False, frames: list[dict] | None = None, toggle: bool = True):
+        """Lockstep patched and reference controllers; returns (frame, native, companion, eligible).
+
+        The shipped controller is bound to a real binding and bridge, as start_native_runtime binds
+        it, with the braking toggle fixed. The camera dispatch and the signed returns go through the
+        bridge's mailbox, exactly as the publisher worker delivers them. The declared receiver
+        contract (and its anchored lag envelope) is left out here: it gates when a cap may apply,
+        never whether a field may rise, and the runtime tests in vision-long cover it."""
         rng = random.Random(seed)
         gate = ControlGate(KEY, SESSION, BUILD, CAP_ACCEL_MIN, CAP_ACCEL_MAX)
         clock = {"now": 0}
-        consumer = NativeScc12Consumer(gate, completion_clock=lambda: clock["now"])
-        patched = interface_with(patched_carcontroller.CarController, escc=escc)
-        patched.CC.vision_long_consumer = consumer  # the trusted bridge's job, done by the test
+        bridge = NativeReturnBridge(lambda session: gate, completion_clock=lambda: clock["now"],
+                                    trusted_clock_id=CAMERA_CLOCK, braking_enabled=lambda: toggle)
+        patched = interface_with(Shipped.controller(), escc=escc)
+        patched.CC.vision_long_bridge = NativeBinding(bridge, braking_enabled=lambda: toggle,
+                                                      cycle_clock=lambda: clock["now"])
+        bridge.open_session(SESSION, CAMERA_CLOCK)
         reference = interface_with(native_reference(), escc=escc)
         self.assertEqual(bool(patched.CC.ESCC.enabled), escc)
         decoder_native, decoder_companion = Scc12Decoder(), Scc12Decoder()
@@ -355,14 +447,12 @@ class BrakingOnlyTests(unittest.TestCase):
             if index % PACKET_FRAMES == 0:
                 sequence += 1
                 cameras = (CameraReference("narrow", sequence, now - 1_000_000), CameraReference("wide", sequence, now))
-                gate.issue(sequence, cameras, now)
+                bridge.dispatch(SESSION, sequence, cameras, now)
                 cap = round(rng.uniform(CAP_ACCEL_MIN, CAP_ACCEL_MAX), 3)
                 packet = ProposalPacket(SESSION, BUILD, sequence, sequence, cameras, cap, False, 0.99, True, ())
                 pending.append((now + RETURN_LATENCY_NS, sign_packet(packet, KEY)))
-            arrived = None
             if pending and pending[0][0] <= now:
-                arrived = pending.pop(0)[1]
-            consumer.stage(NativeCycle(now, arrived))
+                bridge.return_packet(SESSION, pending.pop(0)[1])
             expected_actuators, expected = step(reference, frame, now)
             actual_actuators, actual = step(patched, frame, now)
             boundary = patched.CC.vision_long_boundary
@@ -382,7 +472,20 @@ class BrakingOnlyTests(unittest.TestCase):
             for native_message, companion_message in zip(native_messages, companion_messages, strict=True):
                 rows.append((frame, native_message, companion_message, eligible,
                                           decoder_native.decode(native_message), decoder_companion.decode(companion_message)))
+        self.assertIsNotNone(patched.CC.vision_long_consumer, "the session must stay bound for the whole drive")
+        self.applied = [from_handoff(item) for _, item in bridge.take_applied()]
         return rows
+
+    def test_toggle_off_sends_exact_native_bytes_while_the_pipeline_runs_in_shadow(self):
+        rows = self.drive(seed=12, toggle=False)
+        for frame, native_message, companion_message, _, _, _ in rows:
+            self.assertEqual(companion_message, native_message, frame)
+        self.assertTrue(self.applied)
+        for record in self.applied:
+            self.assertEqual((record.mode, record.authority, record.reason), ("observe", "disabled", "braking_toggle_off"))
+            self.assertEqual(record.final_areq, record.native_areq)
+        # Not vacuous: with the toggle on, these caps would have braked harder than native.
+        self.assertTrue(any(record.shadow_final_areq < record.native_areq for record in self.applied))
 
     def test_no_scc12_field_is_ever_raised_and_stop_request_is_exact(self):
         lowered = 0
@@ -457,7 +560,8 @@ class BrakingOnlyTests(unittest.TestCase):
 
 
 STATUS_PREFIX = "vision_long_companion "
-CAMERA_CLOCK = "status-test-boot:CLOCK_BOOTTIME"
+CAMERA_BOOT = "status-test-boot"
+CAMERA_CLOCK = CAMERA_BOOT + ":CLOCK_BOOTTIME"
 
 
 class StatusCapture(logging.Handler):
@@ -488,20 +592,27 @@ def status_line(mode: str, authority: str, reason: str) -> str:
 
 
 def started_with_capture(controller_class: type) -> tuple[CarInterface, StatusCapture]:
-    """interface_with builds two controllers (the interface's own, then the one under test), so
-    capture exactly one construction: the controller card would run, as card builds it once."""
-    interface = interface_with(controller_class)
-    dbc_names = {bus: parser.dbc_name for bus, parser in interface.can_parsers.items()}
+    """interface_with builds exactly the controller under test, once, as card does."""
     with StatusCapture() as capture:
-        interface.CC = controller_class(dbc_names, interface.CP, interface.CP_SP)
+        interface = interface_with(controller_class)
     return interface, capture
+
+
+class Switch:
+    """The braking toggle as the binding reads it: a plain callable."""
+
+    def __init__(self, on: bool):
+        self.on = on
+
+    def __call__(self) -> bool:
+        return self.on
 
 
 class StatusLogTests(unittest.TestCase):
     """The companion's state is logged once at startup and on each change, never per cycle."""
 
     def test_absent_config_logs_disabled_once_at_startup_and_never_per_cycle(self):
-        patched, capture = started_with_capture(patched_carcontroller.CarController)
+        patched, capture = started_with_capture(Shipped.controller())
         self.assertEqual(capture.messages(), [status_line("diagnostic_only", "disabled", "disabled_no_runtime_config")])
         with capture:
             now = 0
@@ -513,77 +624,79 @@ class StatusLogTests(unittest.TestCase):
         self.assertGreaterEqual(capture.lines[0][0], logging.getLogger("carlog").getEffectiveLevel())
 
     def test_malformed_config_logs_the_fail_closed_reason(self):
-        sandbox = Sandbox(b"{authority: true")
+        config, status = MalformedConfigTests.CASES["not json"]
+        sandbox = Sandbox(config)
         try:
             _, capture = started_with_capture(sandbox.module.CarController)
-            self.assertEqual(capture.messages(), [status_line(
-                "diagnostic_only", "disabled", "native_bootstrap_failed:JSONDecodeError")])
+            self.assertEqual(capture.messages(), [status_line("diagnostic_only", "disabled", status)])
         finally:
             sandbox.close()
 
-    def test_a_bound_session_logs_enabled_while_in_the_path_and_disabled_when_it_closes(self):
-        gate = ControlGate(KEY, SESSION, BUILD, CAP_ACCEL_MIN, CAP_ACCEL_MAX)
-        clock = {"now": 0}
-        bridge = NativeReturnBridge(lambda session: gate, completion_clock=lambda: clock["now"],
-                                                                trusted_clock_id=CAMERA_CLOCK)
-        patched = interface_with(patched_carcontroller.CarController)
+    def bound(self, toggle: Switch) -> tuple[CarInterface, NativeBinding, dict]:
+        """The shipped controller bound to the production authority provider (declared receiver
+        contract, braking-only gate, road build id), on a test clock in the camera domain."""
+        clock = {"now": 3_000_000_000}
+        patched = interface_with(Shipped.controller())
+        provider = AuthorityProvider(KEY, ROAD_BUILD_ID, CAMERA_BOOT, lambda: clock["now"], toggle)
+        binding = bind_native_controller(patched.CC, provider, lambda: clock["now"])
+        return patched, binding, clock
+
+    def test_toggle_on_without_a_laptop_session_is_disabled_and_says_why(self):
+        patched, _, clock = self.bound(Switch(True))
+        with StatusCapture() as capture:
+            for frame in scenario(seed=13)[:20]:
+                clock["now"] += FRAME_NS
+                step(patched, frame, clock["now"])
+                self.assertIsNone(patched.CC.vision_long_consumer)
+        self.assertEqual(capture.messages(), [status_line("braking_only", "disabled", "awaiting_session")])
+
+    def test_toggle_states_and_the_card_lifetime_latch_log_exactly_and_off_is_exact_native(self):
+        toggle = Switch(False)
+        patched, binding, clock = self.bound(toggle)
+        reference = interface_with(native_reference())
         frames = scenario(seed=8)
-        now = 3_000_000_000
+        latch_reason = f"unauthenticated_return_packets:{UNAUTHENTICATED_LATCH_COUNT}_within_{UNAUTHENTICATED_WINDOW_NS}_ns"
+        index = 0
 
         def run(count: int) -> None:
-            nonlocal now
+            nonlocal index
             for _ in range(count):
-                clock["now"] = now
-                step(patched, frames[(now // FRAME_NS) % len(frames)], now)
-                now += FRAME_NS
+                clock["now"] += FRAME_NS
+                frame = frames[index % len(frames)]
+                expected = snapshot(step(reference, frame, clock["now"]))
+                actual = snapshot(step(patched, frame, clock["now"]))
+                if not toggle.on or binding.bridge.latched_fault is not None:
+                    self.assertEqual(actual, expected, ("toggle off or latched must be exact native", index, frame))
+                index += 1
 
         with StatusCapture() as capture:
-            bind_native_controller(patched.CC, bridge)
             run(5)
-            bridge.open_session(SESSION, CAMERA_CLOCK)
-            run(20)
+            binding.bridge.open_session(SESSION, CAMERA_CLOCK)
+            run(10)
             self.assertIsNotNone(patched.CC.vision_long_consumer)
-            bridge.close_session(SESSION)
-            run(20)
+            toggle.on = True
+            run(10)
+            toggle.on = False
+            run(5)
+            toggle.on = True
+            run(5)
+            for _ in range(UNAUTHENTICATED_LATCH_COUNT):
+                binding.bridge.return_packet(SESSION, b"not an authenticated packet")
+            run(10)
             self.assertIsNone(patched.CC.vision_long_consumer)
-        self.assertEqual(capture.messages(), [
-            status_line("diagnostic_only", "disabled", "awaiting_session"),
-            status_line("braking_only", "enabled", "staged_without_invented_native_evidence"),
-            status_line("diagnostic_only", "disabled", "native_session_closed"),
-        ])
-
-    def test_a_fault_latched_consumer_logs_latched_native_and_sends_exact_native_bytes(self):
-        gate = ControlGate(KEY, SESSION, BUILD, CAP_ACCEL_MIN, CAP_ACCEL_MAX)
-        clock = {"now": 0}
-        bridge = NativeReturnBridge(lambda session: gate, completion_clock=lambda: clock["now"],
-                                    trusted_clock_id=CAMERA_CLOCK)
-        patched = interface_with(patched_carcontroller.CarController)
-        reference = interface_with(native_reference())
-        frames = scenario(seed=11)
-        latch_reason = f"unauthenticated_return_packets:{UNAUTHENTICATED_LATCH_COUNT}_within_{UNAUTHENTICATED_WINDOW_NS}_ns"
-        with StatusCapture() as capture:
-            bind_native_controller(patched.CC, bridge)
-            bridge.open_session(SESSION, CAMERA_CLOCK)
-            now = 3_000_000_000
-            for index, frame in enumerate(frames[:200]):
-                clock["now"] = now
-                if index == 20:
-                    for _ in range(UNAUTHENTICATED_LATCH_COUNT):
-                        bridge.return_packet(SESSION, b"not an authenticated packet")
-                expected = snapshot(step(reference, frame, now))
-                actual = snapshot(step(patched, frame, now))
-                consumer = patched.CC.vision_long_consumer
-                self.assertIsNotNone(consumer, index)
-                if index > 20:
-                    self.assertEqual(consumer.fault_reason, latch_reason, index)
-                    self.assertIsNone(patched.CC.vision_long_boundary, index)
-                    self.assertEqual(actual, expected, ("latched output differs from native", index, frame))
-                now += FRAME_NS
-        # The session opens before the first cycle, so there is no awaiting_session line.
-        self.assertEqual(capture.messages(), [
-            status_line("braking_only", "enabled", "staged_without_invented_native_evidence"),
-            status_line("braking_only", "latched_native", latch_reason),
-        ])
+            toggle.on = False
+            run(5)
+            toggle.on = True
+            run(5)
+            # Card lifetime: a fresh laptop session never clears the latch.
+            binding.bridge.close_session(SESSION)
+            binding.bridge.open_session(str(uuid.UUID(int=12)), CAMERA_CLOCK)
+            run(10)
+            self.assertIsNone(patched.CC.vision_long_consumer)
+        off = status_line("observe", "disabled", "braking_toggle_off")
+        on = status_line("braking_only", "enabled", "braking_toggle_on")
+        latched = status_line("braking_only", "latched_native", latch_reason)
+        self.assertEqual(capture.messages(), [off, on, off, on, latched, off, latched])
 
 
 class SupportPathTests(unittest.TestCase):
@@ -596,7 +709,8 @@ class SupportPathTests(unittest.TestCase):
         try:
             before = list(sys.path)
             patched = interface_with(sandbox.module.CarController)
-            self.assertEqual(patched.CC.vision_long_bootstrap_status, "native_bootstrap_failed:FileNotFoundError")
+            self.assertTrue(patched.CC.vision_long_bootstrap_status.startswith(MalformedConfigTests.MISSING_KEY),
+                            patched.CC.vision_long_bootstrap_status)
             self.assertEqual(sys.path, before + [sandbox.support])
             self.assertEqual(Path(sys.modules["vision_long"].__file__).resolve().parent,
                              Path(sandbox.support) / "vision_long")
@@ -612,7 +726,8 @@ class SupportPathTests(unittest.TestCase):
             (package / "__init__.py").write_text('raise SystemExit("a foreign vision_long was imported")\n')
             sys.path.insert(0, foreign.name)
             patched = interface_with(sandbox.module.CarController)
-            self.assertEqual(patched.CC.vision_long_bootstrap_status, "native_bootstrap_failed:RuntimeError")
+            self.assertEqual(patched.CC.vision_long_bootstrap_status,
+                             "native_bootstrap_failed:RuntimeError:native_companion_package_collision")
             self.assertIsNone(patched.CC.vision_long_bridge)
             self.assertNotIn("vision_long", sys.modules)
         finally:

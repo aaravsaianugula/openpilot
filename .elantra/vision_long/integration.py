@@ -341,9 +341,12 @@ class ControlGate:
         self.regression_count = 0
         # Session latch: a regressed, late, invalid or failed consumer clock removes authority.
         self.fault_reason: str | None = None
+        # Cheap drive evidence: completions later than the declared bound, and the worst seen.
+        self.completion_overruns = 0
+        self.worst_completion_ns = 0
 
-    def classify_packet(self, data: bytes) -> tuple[int | None, bool]:
-        """(authenticated sequence or None, withdraws) for this session's bytes.
+    def classify_packet(self, data: bytes) -> tuple[int | None, int | None, bool]:
+        """(authenticated sequence or None, its input pair or None, withdraws) for this session's bytes.
 
         Read-only: no sequence, cache or attempt state changes. Unauthenticated or
         foreign bytes have no trusted sequence and withdraw; an authenticated report
@@ -352,10 +355,10 @@ class ControlGate:
         try:
             packet = read_packet(data, self.key)
         except (ValueError, TypeError, KeyError, OverflowError, RecursionError, UnicodeError):
-            return None, True
+            return None, None, True
         if packet.session_id != self.session_id or packet.build_id != self.build_id:
-            return None, True
-        return packet.sequence, _withdraws(packet)
+            return None, None, True
+        return packet.sequence, packet.input_sequence, _withdraws(packet)
 
     def _application_expired(self, packet: ProposalPacket, now_ns: int) -> bool:
         """An accepted cap applies only inside the proven lag envelope from its anchor.
@@ -591,7 +594,11 @@ class ControlGate:
         if completed < max(attempt.now_ns, self._last_now):
             return fallback(self._latch("consumer_completion_clock_regressed"))
         self._last_now = completed
-        if completed - attempt.now_ns > CONTROLLER_COMPLETION_BOUND_NS:
+        elapsed = completed - attempt.now_ns
+        if elapsed > self.worst_completion_ns:
+            self.worst_completion_ns = elapsed
+        if elapsed > CONTROLLER_COMPLETION_BOUND_NS:
+            self.completion_overruns += 1
             return fallback(self._latch("consumer_completion_clock_late"))
         if attempt.configuration != self._configuration():
             return fallback("consumer_configuration_changed")
@@ -646,6 +653,11 @@ def _scc12_emergency_clear(values: dict) -> bool:
     # Positive command with clear active flags is inconsistent/unknown; it never
     # lets the companion release a resume. Units are g.
     return _number(command, 0, 2.55) and command == 0
+
+
+def scc12_emergency_active(values: dict) -> bool:
+    """True unless every native SCC12 AEB/VSM command field is exactly clear (reporting only)."""
+    return not _scc12_emergency_clear(values)
 
 
 @dataclass(frozen=True)

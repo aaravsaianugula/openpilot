@@ -22,6 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from vision_long.device_applied import MAX_RECORD_BYTES, DeviceApplied
 from vision_long.native_context import MAX_CONTEXT_BYTES, NativeContextRecord
 
 Camera = Literal["narrow", "wide"]
@@ -37,6 +38,11 @@ _PROPOSAL = 7
 _PROPOSAL_METADATA = b'{"schema":"signed_proposal_v1"}'
 _CLOCK_EXCHANGES = 3  # Independent four-timestamp exchanges per synchronization; the tightest is kept.
 _CONTEXT_METADATA = b'{"schema":"native_context_v1"}'
+# Protocol 3 (return) only: what the device applied per companion cycle, device to laptop.
+_DEVICE_APPLIED = 8
+_DEVICE_APPLIED_METADATA = b'{"schema":"device_applied_v1"}'
+# Records the laptop holds until its reader takes them (about 12 s at 20 Hz); oldest dropped first.
+DEVICE_APPLIED_CAPACITY = 256
 
 
 class TransportError(ValueError):
@@ -126,7 +132,7 @@ class FrameCodec:
         if (
             magic != b"VLC1"
             or version != (3 if self.with_return else 2 if self.with_context else 1)
-            or kind not in range(1, 8 if self.with_return else 7 if self.with_context else 6)
+            or kind not in range(1, 9 if self.with_return else 7 if self.with_context else 6)
             or reserved
         ):
             raise TransportError("invalid_header")
@@ -140,7 +146,11 @@ class FrameCodec:
             raise TransportError("context_packet_limit")
         if kind == _PROPOSAL and (metadata_size != len(_PROPOSAL_METADATA) or not 1 <= payload_size <= 16384):
             raise TransportError("proposal_packet_limit")
-        if kind not in (_CAMERA, _CONTEXT, _PROPOSAL) and payload_size:
+        if kind == _DEVICE_APPLIED and (
+            metadata_size != len(_DEVICE_APPLIED_METADATA) or not 1 <= payload_size <= MAX_RECORD_BYTES
+        ):
+            raise TransportError("device_applied_packet_limit")
+        if kind not in (_CAMERA, _CONTEXT, _PROPOSAL, _DEVICE_APPLIED) and payload_size:
             raise TransportError("unexpected_control_payload")
         return kind, metadata_size, payload_size
 
@@ -254,6 +264,18 @@ class FrameCodec:
 
     def encode_context(self, record: NativeContextRecord) -> bytes:
         return self.encode_packet(_CONTEXT, _CONTEXT_METADATA, record.to_bytes())
+
+    def encode_device_applied(self, record: DeviceApplied) -> bytes:
+        return self.encode_packet(_DEVICE_APPLIED, _DEVICE_APPLIED_METADATA, record.to_bytes())
+
+    @staticmethod
+    def device_applied_from_packet(packet: tuple[int, bytes, bytes]) -> DeviceApplied:
+        if packet[0] != _DEVICE_APPLIED or packet[1] != _DEVICE_APPLIED_METADATA:
+            raise TransportError("expected_device_applied")
+        try:
+            return DeviceApplied.from_bytes(packet[2])
+        except (ValueError, TypeError, RecursionError, UnicodeError) as exc:
+            raise TransportError("invalid_device_applied:" + str(exc)) from exc
 
     @staticmethod
     def context_from_packet(packet: tuple[int, bytes, bytes]) -> NativeContextRecord:
@@ -656,6 +678,13 @@ class CameraPublisher(_Connection):
             raise TransportError("session_mismatch")
         self._send(self.codec.encode_context(record))
 
+    def send_device_applied(self, record: DeviceApplied) -> None:
+        if self._closed.is_set():
+            raise TransportError(self.error or "link_closed")
+        if not self.codec.with_return:
+            raise TransportError("device_applied_requires_return_protocol")
+        self._send(self.codec.encode_device_applied(record))
+
     def wait_for_clock_sync(self, timeout: float) -> bool:
         return self._synced.wait(timeout)
 
@@ -731,6 +760,12 @@ class ReceivedContext:
     receive_ns: int
 
 
+@dataclass(frozen=True)
+class ReceivedDeviceApplied:
+    record: DeviceApplied
+    receive_ns: int
+
+
 class CameraTransportClient(_Connection):
     """One reader; clock exchanges can buffer at most three interleaved camera frames."""
 
@@ -739,6 +774,8 @@ class CameraTransportClient(_Connection):
     _pending: collections.deque[ReceivedFrame | ReceivedContext]
     dropped_during_sync: int
     _last_context_sequence: int
+    _device_applied: collections.deque[ReceivedDeviceApplied]
+    device_applied_dropped: int
 
     @classmethod
     def connect(
@@ -769,10 +806,31 @@ class CameraTransportClient(_Connection):
             client._pending = collections.deque()
             client.dropped_during_sync = 0
             client._last_context_sequence = 0
+            client._reset_device_applied()
             return client
         except BaseException:
             client.close()
             raise
+
+    def _reset_device_applied(self) -> None:
+        self._device_applied = collections.deque()
+        self.device_applied_dropped = 0
+
+    def _buffer_device_applied(self, record: DeviceApplied, received: int) -> None:
+        if len(self._device_applied) == DEVICE_APPLIED_CAPACITY:
+            self._device_applied.popleft()
+            self.device_applied_dropped += 1
+        self._device_applied.append(ReceivedDeviceApplied(record, received))
+
+    def take_device_applied(self) -> tuple[ReceivedDeviceApplied, ...]:
+        """Every device-applied record received since the last call, oldest first.
+
+        Records arrive interleaved with observations; ``receive_observation`` and the clock
+        exchange set them aside here, so a reader that never takes them is unaffected.
+        """
+        taken = tuple(self._device_applied)
+        self._device_applied.clear()
+        return taken
 
     def _frame(self, packet: tuple[int, bytes, bytes], received: int) -> ReceivedFrame:
         frame = self.codec.frame_from_packet(packet)
@@ -805,8 +863,11 @@ class CameraTransportClient(_Connection):
     def receive_observation(self) -> ReceivedFrame | ReceivedContext:
         if self._pending:
             return self._pending.popleft()
-        packet = self.codec.read_packet(self.socket)
-        return self._observation(packet, self.clock())
+        while True:
+            packet = self.codec.read_packet(self.socket)
+            if packet[0] != _DEVICE_APPLIED:
+                return self._observation(packet, self.clock())
+            self._buffer_device_applied(self.codec.device_applied_from_packet(packet), self.clock())
 
     def synchronize_clock(
         self, *, drift_ppm: float, max_age_ns: int, target_uncertainty_ns: int | None = None
@@ -838,6 +899,9 @@ class CameraTransportClient(_Connection):
         self._control(_CLOCK_REQUEST, {"session_id": self.session_id, "nonce": nonce, "local_send_ns": sent})
         for _ in range(128):
             packet, received = self.codec.read_packet(self.socket, deadline), self.clock()
+            if packet[0] == _DEVICE_APPLIED:
+                self._buffer_device_applied(self.codec.device_applied_from_packet(packet), received)
+                continue
             if packet[0] in (_CAMERA, _CONTEXT):
                 capacity = 8 if self.codec.with_context else 3
                 if len(self._pending) == capacity:
