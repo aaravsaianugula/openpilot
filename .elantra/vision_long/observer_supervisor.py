@@ -240,10 +240,12 @@ class IsolatedPublisher:
         revoked = threading.Event()
         self._revoked = revoked
         deadline: list[float | None] = [time.monotonic() + self.startup_timeout_s]
+        deadline_lock = threading.Lock()
 
         def started() -> None:
             operation_limit = time.monotonic() + self.operation_timeout_s
-            deadline[0] = operation_limit if deadline[0] is None else min(deadline[0], operation_limit)
+            with deadline_lock:
+                deadline[0] = operation_limit if deadline[0] is None else min(deadline[0], operation_limit)
 
         def exchange(reader: BinaryIO, writer: BinaryIO) -> None:
             try:
@@ -251,11 +253,14 @@ class IsolatedPublisher:
                     message = read_message(reader, started)
                     response = broker.handle(message)
                     write_message(writer, response)
-                    if deadline[0] is not None and time.monotonic() > deadline[0]:
-                        raise ObserverError("observer_RPC_timeout")
-                    deadline[0] = None
-                    self._ready = broker.ready and not self._stop.is_set() and not revoked.is_set()
-                    self.summary = "observer_ready"
+                    with deadline_lock:
+                        if revoked.is_set():
+                            break
+                        if deadline[0] is not None and time.monotonic() > deadline[0]:
+                            raise ObserverError("observer_RPC_timeout")
+                        deadline[0] = None
+                        self._ready = broker.ready and not self._stop.is_set()
+                        self.summary = "observer_ready"
             except Exception as error:
                 # Optional adapter boundary: all implementation/protocol failures
                 # withdraw and report; no failure is converted to a valid message.
@@ -291,8 +296,15 @@ class IsolatedPublisher:
                     break
                 limit = deadline[0]
                 if limit is not None and time.monotonic() > limit:
-                    self.summary = "observer_failed:RPC_timeout"
-                    break
+                    with deadline_lock:
+                        # The time read can be descheduled while the worker completes
+                        # this RPC (and possibly starts another). Claim only the same
+                        # deadline object, atomically with completion/replacement.
+                        if deadline[0] is limit:
+                            revoked.set()
+                            self._ready = False
+                            self.summary = "observer_failed:RPC_timeout"
+                            break
         except Exception as error:
             self.summary = "observer_setup_failed:" + type(error).__name__
         finally:

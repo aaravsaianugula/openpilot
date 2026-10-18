@@ -30,7 +30,7 @@
     ".elantra/vision_long/native_consumer.py": "c450117acad8f5aa9d8517aaa4948cf5c1cef8b5d3f674c9389d91a5a9d20377",
     ".elantra/vision_long/native_context.py": "8501d04b6ae625cbdfcfffa2ee9a1244477ea46ef2d97858beda974fc058dcff",
     ".elantra/vision_long/observer_ipc.py": "e8ec2f1dd80b89ab589b0bbcbbec06636c0b42007a7300590ff43b09270fb070",
-    ".elantra/vision_long/observer_supervisor.py": "9885035a5135c265e14add2f53a314b049acdd47205d57a5e4451f64bf32cffa",
+    ".elantra/vision_long/observer_supervisor.py": "48b18301bde43b658aae894a5ca27909fd5c81b647d9a078f77bb9bbc5880bc8",
     ".elantra/vision_long/transport.py": "a66b8b342fb862685450931279cb1739168b7ea16b081818e69e8e35f8a920e4",
     ".elantra/vision_long_publisher/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     ".elantra/vision_long_publisher/comma_context_publisher.py": "bda3d389b9c753dcdc1402048e19c4be161dd012671e6edb24ab7b553701d605",
