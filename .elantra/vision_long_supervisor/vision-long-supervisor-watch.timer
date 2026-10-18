@@ -1,0 +1,12 @@
+# Installed with vision-long-supervisor.service. /var is tmpfs on the comma, so cron does not
+# survive a reboot; this timer does.
+[Unit]
+Description=Keep the Vision Long laptop monitor running
+
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=60s
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

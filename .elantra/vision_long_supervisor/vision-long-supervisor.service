@@ -1,0 +1,35 @@
+# Installed by .elantra/vision_long_supervisor/install.py into /etc/systemd/system; removed by its
+# rollback; put back by its `reestablish` (run from the launch path) after an AGNOS update.
+# Notification only: the monitor is never in the authority path. It publishes on no openpilot
+# service, writes no params and signals no process. The limits below keep it out of openpilot's way.
+[Unit]
+Description=Vision Long laptop health monitor (notification only)
+After=local-fs.target
+# Never give up: a crash loop retries every 5 s for as long as it lasts.
+StartLimitIntervalSec=0
+# After a rollback the script is gone; the unit then does nothing instead of failing.
+ConditionPathExists=/data/openpilot/.elantra/vision_long_supervisor/monitor.py
+
+[Service]
+Type=simple
+User=comma
+WorkingDirectory=/data/openpilot
+Environment=PYTHONPATH=/data/openpilot
+ExecStart=/usr/local/venv/bin/python3 /data/openpilot/.elantra/vision_long_supervisor/monitor.py
+Restart=always
+RestartSec=5
+TimeoutStopSec=5
+Nice=19
+IOSchedulingClass=idle
+CPUQuota=5%
+# MemoryMax= is the unified-hierarchy limit; MemoryLimit= is the same cap on the legacy (v1)
+# hierarchy a 4.9 kernel may use. On unified, MemoryMax= wins and MemoryLimit= is ignored.
+MemoryMax=64M
+MemoryLimit=64M
+# Under memory pressure the kernel takes this process before anything of openpilot's.
+OOMScoreAdjust=500
+# It never needs sudo.
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
