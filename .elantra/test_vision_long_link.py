@@ -88,6 +88,12 @@ class LinkTests(unittest.TestCase):
     def bring_up(self, ip: FakeIp) -> str:
         return usb_link.bring_up(self.paths, ip, nmcli_present=True, link=link_marker)
 
+    def test_link_unit_treats_no_carrier_as_success(self):
+        # Found on the device 2026-10-18: with the laptop not enumerated, `up` exits 3 (waiting),
+        # systemd marked the unit failed and the installer undid the install. Waiting is normal.
+        unit = (Path(__file__).parent / "vision_long_link" / "vision-long-link.service").read_text()
+        self.assertIn(f"SuccessExitStatus={usb_link.CHECK_NO_CARRIER}", unit.split())
+
     def test_mac_attributes_refused_before_bind_still_bring_the_link_up(self):
         # The comma 4's 4.9 kernel (found on the device 2026-10-18) answers every ncm.usb0 attribute
         # with ENODEV ("Gadget function do not bind yet") until the gadget is bound. The MACs are

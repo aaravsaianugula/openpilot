@@ -10,3 +10,5 @@ ConditionPathExists=/data/openpilot/.elantra/vision_long_link/usb_link.py
 [Service]
 Type=oneshot
 ExecStart=/usr/local/venv/bin/python3 /data/openpilot/.elantra/vision_long_link/usb_link.py up
+# 3 = link waiting (no carrier: cable out or laptop not enumerated yet). Normal; the timer retries.
+SuccessExitStatus=3
