@@ -30,6 +30,7 @@ or physical qualification, which this package does not supply.
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import json
@@ -56,6 +57,10 @@ HYUNDAICAN_PATH = "opendbc/car/hyundai/hyundaican.py"
 PORT_UI = (
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_manifest.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_updates.py",
+    # The laptop monitor's onroad notice banner (UI only) and the HUD that loads it.
+    "openpilot/selfdrive/ui/sunnypilot/mici/onroad/hud_renderer.py",
+    "openpilot/selfdrive/ui/sunnypilot/mici/onroad/vision_long_banner.py",
+    "openpilot/selfdrive/ui/sunnypilot/mici/onroad/vision_long_notice.py",
 )
 REVIEW_ONLY = {"native-overlay.patch", "LICENSE-opendbc"}
 
@@ -357,10 +362,10 @@ class MalformedConfigTests(unittest.TestCase):
     }
     SCHEMA = "native_bootstrap_failed:ValueError:native_runtime_config_schema"
     # The unprovisioned key's message carries the platform's own spelling of the path.
-    MISSING_KEY = "native_bootstrap_failed:FileNotFoundError:[Errno_2]_No_such_file_or_directory:_"
+    MISSING_KEY = "native_bootstrap_failed:FileNotFoundError:_Errno_2__No_such_file_or_directory:_"
     CASES = {
         "not json": (b"{authority: true", "native_bootstrap_failed:JSONDecodeError:"
-                     + "Expecting_property_name_enclosed_in_double_quotes:_line_1_column_2_(char_1)"),
+                     + "Expecting_property_name_enclosed_in_double_quotes:_line_1_column_2__char_1_"),
         "empty": (b"", "native_bootstrap_failed:ValueError:native_runtime_config_size"),
         "retired v1": (json.dumps(RETIRED_V1).encode(),
                        "native_bootstrap_failed:ValueError:native_runtime_v1_retired_install_native_runtime_v2"),
@@ -622,6 +627,33 @@ class StatusLogTests(unittest.TestCase):
         self.assertEqual(len(capture.lines), 1)
         # card's ForwardingHandler hands it to cloudlog; carlog's own level (INFO) lets it through.
         self.assertGreaterEqual(capture.lines[0][0], logging.getLogger("carlog").getEffectiveLevel())
+
+    def test_a_bootstrap_failure_reason_is_one_token_with_no_newline_or_equals(self):
+        # A message that would forge a second status line or a second key=value is flattened.
+        sandbox = Sandbox(json.dumps(MalformedConfigTests.VALID_SHAPE).encode())
+        try:
+            bootstrap = Path(sandbox.support) / "vision_long/native_bootstrap.py"
+            bootstrap.write_text("def start_native_runtime(controller, config):\n"
+                                 + "    raise RuntimeError('bad\\nvision_long_companion authority=enabled [x]')\n")
+            patched, capture = started_with_capture(sandbox.module.CarController)
+            status = "native_bootstrap_failed:RuntimeError:bad_vision_long_companion_authority_enabled__x_"
+            self.assertEqual(patched.CC.vision_long_bootstrap_status, status)
+            self.assertEqual(capture.messages(), [status_line("diagnostic_only", "disabled", status)])
+            self.assertEqual(capture.messages()[0].count("="), 3)
+        finally:
+            sandbox.close()
+
+    def test_the_cycle_clock_is_read_only_where_it_is_bound(self):
+        # vision_long_now is bound inside the bridge branch, so every read must sit inside it too.
+        tree = ast.parse((OPENDBC / CONTROLLER_PATH).read_text())
+        update = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "update")
+        branches = [node for node in ast.walk(update) if isinstance(node, ast.If)
+                    and ast.unparse(node.test) == "self.vision_long_bridge is not None"]
+        self.assertEqual(len(branches), 1)
+        inside = {id(node) for node in ast.walk(branches[0])}
+        uses = [node for node in ast.walk(update) if isinstance(node, ast.Name) and node.id == "vision_long_now"]
+        self.assertGreaterEqual(len(uses), 3)
+        self.assertTrue(all(id(node) in inside for node in uses), [node.lineno for node in uses if id(node) not in inside])
 
     def test_malformed_config_logs_the_fail_closed_reason(self):
         config, status = MalformedConfigTests.CASES["not json"]

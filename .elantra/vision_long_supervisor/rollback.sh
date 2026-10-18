@@ -3,7 +3,7 @@
 #
 #   bash /data/openpilot/.elantra/vision_long_supervisor/rollback.sh
 #
-# Keeps /data/vision_long (key, logs). Removes the marker, so the boot hook stops putting the
+# Keeps /data/vision_long (key, logs). Removes the marker, so reestablish stops putting the
 # monitor back. The USB link units are R4's and are left alone (.elantra/vision_long_rollback.sh).
 set -euo pipefail
 cd /data/openpilot

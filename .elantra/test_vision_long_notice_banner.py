@@ -237,14 +237,76 @@ class NoControlPath(unittest.TestCase):
         return found
 
     def test_the_decision_module_imports_only_the_standard_library(self):
-        self.assertEqual(self.imports("vision_long_notice.py"), {"__future__", "json", "time", "dataclasses", "pathlib"})
+        self.assertEqual(self.imports("vision_long_notice.py"),
+                         {"__future__", "importlib", "json", "time", "dataclasses", "pathlib"})
 
     def test_the_widget_imports_no_control_path(self):
         for module in self.imports("vision_long_banner.py"):
             # swaglog is logging only (cloudlog for a hidden banner); nothing here reaches a control path.
             allowed = module in ("pyray", "openpilot.common.swaglog")
             self.assertTrue(allowed or module.startswith(("openpilot.system.ui.", "openpilot.selfdrive.ui.")), module)
-        self.assertIn("openpilot.selfdrive.ui.sunnypilot.mici.onroad.vision_long_banner", self.imports("hud_renderer.py"))
+
+    def test_the_hud_never_imports_the_widget_directly(self):
+        # A failed widget import (say an upstream rename of a pyray helper) must hide the banner,
+        # not take the onroad HUD down, so the HUD reaches the widget only through load_banner.
+        hud = self.imports("hud_renderer.py")
+        self.assertNotIn(vln.BANNER_MODULE, hud)
+        self.assertIn("openpilot.selfdrive.ui.sunnypilot.mici.onroad.vision_long_notice", hud)
+        self.assertEqual(vln.BANNER_MODULE, "openpilot.selfdrive.ui.sunnypilot.mici.onroad.vision_long_banner")
+
+    def test_the_hud_loads_the_banner_guarded_and_renders_it_only_when_loaded(self):
+        source = (ONROAD / "hud_renderer.py").read_text()
+        tree = ast.parse(source)
+        loads = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "load_banner"]
+        self.assertEqual(len(loads), 1)
+        renders = [n for n in ast.walk(tree) if isinstance(n, ast.If)
+                   and any(getattr(c.func, "attr", "") == "render" and getattr(c.func.value, "attr", "") == "_vision_long_banner"
+                           for c in ast.walk(n) if isinstance(c, ast.Call))]
+        self.assertEqual(len(renders), 1)
+        self.assertEqual(ast.unparse(renders[0].test), "self._vision_long_banner is not None")
+
+
+class LoadBanner(unittest.TestCase):
+    def setUp(self):
+        self.reports: list[str] = []
+        self.folder = tempfile.TemporaryDirectory()
+        sys.path.insert(0, self.folder.name)
+
+    def tearDown(self):
+        sys.path.remove(self.folder.name)
+        for name in [n for n in sys.modules if n.startswith("vl_fake_banner_")]:
+            del sys.modules[name]
+        self.folder.cleanup()
+
+    def module(self, name: str, body: str) -> str:
+        (Path(self.folder.name) / f"{name}.py").write_text(body)
+        return name
+
+    def test_a_working_widget_is_built(self):
+        name = self.module("vl_fake_banner_ok", "class VisionLongBanner:\n    pass\n")
+        widget = vln.load_banner(self.reports.append, name)
+        self.assertEqual(type(widget).__name__, "VisionLongBanner")
+        self.assertEqual(self.reports, [])
+
+    def test_a_missing_widget_module_hides_the_banner_and_reports_it(self):
+        self.assertIsNone(vln.load_banner(self.reports.append, "vl_fake_banner_absent"))
+        self.assertEqual(len(self.reports), 1)
+        self.assertIn("ModuleNotFoundError", self.reports[0])
+
+    def test_a_widget_module_that_fails_to_import_hides_the_banner(self):
+        name = self.module("vl_fake_banner_broken", "from os import no_such_helper\n")
+        self.assertIsNone(vln.load_banner(self.reports.append, name))
+        self.assertIn("ImportError", self.reports[0])
+
+    def test_a_raising_constructor_hides_the_banner(self):
+        name = self.module("vl_fake_banner_raises", "class VisionLongBanner:\n    def __init__(self):\n        raise RuntimeError('no font')\n")
+        self.assertIsNone(vln.load_banner(self.reports.append, name))
+        self.assertIn("RuntimeError: no font", self.reports[0])
+
+    def test_a_failing_logger_still_hides_the_banner(self):
+        def report(message: str) -> None:
+            raise OSError("log gone")
+        self.assertIsNone(vln.load_banner(report, "vl_fake_banner_absent"))
 
 
 if __name__ == "__main__":

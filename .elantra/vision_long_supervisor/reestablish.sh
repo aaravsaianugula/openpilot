@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Started by launch_chffrplus.sh at every openpilot launch on AGNOS. It puts back the Vision Long
-# units (the monitor's and the USB link's) an AGNOS update removed, from the shipped copies, and
-# changes nothing when they are in place. Detached and time-limited, so it can never hold up or
-# fail the launch. The outcome goes to /data/vision_long/reestablish.log.
+# Run by hand (there is no boot hook: rerunning the Vision Long installer after an AGNOS update is
+# the supported path). It puts back the Vision Long units (the monitor's and the USB link's) an AGNOS
+# update removed, from the shipped copies, and changes nothing when they are in place. Detached and
+# time-limited. The outcome goes to /data/vision_long/reestablish.log.
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null && pwd)"
 # timeout sends TERM at 120 s; persist.py turns it into an exception so / is remounted read-only
 # before it exits. KILL follows only 30 s later, far longer than that remount takes.

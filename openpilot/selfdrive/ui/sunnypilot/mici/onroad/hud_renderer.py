@@ -9,7 +9,8 @@ import pyray as rl
 from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer
 from openpilot.selfdrive.ui.sunnypilot.onroad.blind_spot_indicators import BlindSpotIndicators
 from openpilot.selfdrive.ui.sunnypilot.mici.onroad.steer_headroom_bar import SteerHeadroomBar
-from openpilot.selfdrive.ui.sunnypilot.mici.onroad.vision_long_banner import VisionLongBanner
+from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.vision_long_notice import load_banner
 
 
 class HudRendererSP(HudRenderer):
@@ -20,8 +21,8 @@ class HudRendererSP(HudRenderer):
     # without the raised limit, where it delegates back to upstream's TorqueBar.
     self._torque_bar = SteerHeadroomBar()
     # Laptop-monitor notices (UI only, reads /data/vision_long/notice.json). Hidden while
-    # openpilot shows an alert.
-    self._vision_long_banner = VisionLongBanner()
+    # openpilot shows an alert. None when the widget cannot load: the HUD runs without it.
+    self._vision_long_banner = load_banner(cloudlog.error)
 
   def _update_state(self) -> None:
     super()._update_state()
@@ -30,7 +31,8 @@ class HudRendererSP(HudRenderer):
   def _render(self, rect: rl.Rectangle) -> None:
     super()._render(rect)
     self.blind_spot_indicators.render(rect)
-    self._vision_long_banner.render(rect, self._can_draw_top_icons)
+    if self._vision_long_banner is not None:
+      self._vision_long_banner.render(rect, self._can_draw_top_icons)
 
   def _has_blind_spot_detected(self) -> bool:
 

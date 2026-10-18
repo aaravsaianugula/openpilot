@@ -544,7 +544,9 @@ def start_embedded_publisher(
         require_pinned_device()
         source = DeviceSource()
         if not drive_log:
-            # One log per card start (one drive), kept across worker restarts.
+            # One log per card start (one drive), kept across worker restarts. The UTC stamp only labels the
+            # folder like the laptop's drive folders; the device wall clock may be unsynced at boot, so nothing
+            # compares or orders by it (retention orders by last write, DriveLog._prune).
             drive_log.append(
                 DriveLog(Path(drives_root), drive_directory_name(datetime.now(UTC).timestamp(), source.boot))
             )

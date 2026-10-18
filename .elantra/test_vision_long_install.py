@@ -18,6 +18,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "vision_long_link"))
@@ -28,6 +29,11 @@ TARGET_OP, TARGET_DBC = "c765b7a227f04e7963c7d221ee28fea54e931578", "ef16146a76b
 SHAS = inst.Shas(BASE_OP, BASE_DBC, TARGET_OP, TARGET_DBC)
 TEMPLATE = (HERE / "vision_long_link/native-runtime.template.json").read_bytes()
 READ_ONLY = (("rev-parse",), ("status",), ("ls-tree",), ("show",), ("symbolic-ref",), ("cat-file",))
+SUPERVISOR = HERE / "vision_long_supervisor"
+# The monitor's units as its own installer names them (persist.SUPERVISOR).
+MONITOR_UNITS = ("vision-long-supervisor.service", "vision-long-supervisor-watch.service",
+                 "vision-long-supervisor-watch.timer")
+MONITOR_ENABLED = ("vision-long-supervisor.service", "vision-long-supervisor-watch.timer")
 
 
 class FakeComma(inst.System):
@@ -48,6 +54,10 @@ class FakeComma(inst.System):
         self.calls: list[list[str]] = []
         # Whether the runtime config existed each time the companion test ran.
         self.config_during_companion_test: list[bool] = []
+        self.fetched_missing: set[str] = set()
+        self.systemd = "systemd 245 (245.4-4ubuntu3.15)\n+PAM +AUDIT"
+        self.verify = inst.Result(0, "", "")
+        self.monitor_active = "active"
         # AGNOS mounts `/` read-only; /etc/systemd/system is writable only between remounts.
         self.root_writable = False
 
@@ -62,7 +72,9 @@ class FakeComma(inst.System):
 
     def mutations(self) -> list[list[str]]:
         def read_only(argv: list[str]) -> bool:
-            if argv[:3] == ["sudo", "-n", "true"]:
+            if argv[:3] == ["sudo", "-n", "true"] or argv[:2] in (["systemctl", "--version"], ["systemctl", "is-active"]):
+                return True
+            if argv[0] == "systemd-analyze":
                 return True
             return argv[0] == "git" and any(tuple(argv[3:3 + len(p)]) == p for p in READ_ONLY)
         return [argv for argv in self.calls if not read_only(argv)]
@@ -74,6 +86,12 @@ class FakeComma(inst.System):
             return ok if self.sudo_ok else inst.Result(1, "", "a password is required")
         if argv[0] == "git":
             return self._git(Path(argv[2]), argv[3:])
+        if argv == ["systemctl", "--version"]:
+            return inst.Result(0, self.systemd, "")
+        if argv[0] == "systemd-analyze":
+            return self.verify
+        if argv[:2] == ["systemctl", "is-active"]:
+            return inst.Result(0 if self.monitor_active == "active" else 3, self.monitor_active + "\n", "")
         if argv[:3] == ["sudo", "mount", "-o"] and argv[4] == "/":
             self.root_writable = argv[3] == "remount,rw"
             return ok
@@ -104,7 +122,8 @@ class FakeComma(inst.System):
         return ok
 
     def wants(self, unit: str) -> Path:
-        return self.layout.systemd / "timers.target.wants" / unit
+        target = "timers.target.wants" if unit.endswith(".timer") else "multi-user.target.wants"
+        return self.layout.systemd / target / unit
 
     def _writes_etc(self, argv: list[str]) -> bool:
         if argv[:3] in (["sudo", "systemctl", "enable"], ["sudo", "systemctl", "disable"]):
@@ -121,7 +140,13 @@ class FakeComma(inst.System):
             sha = self.fetched_gitlink if args[1] == "FETCH_HEAD" else self.opendbc_head
             return inst.Result(0, f"160000 commit {sha}\topendbc_repo\n", "")
         if args[0] == "show":
-            return inst.Result(0, self.template.decode(), "")
+            path = args[1].removeprefix("FETCH_HEAD:")
+            if path == inst.TEMPLATE:
+                return inst.Result(0, self.template.decode(), "")
+            shipped = HERE.parent / path
+            if path in self.fetched_missing or not shipped.is_file():
+                return inst.Result(128, "", f"fatal: path '{path}' does not exist in 'FETCH_HEAD'")
+            return inst.Result(0, shipped.read_text(), "")
         if args == ["status", "--porcelain"]:
             lines = list(self.dirty)
             if self.layout.runtime_config.exists():
@@ -147,6 +172,10 @@ class FakeComma(inst.System):
         for name in ("native-runtime.template.json", *inst.UNITS, "usb_link.py"):
             shutil.copyfile(source / name, target / name)
         (self.layout.repo / ".elantra/vision_long").mkdir(parents=True, exist_ok=True)
+        monitor = self.layout.repo / inst.MONITOR_SOURCE
+        monitor.mkdir(parents=True, exist_ok=True)
+        for name in (*MONITOR_UNITS, "monitor.py", "persist.py", "logcap.py"):
+            shutil.copyfile(SUPERVISOR / name, monitor / name)
 
 
 def snapshot(root: Path) -> dict[str, bytes | None]:
@@ -164,6 +193,13 @@ class InstallerTests(unittest.TestCase):
         self.layout.is_offroad.write_bytes(b"1")
         self.layout.systemd.mkdir(parents=True)
         self.comma = FakeComma(self.layout)
+        # The monitor's own installer waits SETTLE_S for a crash at import; nothing to wait for here.
+        sleep = mock.patch("time.sleep")
+        sleep.start()
+        self.addCleanup(sleep.stop)
+
+    def rw_windows(self) -> int:
+        return sum(1 for argv in self.comma.calls if argv == ["sudo", "mount", "-o", "remount,rw", "/"])
 
     def tearDown(self):
         self._tmp.cleanup()
@@ -275,7 +311,48 @@ class InstallerTests(unittest.TestCase):
         (self.layout.udc_class / inst.UDC / "function").write_text(inst.GADGET_NAME + "\n")
         self.assertIn("mode         rerun", inst.install(self.comma, self.layout, SHAS))
 
+    def test_a_fetched_branch_without_the_monitor_installer_is_refused(self):
+        self.comma.fetched_missing = {inst.MONITOR_SOURCE + "/persist.py"}
+        self.assert_refused_without_change("monitor installer")
+
+    def test_a_fetched_branch_missing_a_monitor_unit_is_refused(self):
+        self.comma.fetched_missing = {inst.MONITOR_SOURCE + "/vision-long-supervisor-watch.timer"}
+        self.assert_refused_without_change("does not carry the monitor")
+
+    def test_an_old_systemd_is_refused_by_the_monitors_own_preflight(self):
+        self.comma.systemd = "systemd 229\n"
+        self.assert_refused_without_change("older than 231")
+
+    def test_monitor_units_systemd_rejects_are_refused(self):
+        self.comma.verify = inst.Result(1, "", "Unknown key name 'MemoryMax' in section 'Service'")
+        self.assert_refused_without_change("systemd-analyze verify rejects")
+
     # --- install ------------------------------------------------------------------------------
+
+    def test_the_install_puts_in_the_link_and_monitor_units_in_one_read_write_window(self):
+        receipt = inst.install(self.comma, self.layout, SHAS)
+        for unit, source in ((u, inst.UNIT_SOURCE) for u in inst.UNITS):
+            self.assertEqual((self.layout.systemd / unit).read_bytes(), (self.layout.repo / source / unit).read_bytes())
+        for unit in MONITOR_UNITS:
+            self.assertEqual((self.layout.systemd / unit).read_bytes(), (SUPERVISOR / unit).read_bytes(), unit)
+        for unit in (inst.TIMER, *MONITOR_ENABLED):
+            self.assertTrue(self.comma.wants(unit).is_file(), unit)
+        self.assertEqual(self.rw_windows(), 1)
+        self.assertFalse(self.comma.root_writable)
+        self.assertTrue((self.layout.state / "supervisor.installed").is_file())
+        self.assertIn(["sudo", "systemctl", "start", "vision-long-supervisor.service"], self.comma.calls)
+        self.assertTrue(any(line.startswith("monitor") and "active" in line for line in receipt), receipt)
+
+    def test_a_monitor_that_does_not_stay_up_undoes_both_unit_sets_and_the_checkout(self):
+        self.comma.monitor_active = "failed"
+        with self.assertRaisesRegex(inst.InstallError, "is failed after start"):
+            inst.install(self.comma, self.layout, SHAS)
+        self.assertEqual([p.name for p in self.layout.systemd.rglob("*") if p.is_file()], [])
+        self.assertFalse((self.layout.state / "supervisor.installed").exists())
+        self.assertFalse(self.layout.runtime_config.exists())
+        self.assertEqual(self.comma.head, BASE_OP)
+        self.assertFalse(self.comma.root_writable)
+
 
     def test_a_fresh_install_provisions_everything_and_restarts_last(self):
         receipt = inst.install(self.comma, self.layout, SHAS)
@@ -323,12 +400,13 @@ class InstallerTests(unittest.TestCase):
 
     def test_a_rerun_after_an_agnos_update_reinstalls_the_units(self):
         inst.install(self.comma, self.layout, SHAS)
-        for unit in inst.UNITS:
+        for unit in (*inst.UNITS, *MONITOR_UNITS):
             (self.layout.systemd / unit).unlink()
         key = self.layout.key.read_bytes()
         receipt = inst.install(self.comma, self.layout, SHAS)
         self.assertIn("mode         rerun", receipt)
-        self.assertTrue((self.layout.systemd / inst.TIMER).is_file())
+        for unit in (*inst.UNITS, *MONITOR_UNITS):
+            self.assertTrue((self.layout.systemd / unit).is_file(), unit)
         self.assertEqual(self.layout.key.read_bytes(), key)
         self.assertEqual(self.layout.runtime_config.read_bytes(), TEMPLATE)
 
@@ -364,6 +442,24 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(any("pkill" in " ".join(c) for c in self.comma.calls))
         self.assertFalse(self.comma.wants(inst.TIMER).exists(), "the timer must be disabled while / is writable")
         self.assertFalse(self.comma.root_writable)
+
+    def test_rollback_removes_the_monitor_units_and_marker_in_one_window(self):
+        inst.install(self.comma, self.layout, SHAS)
+        windows = self.rw_windows()
+        inst.rollback(self.comma, self.layout)
+        self.assertEqual([p.name for p in self.layout.systemd.rglob("*") if p.is_file()], [])
+        self.assertFalse((self.layout.state / "supervisor.installed").exists())
+        self.assertEqual(self.rw_windows(), windows + 1)
+        self.assertIn(["sudo", "systemctl", "stop", "vision-long-supervisor-watch.timer"], self.comma.calls)
+        self.assertFalse(self.comma.root_writable)
+
+    def test_rollback_refuses_a_checkout_without_the_monitor_installer(self):
+        inst.install(self.comma, self.layout, SHAS)
+        (self.layout.repo / inst.MONITOR_INSTALLER).unlink()
+        before = len(self.comma.mutations())
+        with self.assertRaisesRegex(inst.InstallError, "rollback preflight failed, nothing was changed"):
+            inst.rollback(self.comma, self.layout)
+        self.assertEqual(len(self.comma.mutations()), before)
 
     def test_rollback_refuses_an_onroad_car(self):
         inst.install(self.comma, self.layout, SHAS)
@@ -410,6 +506,19 @@ class TemplateTests(unittest.TestCase):
         for broken in (b"[]", b"{", b'{"schema": "native_runtime_v2"}'):
             with self.subTest(broken=broken), self.assertRaises(inst.InstallError):
                 inst.validate_template(broken)
+
+    def test_the_template_is_parsed_as_strictly_as_runtime_config(self):
+        # runtime_config wants an int port and refuses duplicate keys; json alone takes 45556.0 and the last duplicate.
+        self.assertIn(b'"port": 45556', TEMPLATE)
+        cases = {
+            "float port": (TEMPLATE.replace(b"45556", b"45556.0"), "port"),
+            "duplicate key": (TEMPLATE.replace(b'"port": 45556', b'"port": 1, "port": 45556'), "duplicate"),
+            "oversized": (TEMPLATE.rstrip()[:-1] + b" " * 4096 + b"}", "size"),
+            "empty": (b"", "size"),
+        }
+        for name, (raw, reason) in cases.items():
+            with self.subTest(case=name), self.assertRaisesRegex(inst.InstallError, reason):
+                inst.validate_template(raw)
 
 
 if __name__ == "__main__":

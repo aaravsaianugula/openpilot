@@ -235,7 +235,9 @@ class DriveLog:
             for path in self.root.iterdir()
             if path.is_dir() and DRIVE_NAME.fullmatch(path.name) and path != self.folder
         ]
-        drives.sort(key=lambda path: (path.stat().st_mtime, path.name))
+        # By last write only: the name's UTC stamp comes from the device wall clock, which may be unsynced
+        # at boot, so it is a label and never an order.
+        drives.sort(key=lambda path: path.stat().st_mtime)
         sizes = {path: _folder_bytes(path) for path in drives}
         total = sum(sizes.values())
         for path in drives:

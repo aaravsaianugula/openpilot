@@ -103,6 +103,10 @@ OVERLAY_ADDED = [
     "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_manifest.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/onroad/steer_headroom.py",
     "openpilot/selfdrive/ui/sunnypilot/mici/onroad/steer_headroom_bar.py",
+    # The Vision Long onroad notice banner (UI only). Paired with hud_renderer.py in
+    # OVERLAY_MODIFIED, which loads it through vision_long_notice.load_banner.
+    "openpilot/selfdrive/ui/sunnypilot/mici/onroad/vision_long_banner.py",
+    "openpilot/selfdrive/ui/sunnypilot/mici/onroad/vision_long_notice.py",
     # The merge that puts models we host into sunnypilot's picker. Paired with fetcher.py
     # in OVERLAY_MODIFIED below: registering this without the call site leaves a module
     # nothing imports, and registering the call site without this breaks the fetch outright.

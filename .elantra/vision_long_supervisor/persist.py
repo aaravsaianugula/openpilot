@@ -4,12 +4,14 @@ Install, roll back and re-establish the Vision Long systemd units on the comma 4
 
     persist.py install       the laptop monitor's units (owner, over SSH as comma, parked)
     persist.py rollback      remove them again
-    persist.py reestablish   put back any Vision Long unit an AGNOS update removed (boot hook)
+    persist.py reestablish   put back any Vision Long unit an AGNOS update removed (by hand)
 
 `/` is read-only ext4 and A/B on AGNOS: an update flips the slot and every unit we put in
-/etc/systemd/system is gone on the next boot. `reestablish` runs from the openpilot launch path
-(reestablish.sh, started detached by launch_chffrplus.sh) and re-installs, from the shipped copies
-in the checkout, every unit set that is expected but missing or different:
+/etc/systemd/system is gone on the next boot. The Vision Long installer
+(.elantra/vision_long_install.sh) installs both unit sets through this module, and rerunning it
+after an AGNOS update puts them back. `reestablish` (reestablish.sh, run by hand; there is no boot
+hook) re-installs, from the shipped copies in the checkout, every unit set that is expected but
+missing or different:
   - the monitor's three units, expected while /data/vision_long/supervisor.installed exists (this
     install writes it, this rollback removes it);
   - the USB link's two units (R4, vision_long_link), expected while the companion's runtime config
@@ -191,27 +193,30 @@ def unit_problems(layout: Layout, units: UnitSet) -> list[str]:
     return problems
 
 
-def install_units(system: System, layout: Layout, units: UnitSet) -> None:
+def install_units(system: System, layout: Layout, *sets: UnitSet) -> None:
+    """Install and enable every given set inside one remount,rw ... remount,ro window, then start them."""
     _require(system, ["sudo", "mount", "-o", "remount,rw", "/"], "remount / read-write")
     try:
-        for unit in units.units:
-            _require(system, ["sudo", "install", "-m", "0644", str(layout.source(units, unit)), str(layout.systemd / unit)],
-                     "install " + unit)
+        for units in sets:
+            for unit in units.units:
+                _require(system, ["sudo", "install", "-m", "0644", str(layout.source(units, unit)),
+                                  str(layout.systemd / unit)], "install " + unit)
         _require(system, ["sudo", "systemctl", "daemon-reload"], "systemctl daemon-reload")
-        for unit in units.enable:
+        for unit in (unit for units in sets for unit in units.enable):
             _require(system, ["sudo", "systemctl", "enable", unit], "enable " + unit)
     finally:
         _require(system, ["sudo", "mount", "-o", "remount,ro", "/"], "remount / read-only")
-    for unit in units.start:
+    for unit in (unit for units in sets for unit in units.start):
         _require(system, ["sudo", "systemctl", "start", unit], "start " + unit)
 
 
-def remove_units(system: System, layout: Layout, units: UnitSet) -> None:
-    present = [unit for unit in units.units if (layout.systemd / unit).exists()]
-    enabled = [unit for unit in units.enable if layout.wants(unit).exists()]
+def remove_units(system: System, layout: Layout, *sets: UnitSet) -> None:
+    """Stop, disable and remove every given set; all /etc writes inside one read-write window."""
+    present = [unit for units in sets for unit in units.units if (layout.systemd / unit).exists()]
+    enabled = [unit for units in sets for unit in units.enable if layout.wants(unit).exists()]
     if not present and not enabled:
         return
-    for unit in units.stop:
+    for unit in (unit for units in sets for unit in units.stop):
         _require(system, ["sudo", "systemctl", "stop", unit], "stop " + unit)
     _require(system, ["sudo", "mount", "-o", "remount,rw", "/"], "remount / read-write")
     try:
@@ -247,12 +252,36 @@ def systemd_version(system: System) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def preflight_install(system: System, layout: Layout) -> int:
-    failures: list[str] = []
-    _common(system, layout, failures)
+def unit_preflight(system: System, layout: Layout, failures: list[str]) -> int | None:
+    """The monitor units' own checks, changing nothing: shipped, a new enough systemd, and accepted by
+    `systemd-analyze verify`. The Vision Long installer runs this on the fetched copies before any change."""
     missing = [str(layout.source(SUPERVISOR, u)) for u in (*SUPERVISOR.units, "monitor.py") if not layout.source(SUPERVISOR, u).is_file()]
     if missing:
         failures.append("the checkout does not carry the monitor: " + ", ".join(missing))
+    version = systemd_version(system)
+    if version is None or version < MIN_SYSTEMD:
+        failures.append(f"systemd {version} is older than {MIN_SYSTEMD} (MemoryMax=)")
+    if not missing:
+        sources = [str(layout.source(SUPERVISOR, u)) for u in SUPERVISOR.units]
+        verify = system.run(["systemd-analyze", "verify", *sources])
+        if verify.code != 0 or "Unknown" in verify.out + verify.err:
+            failures.append("systemd-analyze verify rejects the units: " + (verify.out + verify.err).strip()[-300:])
+    return version
+
+
+def confirm_monitor(system: System, layout: Layout) -> None:
+    """After the start: the monitor must still be up once a crash at import would show. Then the marker."""
+    time.sleep(SETTLE_S)
+    state = system.run(["systemctl", "is-active", SERVICE]).out.strip()
+    if state != "active":
+        raise PersistError(f"{SERVICE} is {state or 'unknown'} after start")
+    layout.marker.write_text("installed\n")
+
+
+def preflight_install(system: System, layout: Layout) -> int:
+    failures: list[str] = []
+    _common(system, layout, failures)
+    version = unit_preflight(system, layout, failures)
     if not layout.python.is_file():
         failures.append(f"{PYTHON} is missing")
     if not layout.state.is_dir():
@@ -263,14 +292,6 @@ def preflight_install(system: System, layout: Layout) -> int:
         failures.append(f"{layout.key} is not readable by this user; the monitor runs as comma (chown comma, chmod 600)")
     elif system.free_bytes(layout.state) < MIN_FREE_BYTES:
         failures.append(f"under {MIN_FREE_BYTES >> 20} MiB free on /data")
-    version = systemd_version(system)
-    if version is None or version < MIN_SYSTEMD:
-        failures.append(f"systemd {version} is older than {MIN_SYSTEMD} (MemoryMax=)")
-    if not missing:
-        sources = [str(layout.source(SUPERVISOR, u)) for u in SUPERVISOR.units]
-        verify = system.run(["systemd-analyze", "verify", *sources])
-        if verify.code != 0 or "Unknown" in verify.out + verify.err:
-            failures.append("systemd-analyze verify rejects the units: " + (verify.out + verify.err).strip()[-300:])
     _raise_if(failures, "install")
     return version or 0
 
@@ -279,11 +300,7 @@ def install(system: System, layout: Layout) -> list[str]:
     version = preflight_install(system, layout)
     try:
         install_units(system, layout, SUPERVISOR)
-        time.sleep(SETTLE_S)
-        state = system.run(["systemctl", "is-active", SERVICE]).out.strip()
-        if state != "active":
-            raise PersistError(f"{SERVICE} is {state or 'unknown'} after start")
-        layout.marker.write_text("installed\n")
+        confirm_monitor(system, layout)
     except (PersistError, OSError) as error:
         try:
             remove_units(system, layout, SUPERVISOR)
@@ -297,7 +314,7 @@ def install(system: System, layout: Layout) -> list[str]:
         f"units        {', '.join(SUPERVISOR.units)}",
         f"enabled      {', '.join(SUPERVISOR.enable)}",
         f"monitor      {SERVICE} active",
-        f"marker       {layout.marker} (reestablish puts the units back after an AGNOS update)",
+        f"marker       {layout.marker} (after an AGNOS update, rerun the Vision Long installer)",
         f"log          {layout.state / 'supervisor.log'} (2 MB cap, one backup)",
     ]
 
@@ -306,7 +323,7 @@ def rollback(system: System, layout: Layout) -> list[str]:
     failures: list[str] = []
     _common(system, layout, failures)
     _raise_if(failures, "rollback")
-    # The marker goes first: if removing the units fails half way, the boot hook must not put
+    # The marker goes first: if removing the units fails half way, reestablish must not put
     # the monitor back.
     layout.marker.unlink(missing_ok=True)
     remove_units(system, layout, SUPERVISOR)
@@ -350,7 +367,7 @@ def main(argv: list[str], root: Path = Path("/"), system: System | None = None) 
         try:
             for line in reestablish(system, layout):
                 log.info(line)
-        except Exception as error:  # the boot hook must record every failure, of any kind
+        except Exception as error:  # reestablish must record every failure, of any kind
             log.info(f"FAILED: {type(error).__name__}: {error}")
             return 1
         finally:

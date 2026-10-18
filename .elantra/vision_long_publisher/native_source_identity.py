@@ -51,6 +51,10 @@ INSTALLED_FILES = frozenset(
         # The on-screen braking toggle; the device path is /data/openpilot/<this path>.
         "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_manifest.py",
         "openpilot/selfdrive/ui/sunnypilot/mici/layouts/port_updates.py",
+        # The laptop monitor's onroad notice banner (UI only) and the HUD that loads it.
+        "openpilot/selfdrive/ui/sunnypilot/mici/onroad/hud_renderer.py",
+        "openpilot/selfdrive/ui/sunnypilot/mici/onroad/vision_long_banner.py",
+        "openpilot/selfdrive/ui/sunnypilot/mici/onroad/vision_long_notice.py",
         UNTRACKED_RUNTIME_CONFIG,
         *(
             ".elantra/vision_long/" + name

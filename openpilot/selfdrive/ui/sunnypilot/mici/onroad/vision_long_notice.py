@@ -21,12 +21,14 @@ can test it without a UI. Nothing here is on any control path; it only reads one
 
 from __future__ import annotations
 
+import importlib
 import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 NOTICE_FILE = Path("/data/vision_long/notice.json")
+BANNER_MODULE = "openpilot.selfdrive.ui.sunnypilot.mici.onroad.vision_long_banner"
 SCHEMA = "vl_notices_v1"
 SHOW_NS = 10_000_000_000
 RECOVERED_NS = 3_000_000_000
@@ -105,6 +107,22 @@ def read_document(path: Path):
   try:
     return json.loads(raw)
   except (ValueError, RecursionError):  # UnicodeDecodeError is a ValueError; deep nesting recurses
+    return None
+
+
+def load_banner(report, module: str = BANNER_MODULE):
+  """The banner widget, or None when it cannot be imported or built.
+
+  The HUD reaches the widget only through here: the widget imports pyray and UI helpers, and an
+  import or constructor failure (an upstream rename, a missing font) must hide the banner, never
+  take the onroad HUD down. The failure is reported once, here, since the HUD never retries."""
+  try:
+    return importlib.import_module(module).VisionLongBanner()
+  except Exception as error:  # the banner is optional; the HUD must come up without it
+    try:
+      report(f"vision long banner unavailable: {type(error).__name__}: {error}")
+    except Exception:  # a failing logger must not take the HUD down either; there is nowhere left to report it
+      pass
     return None
 
 

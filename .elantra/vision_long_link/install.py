@@ -8,14 +8,17 @@ Vision Long install and rollback on the comma 4, run by the owner over SSH as `c
 Entry points are .elantra/vision_long_install.sh and .elantra/vision_long_rollback.sh.
 
 Install runs every check before it changes anything (the preflight of OWNER_CHECKLIST.md plus
-the fetched branch, its template and sudo). A device already on the target SHAs is a rerun:
-it re-verifies everything and re-installs the link units an AGNOS update may have removed.
+the fetched branch, its template, sudo and the laptop monitor's own unit preflight, run on the
+fetched copies). A device already on the target SHAs is a rerun: it re-verifies everything and
+re-installs the units an AGNOS update may have removed. The USB link units and the laptop
+monitor's units (.elantra/vision_long_supervisor, notification only) are installed through the
+monitor's own installer (persist.py) inside one read-write window of `/`.
 Any failure after the first change undoes what this run did: the checkout goes back to the
-base and the runtime config and units are removed. The link key, the braking toggle and the
-logs are never removed and never overwritten.
+base and the runtime config and both unit sets are removed. The link key, the braking toggle and
+the logs are never removed and never overwritten.
 
-Rollback restores the saved SHAs, removes the runtime config, the link units and the gadget,
-and keeps the key and the logs. Neither command uses `pkill -f`: the comma service is
+Rollback restores the saved SHAs, removes the runtime config, both unit sets, the monitor's
+marker and the gadget, and keeps the key and the logs. Neither command uses `pkill -f`: the comma service is
 restarted detached, which drops this SSH session by design.
 """
 
@@ -23,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -33,6 +37,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from types import ModuleType
 
 HOSTNAME = "comma-6f0745e3"
 BRANCH = "vision-long-companion"
@@ -48,11 +53,18 @@ RUNTIME_CONFIG = ".elantra/vision_long/native-runtime.json"
 # The runtime config is written from this template. The companion reads exactly the five
 # native_runtime_v2 fields below and refuses any other, so the template must be exactly them.
 TEMPLATE = ".elantra/vision_long_link/native-runtime.template.json"
+# runtime_config's own bound (vision_long/native_bootstrap.py).
+MAX_TEMPLATE_BYTES = 4096
 UNIT_SOURCE = ".elantra/vision_long_link"
 LINK_SCRIPT = ".elantra/vision_long_link/usb_link.py"
 SERVICE = "vision-long-link.service"
 TIMER = "vision-long-link.timer"
 UNITS = (SERVICE, TIMER)
+# The laptop monitor ships its own installer; its unit sets (persist.LINK pins the two above) are
+# installed and removed through it. Its import needs logcap beside it.
+MONITOR_SOURCE = ".elantra/vision_long_supervisor"
+MONITOR_INSTALLER = MONITOR_SOURCE + "/persist.py"
+MONITOR_MODULES = ("persist.py", "logcap.py")
 CONTRACT = {
     "schema": "native_runtime_v2",
     "listen_ip": "192.168.250.1",
@@ -254,16 +266,30 @@ def _raise_if(failures: list[str], action: str) -> None:
         raise InstallError(f"{action} preflight failed, nothing was changed:\n  - " + "\n  - ".join(failures))
 
 
+def _unique_pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in items:
+        if key in result:
+            raise InstallError(f"runtime config template repeats {key!r} (duplicate keys are refused)")
+        result[key] = value
+    return result
+
+
 def validate_template(raw: bytes) -> bytes:
-    """The template must be a JSON object holding exactly the road-contract values: the companion's
-    native_runtime_v2 parser refuses any extra field, so one would install a config that fails closed."""
+    """The template must be a JSON object holding exactly the road-contract values, parsed as strictly as
+    native_runtime_v2's runtime_config: bounded size, no duplicate key, and each value of the contract's own
+    type (so 45556.0 is not the port). The parser refuses any extra field, so one would install a config
+    that fails closed."""
+    if not 0 < len(raw) <= MAX_TEMPLATE_BYTES:
+        raise InstallError(f"runtime config template size {len(raw)} is outside 1..{MAX_TEMPLATE_BYTES} bytes")
     try:
-        value = json.loads(raw)
+        value = json.loads(raw, object_pairs_hook=_unique_pairs)
     except ValueError as error:
         raise InstallError(f"runtime config template is not JSON: {error}") from error
     if type(value) is not dict:
         raise InstallError("runtime config template is not a JSON object")
-    wrong = sorted(name for name, expected in CONTRACT.items() if value.get(name) != expected)
+    wrong = sorted(name for name, expected in CONTRACT.items()
+                   if type(value.get(name)) is not type(expected) or value.get(name) != expected)
     if wrong:
         raise InstallError("runtime config template disagrees with the road contract on: " + ", ".join(wrong))
     extra = sorted(set(value) - set(CONTRACT))
@@ -283,11 +309,49 @@ def _restart(system: System) -> None:
     _require(system, ["sh", "-c", RESTART], "detached comma restart")
 
 
+def _load_monitor_installer(directory: Path) -> ModuleType:
+    """The laptop monitor's own installer (persist.py) from `directory`, which also holds logcap.py."""
+    spec = importlib.util.spec_from_file_location("vision_long_monitor_installer", directory / "persist.py")
+    if spec is None or spec.loader is None:
+        raise InstallError(f"cannot load the monitor installer from {directory}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # its dataclasses resolve their module through sys.modules
+    saved = list(sys.path)
+    try:
+        spec.loader.exec_module(module)  # persist.py puts its own folder on sys.path to import logcap
+    finally:
+        sys.path[:] = saved
+    return module
+
+
+def _fetched_monitor(system: System, layout: Layout, staging: Path, failures: list[str]) -> ModuleType | None:
+    """Load the fetched branch's monitor installer from a scratch copy and run its unit preflight there.
+    The fresh install runs on the base checkout, where none of it is on disk yet; nothing on the device
+    changes. Returns the loaded installer, or None with the reason appended to `failures`."""
+    source = staging / "data/openpilot" / MONITOR_SOURCE
+    source.mkdir(parents=True)
+    for name in MONITOR_MODULES:
+        shown = system.run(["git", "-C", str(layout.repo), "show", f"FETCH_HEAD:{MONITOR_SOURCE}/{name}"])
+        if shown.code != 0:
+            failures.append(f"fetched {BRANCH} has no monitor installer ({MONITOR_SOURCE}/{name})")
+            return None
+        (source / name).write_text(shown.out)
+    monitor = _load_monitor_installer(source)
+    for name in (*monitor.SUPERVISOR.units, "monitor.py"):
+        shown = system.run(["git", "-C", str(layout.repo), "show", f"FETCH_HEAD:{MONITOR_SOURCE}/{name}"])
+        if shown.code == 0:
+            (source / name).write_text(shown.out)
+    monitor.unit_preflight(system, monitor.Layout(staging), failures)
+    return monitor
+
+
 # --- install ----------------------------------------------------------------------------------
 
-def preflight_install(system: System, layout: Layout, shas: Shas) -> str:
-    """Every install check, before any change. Returns "fresh" or "rerun"; raises on failure."""
+def preflight_install(system: System, layout: Layout, shas: Shas) -> tuple[str, ModuleType]:
+    """Every install check, before any change. Returns "fresh" or "rerun" and the fetched monitor
+    installer; raises on failure."""
     failures: list[str] = []
+    monitor: ModuleType | None = None
     for name, value in vars(shas).items():
         if SHA.fullmatch(value) is None:
             failures.append(f"{name} {value!r} is not a full 40-character commit SHA")
@@ -325,6 +389,8 @@ def preflight_install(system: System, layout: Layout, shas: Shas) -> str:
                 validate_template(template.out.encode())
             except InstallError as error:
                 failures.append(str(error))
+        with tempfile.TemporaryDirectory(prefix="vision-long-monitor-") as staging:
+            monitor = _fetched_monitor(system, layout, Path(staging), failures)
 
     if mode == "rerun":
         saved = (_read_sha(layout.rollback_openpilot), _read_sha(layout.rollback_opendbc))
@@ -345,7 +411,9 @@ def preflight_install(system: System, layout: Layout, shas: Shas) -> str:
     if blocked is not None:
         failures.append(blocked + " (never taken over; turn ADB off in Developer settings and reboot first)")
     _raise_if(failures, "install")
-    return mode
+    if monitor is None:
+        raise InstallError("install preflight failed, nothing was changed: the monitor installer was not checked")
+    return mode, monitor
 
 
 def _read_sha(path: Path) -> str:
@@ -379,37 +447,31 @@ def _provision_state(layout: Layout) -> tuple[str, bool]:
     return digest, layout.toggle.read_bytes() == b"1"
 
 
-def _install_units(system: System, layout: Layout) -> None:
-    # `/` is read-only ext4 on AGNOS. Everything that writes /etc/systemd/system (the unit
-    # files and `enable`'s wants symlink) runs inside the read-write window.
-    _require(system, ["sudo", "mount", "-o", "remount,rw", "/"], "remount / read-write")
+def _install_units(system: System, layout: Layout, monitor: ModuleType) -> None:
+    # `/` is read-only ext4 on AGNOS. The monitor's installer writes both sets (unit files and
+    # `enable`'s wants links) inside one read-write window, then starts the link and the monitor.
     try:
-        for unit in UNITS:
-            _require(system, ["sudo", "install", "-m", "0644", str(layout.repo / UNIT_SOURCE / unit),
-                              str(layout.systemd / unit)], "install " + unit)
-        _require(system, ["sudo", "systemctl", "daemon-reload"], "systemctl daemon-reload")
-        _require(system, ["sudo", "systemctl", "enable", TIMER], "enable " + TIMER)
-    finally:
-        _require(system, ["sudo", "mount", "-o", "remount,ro", "/"], "remount / read-only")
-    _require(system, ["sudo", "systemctl", "start", TIMER], "start " + TIMER)
-    _require(system, ["sudo", "systemctl", "start", SERVICE], "bring up the USB link (" + SERVICE + ")")
+        monitor.install_units(system, monitor.Layout(layout.root), monitor.LINK, monitor.SUPERVISOR)
+    except monitor.PersistError as error:
+        raise InstallError(str(error)) from error
 
 
-def _remove_units(system: System, layout: Layout) -> None:
-    present = [unit for unit in UNITS if (layout.systemd / unit).exists()]
-    if not present:
-        return
-    _require(system, ["sudo", "systemctl", "stop", TIMER], "stop " + TIMER)
-    _require(system, ["sudo", "systemctl", "stop", SERVICE], "stop " + SERVICE)
-    # `disable` removes the wants symlink from /etc, so it belongs inside the read-write window.
-    _require(system, ["sudo", "mount", "-o", "remount,rw", "/"], "remount / read-write")
+def _remove_units(system: System, layout: Layout, monitor: ModuleType) -> None:
+    # The marker goes first, so a half-done removal is never put back by `persist.py reestablish`.
+    units = monitor.Layout(layout.root)
+    units.marker.unlink(missing_ok=True)
     try:
-        _require(system, ["sudo", "systemctl", "disable", TIMER], "disable " + TIMER)
-        for unit in present:
-            _require(system, ["sudo", "rm", "-f", str(layout.systemd / unit)], "remove " + unit)
-    finally:
-        _require(system, ["sudo", "mount", "-o", "remount,ro", "/"], "remount / read-only")
-    _require(system, ["sudo", "systemctl", "daemon-reload"], "systemctl daemon-reload")
+        monitor.remove_units(system, units, monitor.SUPERVISOR, monitor.LINK)
+    except monitor.PersistError as error:
+        raise InstallError(str(error)) from error
+    units.notice.unlink(missing_ok=True)
+
+
+def _confirm_monitor(system: System, layout: Layout, monitor: ModuleType) -> None:
+    try:
+        monitor.confirm_monitor(system, monitor.Layout(layout.root))
+    except monitor.PersistError as error:
+        raise InstallError(str(error)) from error
 
 
 def _link_check(system: System, layout: Layout) -> str:
@@ -430,7 +492,7 @@ def _verify_checkout(system: System, layout: Layout, openpilot: str, opendbc: st
         raise InstallError("git status is not clean: " + "; ".join(dirty[:5]))
 
 
-def _apply_install(system: System, layout: Layout, shas: Shas, mode: str) -> list[str]:
+def _apply_install(system: System, layout: Layout, shas: Shas, mode: str, monitor: ModuleType) -> list[str]:
     env = {"PYTHONPATH": str(layout.repo)}
     if mode == "fresh":
         branch = system.run(["git", "-C", str(layout.repo), "symbolic-ref", "-q", "--short", "HEAD"])
@@ -451,8 +513,9 @@ def _apply_install(system: System, layout: Layout, shas: Shas, mode: str) -> lis
     template = validate_template((layout.repo / TEMPLATE).read_bytes())
     _write_atomic(layout.runtime_config, template, FILE_MODE)
     _identity(system, layout)
-    _install_units(system, layout)
+    _install_units(system, layout, monitor)
     link = _link_check(system, layout)
+    _confirm_monitor(system, layout, monitor)
     _verify_checkout(system, layout, shas.target_openpilot, shas.target_opendbc, {"?? " + RUNTIME_CONFIG})
     return [
         f"mode         {mode}",
@@ -466,13 +529,14 @@ def _apply_install(system: System, layout: Layout, shas: Shas, mode: str) -> lis
         f"braking      {'ON' if braking else 'off'} ({layout.toggle}, left as it was)",
         f"link units   {SERVICE}, {TIMER} enabled",
         f"usb link     {link}",
+        f"monitor      {', '.join(monitor.SUPERVISOR.units)} installed, {monitor.SERVICE} active (notification only)",
         f"rollback     {layout.rollback_openpilot.parent}/vision-long-rollback-*.sha",
     ]
 
 
-def _undo_install(system: System, layout: Layout, shas: Shas, mode: str) -> str:
+def _undo_install(system: System, layout: Layout, shas: Shas, mode: str, monitor: ModuleType) -> str:
     """Undo this run's changes after a failure. Key, toggle and logs stay."""
-    _remove_units(system, layout)
+    _remove_units(system, layout, monitor)
     if layout.runtime_config.exists():
         layout.runtime_config.unlink()
     if mode == "rerun":
@@ -484,12 +548,12 @@ def _undo_install(system: System, layout: Layout, shas: Shas, mode: str) -> str:
 
 
 def install(system: System, layout: Layout, shas: Shas) -> list[str]:
-    mode = preflight_install(system, layout, shas)
+    mode, monitor = preflight_install(system, layout, shas)
     try:
-        receipt = _apply_install(system, layout, shas, mode)
+        receipt = _apply_install(system, layout, shas, mode, monitor)
     except (InstallError, OSError) as error:
         try:
-            undone = _undo_install(system, layout, shas, mode)
+            undone = _undo_install(system, layout, shas, mode, monitor)
         except (InstallError, OSError) as undo_error:
             raise InstallError(f"install failed: {error}\nUNDO ALSO FAILED: {undo_error}\n"
                                + "Run .elantra/vision_long_rollback.sh, or the checklist's manual rollback.") from error
@@ -513,9 +577,12 @@ def _checkout_saved(system: System, layout: Layout, sha: str, branch: str) -> No
         raise InstallError(f"branch {branch} no longer points at {sha[:8]}; check out {sha} by hand")
 
 
-def preflight_rollback(system: System, layout: Layout) -> tuple[str, str, str]:
+def preflight_rollback(system: System, layout: Layout) -> tuple[str, str, str, ModuleType]:
     failures: list[str] = []
     _common_checks(system, layout, failures)
+    installer = layout.repo / MONITOR_INSTALLER
+    if not installer.is_file():
+        failures.append(f"{installer} is missing; the monitor units cannot be removed through it")
     openpilot, opendbc = _read_sha(layout.rollback_openpilot), _read_sha(layout.rollback_opendbc)
     for path, value, repo in ((layout.rollback_openpilot, openpilot, layout.repo),
                               (layout.rollback_opendbc, opendbc, layout.opendbc)):
@@ -527,12 +594,12 @@ def preflight_rollback(system: System, layout: Layout) -> tuple[str, str, str]:
     if dirty:
         failures.append("git status is not clean: " + "; ".join(dirty[:5]))
     _raise_if(failures, "rollback")
-    return openpilot, opendbc, _read_branch(layout)
+    return openpilot, opendbc, _read_branch(layout), _load_monitor_installer(installer.parent)
 
 
 def rollback(system: System, layout: Layout) -> list[str]:
-    openpilot, opendbc, branch = preflight_rollback(system, layout)
-    _remove_units(system, layout)
+    openpilot, opendbc, branch, monitor = preflight_rollback(system, layout)
+    _remove_units(system, layout, monitor)
     if (layout.repo / LINK_SCRIPT).is_file():
         _require(system, ["sudo", PYTHON, str(layout.repo / LINK_SCRIPT), "down"], "remove the USB gadget")
     if layout.runtime_config.exists():
@@ -546,6 +613,7 @@ def rollback(system: System, layout: Layout) -> list[str]:
         f"opendbc      {opendbc}",
         "runtime cfg  removed",
         "link units   removed, gadget removed",
+        "monitor      units and marker removed",
         f"kept         {layout.key}, {layout.toggle}, logs",
     ]
 
