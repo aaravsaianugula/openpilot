@@ -60,6 +60,10 @@ CONTRACT = {
     "key_file": "/data/vision_long/link.key",
     "toggle_file": "/data/vision_long/braking",
 }
+# Same values as usb_link.py (a test pins them equal). The installer runs from stdin on the
+# base checkout, where usb_link.py does not exist yet, so it cannot import them.
+UDC = "a600000.dwc3"
+GADGET_NAME = "vision_long"
 LINK_OK = 0
 LINK_NO_CARRIER = 3
 RESTART = 'setsid nohup sh -c "sleep 2; sudo systemctl restart comma" >/dev/null 2>&1 </dev/null &'
@@ -87,8 +91,24 @@ class Layout:
         return self.repo / "opendbc_repo"
 
     @property
+    def params(self) -> Path:
+        return self.root / "data/params/d"
+
+    @property
     def disable_updates(self) -> Path:
-        return self.root / "data/params/d/DisableUpdates"
+        return self.params / "DisableUpdates"
+
+    @property
+    def is_offroad(self) -> Path:
+        return self.params / "IsOffroad"
+
+    @property
+    def configfs(self) -> Path:
+        return self.root / "sys/kernel/config"
+
+    @property
+    def udc_class(self) -> Path:
+        return self.root / "sys/class/udc"
 
     @property
     def state(self) -> Path:
@@ -193,7 +213,11 @@ def _write_atomic(path: Path, data: bytes, mode: int) -> None:
         raise
 
 
-def _common_checks(system: System, failures: list[str]) -> None:
+def _common_checks(system: System, layout: Layout, failures: list[str]) -> None:
+    # Both commands restart the comma service, which must never happen while driving.
+    offroad = layout.is_offroad.read_bytes() if layout.is_offroad.is_file() else b""
+    if offroad != b"1":
+        failures.append(f"the car is not offroad (IsOffroad is {offroad!r}); park and turn the ignition off")
     host = system.hostname()
     if host != HOSTNAME:
         failures.append(f"hostname is {host!r}, expected {HOSTNAME!r}")
@@ -201,6 +225,28 @@ def _common_checks(system: System, failures: list[str]) -> None:
         failures.append("an rsync transfer is running; wait for it to finish")
     if system.run(["sudo", "-n", "true"]).code != 0:
         failures.append("sudo needs a password; the link units cannot be installed")
+
+
+def _read_text(path: Path) -> str:
+    return path.read_text().strip() if path.is_file() else ""
+
+
+def link_blocked_reason(layout: Layout) -> str | None:
+    """The same rule as usb_link.blocked_reason: another gadget or driver holds the UDC."""
+    if _read_text(layout.configfs / "usb_gadget" / GADGET_NAME / "UDC") == UDC:
+        return None
+    holder = None
+    gadgets = layout.configfs / "usb_gadget"
+    if gadgets.is_dir():
+        holder = next((g.name for g in sorted(gadgets.iterdir())
+                       if g.name != GADGET_NAME and _read_text(g / "UDC") == UDC), None)
+    if holder is None:
+        function = _read_text(layout.udc_class / UDC / "function")
+        holder = function if function and function != GADGET_NAME else None
+    if holder is None:
+        return None
+    adb = _read_text(layout.params / "AdbEnabled") or "absent"
+    return f"link blocked: {UDC} held by {holder}; AdbEnabled={adb}"
 
 
 def _raise_if(failures: list[str], action: str) -> None:
@@ -242,7 +288,7 @@ def preflight_install(system: System, layout: Layout, shas: Shas) -> str:
         if SHA.fullmatch(value) is None:
             failures.append(f"{name} {value!r} is not a full 40-character commit SHA")
     _raise_if(failures, "install")
-    _common_checks(system, failures)
+    _common_checks(system, layout, failures)
 
     head = _git(system, layout.repo, "rev-parse", "HEAD")
     opendbc_head = _git(system, layout.opendbc, "rev-parse", "HEAD")
@@ -291,6 +337,9 @@ def preflight_install(system: System, layout: Layout, shas: Shas) -> str:
         failures.append(f"{layout.state} exists and is not a directory")
     if layout.key.exists() or layout.key.is_symlink():
         failures.extend(_key_problems(layout.key))
+    blocked = link_blocked_reason(layout)
+    if blocked is not None:
+        failures.append(blocked + " (never taken over; turn ADB off in Developer settings and reboot first)")
     _raise_if(failures, "install")
     return mode
 
@@ -327,16 +376,17 @@ def _provision_state(layout: Layout) -> tuple[str, bool]:
 
 
 def _install_units(system: System, layout: Layout) -> None:
-    # `/` is read-only ext4 on AGNOS; open it only for the copy.
+    # `/` is read-only ext4 on AGNOS. Everything that writes /etc/systemd/system (the unit
+    # files and `enable`'s wants symlink) runs inside the read-write window.
     _require(system, ["sudo", "mount", "-o", "remount,rw", "/"], "remount / read-write")
     try:
         for unit in UNITS:
             _require(system, ["sudo", "install", "-m", "0644", str(layout.repo / UNIT_SOURCE / unit),
                               str(layout.systemd / unit)], "install " + unit)
+        _require(system, ["sudo", "systemctl", "daemon-reload"], "systemctl daemon-reload")
+        _require(system, ["sudo", "systemctl", "enable", TIMER], "enable " + TIMER)
     finally:
         _require(system, ["sudo", "mount", "-o", "remount,ro", "/"], "remount / read-only")
-    _require(system, ["sudo", "systemctl", "daemon-reload"], "systemctl daemon-reload")
-    _require(system, ["sudo", "systemctl", "enable", TIMER], "enable " + TIMER)
     _require(system, ["sudo", "systemctl", "start", TIMER], "start " + TIMER)
     _require(system, ["sudo", "systemctl", "start", SERVICE], "bring up the USB link (" + SERVICE + ")")
 
@@ -345,10 +395,12 @@ def _remove_units(system: System, layout: Layout) -> None:
     present = [unit for unit in UNITS if (layout.systemd / unit).exists()]
     if not present:
         return
-    _require(system, ["sudo", "systemctl", "disable", "--now", TIMER], "disable " + TIMER)
+    _require(system, ["sudo", "systemctl", "stop", TIMER], "stop " + TIMER)
     _require(system, ["sudo", "systemctl", "stop", SERVICE], "stop " + SERVICE)
+    # `disable` removes the wants symlink from /etc, so it belongs inside the read-write window.
     _require(system, ["sudo", "mount", "-o", "remount,rw", "/"], "remount / read-write")
     try:
+        _require(system, ["sudo", "systemctl", "disable", TIMER], "disable " + TIMER)
         for unit in present:
             _require(system, ["sudo", "rm", "-f", str(layout.systemd / unit)], "remove " + unit)
     finally:
@@ -460,7 +512,7 @@ def _checkout_saved(system: System, layout: Layout, sha: str, branch: str) -> No
 
 def preflight_rollback(system: System, layout: Layout) -> tuple[str, str, str]:
     failures: list[str] = []
-    _common_checks(system, failures)
+    _common_checks(system, layout, failures)
     openpilot, opendbc = _read_sha(layout.rollback_openpilot), _read_sha(layout.rollback_opendbc)
     for path, value, repo in ((layout.rollback_openpilot, openpilot, layout.repo),
                               (layout.rollback_opendbc, opendbc, layout.opendbc)):

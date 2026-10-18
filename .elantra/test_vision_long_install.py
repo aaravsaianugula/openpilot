@@ -46,6 +46,8 @@ class FakeComma(inst.System):
         self.guards_code = 0
         self.link = (inst.LINK_NO_CARRIER, "link waiting: usb0 configured but no carrier")
         self.calls: list[list[str]] = []
+        # AGNOS mounts `/` read-only; /etc/systemd/system is writable only between remounts.
+        self.root_writable = False
 
     def hostname(self) -> str:
         return self.host
@@ -70,11 +72,23 @@ class FakeComma(inst.System):
             return ok if self.sudo_ok else inst.Result(1, "", "a password is required")
         if argv[0] == "git":
             return self._git(Path(argv[2]), argv[3:])
+        if argv[:3] == ["sudo", "mount", "-o"] and argv[4] == "/":
+            self.root_writable = argv[3] == "remount,rw"
+            return ok
+        if self._writes_etc(argv) and not self.root_writable:
+            return inst.Result(1, "", "Read-only file system")
         if argv[:2] == ["sudo", "install"]:
             shutil.copyfile(argv[4], argv[5])
             return ok
         if argv[:3] == ["sudo", "rm", "-f"]:
             Path(argv[3]).unlink(missing_ok=True)
+            return ok
+        if argv[:3] == ["sudo", "systemctl", "enable"]:
+            self.wants(argv[3]).parent.mkdir(exist_ok=True)
+            self.wants(argv[3]).write_text(argv[3])
+            return ok
+        if argv[:3] == ["sudo", "systemctl", "disable"]:
+            self.wants(argv[3]).unlink(missing_ok=True)
             return ok
         if argv[0] == inst.PYTHON and argv[1] == ".elantra/guards.py":
             return inst.Result(self.guards_code, "PASSED" if self.guards_code == 0 else "FAILED: torque", "")
@@ -83,6 +97,14 @@ class FakeComma(inst.System):
         if argv[0] == inst.PYTHON and argv[-1] == "check":
             return inst.Result(self.link[0], self.link[1] + "\n", "")
         return ok
+
+    def wants(self, unit: str) -> Path:
+        return self.layout.systemd / "timers.target.wants" / unit
+
+    def _writes_etc(self, argv: list[str]) -> bool:
+        if argv[:3] in (["sudo", "systemctl", "enable"], ["sudo", "systemctl", "disable"]):
+            return True
+        return argv[:2] in (["sudo", "install"], ["sudo", "rm"]) and str(self.layout.systemd) in argv[-1]
 
     def _git(self, repo: Path, args: list[str]) -> inst.Result:
         opendbc = repo == self.layout.opendbc
@@ -134,6 +156,7 @@ class InstallerTests(unittest.TestCase):
         self.layout.opendbc.mkdir(parents=True)
         self.layout.disable_updates.parent.mkdir(parents=True)
         self.layout.disable_updates.write_bytes(b"1")
+        self.layout.is_offroad.write_bytes(b"1")
         self.layout.systemd.mkdir(parents=True)
         self.comma = FakeComma(self.layout)
 
@@ -218,6 +241,35 @@ class InstallerTests(unittest.TestCase):
         self.comma.head, self.comma.opendbc_head = TARGET_OP, TARGET_DBC
         self.assert_refused_without_change("rollback SHAs")
 
+    def test_an_onroad_car_is_refused(self):
+        self.layout.is_offroad.write_bytes(b"0")
+        self.assert_refused_without_change("offroad")
+        self.layout.is_offroad.unlink()
+        self.assert_refused_without_change("offroad")
+
+    def test_a_udc_held_by_adb_is_refused_and_never_taken(self):
+        held = self.layout.configfs / "usb_gadget" / "g1"
+        held.mkdir(parents=True)
+        (held / "UDC").write_text(inst.UDC + "\n")
+        (self.layout.disable_updates.parent / "AdbEnabled").write_bytes(b"1")
+        self.assert_refused_without_change("link blocked: a600000.dwc3 held by g1; AdbEnabled=1")
+        self.assertEqual((held / "UDC").read_text(), inst.UDC + "\n")
+
+    def test_a_udc_bound_outside_configfs_is_refused(self):
+        udc = self.layout.udc_class / inst.UDC
+        udc.mkdir(parents=True)
+        (udc / "function").write_text("android_usb\n")
+        self.assert_refused_without_change("held by android_usb; AdbEnabled=absent")
+
+    def test_our_own_bound_gadget_does_not_block_a_rerun(self):
+        inst.install(self.comma, self.layout, SHAS)
+        ours = self.layout.configfs / "usb_gadget" / inst.GADGET_NAME
+        ours.mkdir(parents=True)
+        (ours / "UDC").write_text(inst.UDC + "\n")
+        (self.layout.udc_class / inst.UDC).mkdir(parents=True)
+        (self.layout.udc_class / inst.UDC / "function").write_text(inst.GADGET_NAME + "\n")
+        self.assertIn("mode         rerun", inst.install(self.comma, self.layout, SHAS))
+
     # --- install ------------------------------------------------------------------------------
 
     def test_a_fresh_install_provisions_everything_and_restarts_last(self):
@@ -232,7 +284,8 @@ class InstallerTests(unittest.TestCase):
             self.assertTrue((self.layout.systemd / unit).is_file())
         self.assertEqual(self.comma.calls[-1], ["sh", "-c", inst.RESTART])
         self.assertTrue(any(line.startswith("link key") and "sha256" in line for line in receipt))
-        self.assertIn(["sudo", "systemctl", "enable", inst.TIMER], self.comma.calls)
+        self.assertTrue(self.comma.wants(inst.TIMER).is_file(), "the timer must be enabled while / is writable")
+        self.assertFalse(self.comma.root_writable, "/ must be read-only again")
 
     def test_an_existing_key_and_toggle_are_kept_byte_for_byte(self):
         self.layout.state.mkdir(parents=True)
@@ -291,6 +344,17 @@ class InstallerTests(unittest.TestCase):
         self.assertIn(["sudo", inst.PYTHON, str(self.layout.repo / inst.LINK_SCRIPT), "down"], self.comma.calls)
         self.assertEqual(self.comma.calls[-1], ["sh", "-c", inst.RESTART])
         self.assertFalse(any("pkill" in " ".join(c) for c in self.comma.calls))
+        self.assertFalse(self.comma.wants(inst.TIMER).exists(), "the timer must be disabled while / is writable")
+        self.assertFalse(self.comma.root_writable)
+
+    def test_rollback_refuses_an_onroad_car(self):
+        inst.install(self.comma, self.layout, SHAS)
+        self.layout.is_offroad.write_bytes(b"0")
+        before = len(self.comma.mutations())
+        with self.assertRaisesRegex(inst.InstallError, "offroad"):
+            inst.rollback(self.comma, self.layout)
+        self.assertEqual(len(self.comma.mutations()), before)
+        self.assertTrue((self.layout.systemd / inst.TIMER).is_file())
 
     def test_rollback_without_saved_shas_changes_nothing(self):
         before = snapshot(self.layout.root)
@@ -305,6 +369,14 @@ class InstallerTests(unittest.TestCase):
         self.comma.head = BASE_OP  # `git checkout master` lands on the saved SHA
         inst.rollback(self.comma, self.layout)
         self.assertIn(["git", "-C", str(self.layout.repo), "checkout", "-q", "master"], self.comma.calls)
+
+
+class AgreementTests(unittest.TestCase):
+    def test_the_installer_and_the_link_name_the_same_udc_and_gadget(self):
+        # The installer runs from stdin on the base checkout, so it cannot import usb_link.
+        sys.path.insert(0, str(HERE / "vision_long_link"))
+        import usb_link
+        self.assertEqual((inst.UDC, inst.GADGET_NAME), (usb_link.UDC, usb_link.GADGET_NAME))
 
 
 class TemplateTests(unittest.TestCase):

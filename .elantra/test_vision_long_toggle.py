@@ -16,6 +16,7 @@ import importlib.util
 import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 MODULE = (Path(__file__).resolve().parent.parent
@@ -97,6 +98,30 @@ class BrakingToggleFileTests(unittest.TestCase):
         with self.assertRaises(OSError):
             pm.set_braking(False, blocker / "braking")
         self.assertTrue(pm.braking_enabled(self.state))
+
+    def test_apply_reports_a_clean_switch_with_no_note(self):
+        self.assertEqual(pm.apply_braking(True, self.state), (True, ""))
+        self.assertEqual(pm.apply_braking(False, self.state), (False, ""))
+
+    def test_apply_reports_a_failed_write_as_not_saved_and_the_old_state(self):
+        self.state.parent.mkdir(parents=True)
+        self.state.write_bytes(b"1")
+        blocker = self.root / "not_a_dir"
+        blocker.write_bytes(b"x")
+        stored, note = pm.apply_braking(False, blocker / "braking")
+        self.assertFalse(stored)
+        self.assertTrue(note.startswith("not saved: "), note)
+
+    def test_apply_reports_a_stored_state_when_only_the_folder_flush_failed(self):
+        # The rename landed, so the companion already sees the new state: saying "not saved"
+        # would tell the driver the opposite of what the car is doing.
+        def flush_fails(folder):
+            raise OSError(5, "Input/output error")
+        with mock.patch.object(pm, "_sync_directory", flush_fails):
+            stored, note = pm.apply_braking(True, self.state)
+        self.assertTrue(stored)
+        self.assertTrue(pm.braking_enabled(self.state))
+        self.assertTrue(note.startswith("saved, flush failed: "), note)
 
     def test_the_summary_says_what_each_state_does(self):
         self.assertIn("watch", pm.braking_summary(False))

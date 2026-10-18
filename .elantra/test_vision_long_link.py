@@ -64,8 +64,11 @@ class LinkTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         base = Path(self._tmp.name)
-        self.paths = usb_link.Paths(configfs=base / "config", udc_class=base / "udc", net=base / "net")
+        self.paths = usb_link.Paths(configfs=base / "config", udc_class=base / "udc", net=base / "net",
+                                    params=base / "params")
         (self.paths.configfs / "usb_gadget").mkdir(parents=True)
+        self.paths.params.mkdir()
+        self.log = base / "vision_long" / "link.log"
         for udc in (UDC, "a800000.dwc3"):
             (self.paths.udc_class / udc).mkdir(parents=True)
         self.gadget = self.paths.configfs / "usb_gadget" / usb_link.GADGET_NAME
@@ -120,7 +123,8 @@ class LinkTests(unittest.TestCase):
         other.mkdir()
         (other / "UDC").write_text(UDC + "\n")
         ip = FakeIp()
-        with self.assertRaisesRegex(usb_link.LinkError, "bound to another gadget: g1"):
+        (self.paths.params / "AdbEnabled").write_bytes(b"1")
+        with self.assertRaisesRegex(usb_link.LinkError, "link blocked: a600000.dwc3 held by g1; AdbEnabled=1"):
             self.bring_up(ip)
         self.assertFalse(self.gadget.exists())
         self.assertEqual((other / "UDC").read_text(), UDC + "\n")
@@ -137,7 +141,7 @@ class LinkTests(unittest.TestCase):
 
     def test_missing_configfs_or_udc_fails_with_the_cause(self):
         missing = usb_link.Paths(configfs=self.paths.configfs / "nope", udc_class=self.paths.udc_class,
-                                 net=self.paths.net)
+                                 net=self.paths.net, params=self.paths.params)
         with self.assertRaisesRegex(usb_link.LinkError, "configfs"):
             usb_link.bring_up(missing, FakeIp(), nmcli_present=True, link=link_marker)
         (self.paths.udc_class / UDC).rmdir()
@@ -190,6 +194,73 @@ class LinkTests(unittest.TestCase):
         self.assertFalse(self.gadget.exists())
         self.assertEqual((other / "UDC").read_text(), "a800000.dwc3" + chr(10))
         usb_link.teardown(self.paths, remove_dir=configfs_rmdir)
+
+    # --- a UDC someone else holds (AGNOS ADB, or anything else) -------------------------------
+
+    def hold_with(self, name: str, adb: bytes | None) -> Path:
+        holder = self.paths.configfs / "usb_gadget" / name
+        holder.mkdir()
+        (holder / "UDC").write_text(UDC + "\n")
+        if adb is not None:
+            (self.paths.params / "AdbEnabled").write_bytes(adb)
+        return holder
+
+    def test_check_names_the_gadget_holding_the_udc_and_the_adb_setting(self):
+        self.hold_with("g1", b"0")
+        self.assertEqual(usb_link.check(self.paths, FakeIp()),
+                         (usb_link.CHECK_FAILED, "link blocked: a600000.dwc3 held by g1; AdbEnabled=0"))
+
+    def test_a_udc_bound_outside_configfs_is_seen_and_left_alone(self):
+        (self.paths.udc_class / UDC / "function").write_text("android_usb\n")
+        self.assertEqual(usb_link.check(self.paths, FakeIp())[1],
+                         "link blocked: a600000.dwc3 held by android_usb; AdbEnabled=absent")
+        ip = FakeIp()
+        with self.assertRaisesRegex(usb_link.LinkError, "held by android_usb"):
+            self.bring_up(ip)
+        self.assertFalse(self.gadget.exists())
+        self.assertEqual(ip.calls, [])
+
+    def test_our_own_bound_gadget_is_not_a_holder(self):
+        self.kernel_assigns_interface()
+        self.bring_up(FakeIp())
+        (self.paths.udc_class / UDC / "function").write_text(usb_link.GADGET_NAME + "\n")
+        self.assertEqual(usb_link.check(self.paths, FakeIp(["192.168.250.1/24"]))[0], usb_link.CHECK_OK)
+
+    # --- the log a 30 s timer appends to ----------------------------------------------------
+
+    def execute(self, max_bytes: int = usb_link.LOG_MAX_BYTES) -> int:
+        return usb_link.execute("up", self.paths, self.log, FakeIp(), nmcli_present=False, link=link_marker,
+                                max_bytes=max_bytes)
+
+    def test_a_persistent_failure_is_logged_once_as_one_line(self):
+        self.hold_with("g1", b"1")
+        for _ in range(3):
+            self.assertEqual(self.execute(), usb_link.CHECK_FAILED)
+        lines = self.log.read_text().splitlines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("link blocked: a600000.dwc3 held by g1; AdbEnabled=1", lines[0])
+        self.assertNotIn("Traceback", self.log.read_text())
+
+    def test_a_changed_reason_is_logged_again(self):
+        self.hold_with("g1", b"1")
+        self.execute()
+        (self.paths.params / "AdbEnabled").write_bytes(b"0")
+        self.execute()
+        self.execute()
+        lines = self.log.read_text().splitlines()
+        self.assertEqual(len(lines), 2, lines)
+        self.assertIn("AdbEnabled=0", lines[1])
+
+    def test_the_log_is_capped(self):
+        self.hold_with("g1", b"1")
+        cap = 400
+        for attempt in range(60):
+            (self.paths.params / "AdbEnabled").write_bytes(str(attempt).encode())
+            self.execute(max_bytes=cap)
+        logs = sorted(p.name for p in self.log.parent.glob("link.log*"))
+        self.assertEqual(logs, ["link.log", "link.log.1"])
+        for name in logs:
+            self.assertLessEqual((self.log.parent / name).stat().st_size, cap)
 
 
 if __name__ == "__main__":

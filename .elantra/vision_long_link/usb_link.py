@@ -22,6 +22,7 @@ what lets a systemd timer re-assert it after a cable re-plug or an address flush
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import os
 import shutil
 import subprocess
@@ -53,6 +54,12 @@ ADDRESS = "192.168.250.1"
 PREFIX = "24"
 IFF_UP = 0x1
 LOG_FILE = Path("/data/vision_long/link.log")
+# /data runs ~90% full and the timer reruns this every 30 s: the log is capped at two files of
+# this size, and an outcome is written only when it differs from the last one.
+LOG_MAX_BYTES = 256 * 1024
+LOG_BACKUPS = 1
+LOGGER = "vision_long_link"
+log = logging.getLogger(LOGGER)
 
 CHECK_OK = 0
 CHECK_FAILED = 1
@@ -70,6 +77,7 @@ class Paths:
     configfs: Path = Path("/sys/kernel/config")
     udc_class: Path = Path("/sys/class/udc")
     net: Path = Path("/sys/class/net")
+    params: Path = Path("/data/params/d")
 
     @property
     def gadgets(self) -> Path:
@@ -102,20 +110,34 @@ def _read(path: Path) -> str:
 def _write(path: Path, value: str) -> None:
     if _read(path) != value:
         path.write_text(value + "\n")
-        logging.info("wrote %s = %s", path, value)
+        log.info("wrote %s = %s", path, value)
 
 
 def _mkdir(path: Path) -> None:
     if not path.is_dir():
         path.mkdir()
-        logging.info("created %s", path)
+        log.info("created %s", path)
 
 
-def _bound_elsewhere(paths: Paths) -> str | None:
-    for gadget in sorted(paths.gadgets.iterdir()):
-        if gadget.name != GADGET_NAME and _read(gadget / "UDC") == UDC:
-            return gadget.name
-    return None
+def udc_holder(paths: Paths) -> str | None:
+    """Whatever else holds the UDC: another configfs gadget (AGNOS ADB is one), or a gadget
+    driver bound outside configfs, which the UDC's own `function` attribute names."""
+    if _read(paths.gadget / "UDC") == UDC:
+        return None
+    if paths.gadgets.is_dir():
+        for gadget in sorted(paths.gadgets.iterdir()):
+            if gadget.name != GADGET_NAME and _read(gadget / "UDC") == UDC:
+                return gadget.name
+    function = _read(paths.udc_class / UDC / "function")
+    return function if function and function != GADGET_NAME else None
+
+
+def blocked_reason(paths: Paths) -> str | None:
+    holder = udc_holder(paths)
+    if holder is None:
+        return None
+    adb = _read(paths.params / "AdbEnabled") or "absent"
+    return f"link blocked: {UDC} held by {holder}; AdbEnabled={adb}"
 
 
 def _configure(paths: Paths, link: Callable[[Path, Path], None]) -> None:
@@ -144,7 +166,7 @@ def _configure(paths: Paths, link: Callable[[Path, Path], None]) -> None:
     member = paths.config / FUNCTION
     if not member.exists() and not member.is_symlink():
         link(paths.function, member)
-        logging.info("linked %s into %s", FUNCTION, CONFIG)
+        log.info("linked %s into %s", FUNCTION, CONFIG)
 
 
 def _addresses(interface: str, run: Runner) -> set[str]:
@@ -171,9 +193,9 @@ def bring_up(paths: Paths, run: Runner, nmcli_present: bool,
         raise LinkError(f"configfs is not mounted: {paths.gadgets} is missing")
     if not (paths.udc_class / UDC).exists():
         raise LinkError(f"UDC {UDC} is not present in {paths.udc_class}")
-    other = _bound_elsewhere(paths)
-    if other is not None:
-        raise LinkError(f"UDC {UDC} is bound to another gadget: {other}; not touching it")
+    blocked = blocked_reason(paths)
+    if blocked is not None:
+        raise LinkError(blocked)
     if _read(paths.gadget / "UDC") != UDC:
         _configure(paths, link)
         _write(paths.gadget / "UDC", UDC)
@@ -183,12 +205,15 @@ def bring_up(paths: Paths, run: Runner, nmcli_present: bool,
         run(["nmcli", "device", "set", interface, "managed", "no"])
     if f"{ADDRESS}/{PREFIX}" not in _addresses(interface, run):
         run(["ip", "addr", "add", f"{ADDRESS}/{PREFIX}", "dev", interface])
-        logging.info("addressed %s with %s/%s", interface, ADDRESS, PREFIX)
+        log.info("addressed %s with %s/%s", interface, ADDRESS, PREFIX)
     run(["ip", "link", "set", interface, "up"])
     return interface
 
 
 def check(paths: Paths, run: Runner) -> tuple[int, str]:
+    blocked = blocked_reason(paths)
+    if blocked is not None:
+        return CHECK_FAILED, blocked
     if not paths.function.is_dir():
         return CHECK_FAILED, f"link failed: gadget {GADGET_NAME} is not configured"
     if _read(paths.gadget / "UDC") != UDC:
@@ -214,7 +239,7 @@ def teardown(paths: Paths, remove_dir: Callable[[Path], None] = os.rmdir) -> Non
         return
     if _read(gadget / "UDC"):
         (gadget / "UDC").write_text("\n")
-        logging.info("unbound %s", GADGET_NAME)
+        log.info("unbound %s", GADGET_NAME)
     member = paths.config / FUNCTION
     if member.is_symlink() or member.exists():
         member.unlink()
@@ -223,7 +248,46 @@ def teardown(paths: Paths, remove_dir: Callable[[Path], None] = os.rmdir) -> Non
         if directory.is_dir():
             remove_dir(directory)
     remove_dir(gadget)
-    logging.info("removed gadget %s", GADGET_NAME)
+    log.info("removed gadget %s", GADGET_NAME)
+
+
+def _log_outcome(log_file: Path, outcome: str) -> None:
+    """Write the outcome line only when it differs from the last one written."""
+    last = log_file.with_suffix(".last")
+    if _read(last) == outcome:
+        return
+    log.info("%s", outcome)
+    last.write_text(outcome + "\n")
+
+
+def execute(command: str, paths: Paths, log_file: Path, run: Runner, nmcli_present: bool,
+            link: Callable[[Path, Path], None] = os.symlink, remove_dir: Callable[[Path], None] = os.rmdir,
+            max_bytes: int = LOG_MAX_BYTES) -> int:
+    """Run `up` or `down`, logging steps taken and the outcome as one line each."""
+    log_file.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(log_file, maxBytes=max_bytes, backupCount=LOG_BACKUPS)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    log.propagate = False
+    try:
+        try:
+            if command == "up":
+                bring_up(paths, run, nmcli_present, link)
+                code, outcome = check(paths, run)
+            else:
+                teardown(paths, remove_dir)
+                code, outcome = CHECK_OK, f"gadget {GADGET_NAME} removed"
+        except (LinkError, OSError) as error:
+            code, outcome = CHECK_FAILED, " ".join(str(error).split())
+            if not outcome.startswith("link "):
+                outcome = f"link failed: {outcome}"
+        _log_outcome(log_file, outcome)
+    finally:
+        log.removeHandler(handler)
+        handler.close()
+    print(outcome, file=sys.stderr if code == CHECK_FAILED else sys.stdout)
+    return code
 
 
 def main(argv: list[str]) -> int:
@@ -235,20 +299,7 @@ def main(argv: list[str]) -> int:
         code, text = check(paths, run_command)
         print(text)
         return code
-    LOG_FILE.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
-    logging.basicConfig(filename=LOG_FILE, level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    try:
-        if argv[1] == "up":
-            bring_up(paths, run_command, nmcli_present=shutil.which("nmcli") is not None)
-            print(check(paths, run_command)[1])
-        else:
-            teardown(paths)
-            print(f"gadget {GADGET_NAME} removed")
-    except (LinkError, OSError) as error:
-        logging.exception("%s failed", argv[1])
-        print(f"link failed: {error}", file=sys.stderr)
-        return CHECK_FAILED
-    return CHECK_OK
+    return execute(argv[1], paths, LOG_FILE, run_command, nmcli_present=shutil.which("nmcli") is not None)
 
 
 if __name__ == "__main__":

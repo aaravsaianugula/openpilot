@@ -28,7 +28,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigParamControl, BigToggle, GreyBigButton
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog
 from openpilot.selfdrive.ui.sunnypilot.mici.layouts.port_manifest import (
-  age, braking_enabled, braking_summary, install_offered, load_manifest, set_braking, update_blocked,
+  age, apply_braking, braking_enabled, braking_summary, install_offered, load_manifest, update_blocked,
 )
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import FontWeight, gui_app
@@ -147,15 +147,12 @@ class VisionLongBrakingToggle(BigToggle):
       self._refresh()
 
   def _on_toggle(self, checked: bool):
-    try:
-      set_braking(checked)
-    except OSError as error:
-      # Shown on the toggle until the next successful switch; the pill re-reads the file, so
-      # it keeps showing the state the companion actually sees.
-      cloudlog.exception("vision long braking toggle write failed")
-      self._write_error = tr("not saved: {}").format(error.strerror or type(error).__name__)
-    else:
-      self._write_error = ""
+    # The note stays on the toggle until the next clean switch; the pill re-reads the file, so
+    # it always shows the state the companion actually sees.
+    _stored, note = apply_braking(checked)
+    if note:
+      cloudlog.error(f"vision long braking toggle: {note}")
+    self._write_error = tr(note) if note else ""
     self._refresh()
 
 

@@ -116,11 +116,16 @@ def braking_enabled(path: str | os.PathLike[str] = VISION_LONG_BRAKING_FILE) -> 
     return content == BRAKING_ON
 
 
+class BrakingFlushError(OSError):
+    """The new state is in place (the rename landed) but flushing its folder failed."""
+
+
 def set_braking(enabled: bool, path: str | os.PathLike[str] = VISION_LONG_BRAKING_FILE) -> None:
     """Write the state atomically: a temporary file in the same folder, then a rename.
 
-    A reader sees either the old complete file or the new one, never a partial write. Any
-    failure raises; the previous state is left exactly as it was.
+    A reader sees either the old complete file or the new one, never a partial write. A
+    failure before the rename leaves the previous state; a failure flushing the folder after
+    it raises BrakingFlushError with the new state already in place.
     """
     target = os.fspath(path)
     folder = os.path.dirname(target)
@@ -137,13 +142,37 @@ def set_braking(enabled: bool, path: str | os.PathLike[str] = VISION_LONG_BRAKIN
         if os.path.exists(temporary):
             os.unlink(temporary)
         raise
-    if hasattr(os, "O_DIRECTORY"):
-        # Persist the rename itself, so the state survives the car losing power right after.
-        directory = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+    try:
+        _sync_directory(folder)
+    except OSError as error:
+        raise BrakingFlushError(error.errno, error.strerror) from error
+
+
+def _sync_directory(folder: str) -> None:
+    """Persist the rename itself, so the state survives the car losing power right after."""
+    if not hasattr(os, "O_DIRECTORY"):
+        return  # Windows, where the tests run, cannot open a directory for fsync.
+    directory = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def apply_braking(enabled: bool, path: str | os.PathLike[str] = VISION_LONG_BRAKING_FILE) -> tuple[bool, str]:
+    """Switch braking and report what is actually stored, plus a note when something failed.
+
+    The note is empty on a clean write, "saved, flush failed: ..." when the rename landed but the
+    folder flush did not, and "not saved: ..." when the write never landed. The returned state
+    is always read back from the file, never assumed from the request.
+    """
+    try:
+        set_braking(enabled, path)
+    except BrakingFlushError as error:
+        return braking_enabled(path), "saved, flush failed: " + (error.strerror or type(error).__name__)
+    except OSError as error:
+        return braking_enabled(path), "not saved: " + (error.strerror or type(error).__name__)
+    return braking_enabled(path), ""
 
 
 def braking_summary(enabled: bool) -> str:
