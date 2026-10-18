@@ -464,6 +464,14 @@ class NativeScc12Consumer:
             self.offer_packet(cycle.packet)
         self._pending = cycle
 
+    def settle_return_faults(self, now_ns: int) -> None:
+        """Trusted bridge only: retain counted return faults before session retirement."""
+        if type(now_ns) is not int or not 0 <= now_ns < 2**63:
+            raise ValueError("Actual native monotonic timestamp required")
+        self._absorb_gate_fault()
+        if self.fault_reason is None:
+            self._fold_unauthenticated(now_ns)
+
     def begin_cycle(
         self, now_ns: int, *, long_active: bool, driver_override: bool, standstill: bool
     ) -> _FinalScc12Boundary | None:

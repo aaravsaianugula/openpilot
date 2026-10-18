@@ -101,23 +101,24 @@ class NativeReturnBridge:
         self._last_now = -1
         self.status = "awaiting_session"
 
-    def _put(self, event: tuple) -> None:
+    def _put(self, event: tuple) -> bool:
         with self._lock:
             if self._overflow:
-                return
+                return False
             if len(self._events) == self.capacity:
                 self._events.clear()
                 self._overflow = True
-                return
+                return False
             self._events.append(event)
+            return True
 
-    def open_session(self, session_id: str, camera_clock_id: str) -> None:
+    def open_session(self, session_id: str, camera_clock_id: str) -> bool:
         # UUID/session syntax is checked by the authenticated transport handshake.
-        self._put(("open", session_id, camera_clock_id))
+        return self._put(("open", session_id, camera_clock_id))
 
     def dispatch(
         self, session_id: str, input_sequence: int, cameras: tuple[CameraReference, ...], dispatched_ns: int
-    ) -> None:
+    ) -> bool:
         if (
             type(input_sequence) is not int
             or input_sequence < 1
@@ -128,16 +129,16 @@ class NativeReturnBridge:
             or any(not isinstance(item, CameraReference) for item in cameras)
         ):
             raise ValueError("invalid_native_camera_dispatch")
-        self._put(("dispatch", session_id, input_sequence, cameras, dispatched_ns))
+        return self._put(("dispatch", session_id, input_sequence, cameras, dispatched_ns))
 
-    def return_packet(self, session_id: str, packet: bytes) -> None:
+    def return_packet(self, session_id: str, packet: bytes) -> bool:
         if type(packet) is not bytes or not 0 < len(packet) <= 16384:
             raise ValueError("bounded_signed_proposal_required")
         self.last_return_ns = time.monotonic_ns()
-        self._put(("return", session_id, packet))
+        return self._put(("return", session_id, packet))
 
-    def close_session(self, session_id: str) -> None:
-        self._put(("close", session_id))
+    def close_session(self, session_id: str) -> bool:
+        return self._put(("close", session_id))
 
     @property
     def latched_fault(self) -> str | None:
@@ -276,6 +277,9 @@ class NativeReturnBridge:
                     # Every return is offered in arrival order; the consumer stages it
                     # strictly by authenticated sequence and counts unknown bytes.
                     self._consumer.offer_packet(event[2])
+                    # Fold on the validated parent cycle clock before a queued close/open
+                    # can retire this consumer. The existing count/window/latch is unchanged.
+                    self._consumer.settle_return_faults(now_ns)
             if self._consumer is not None:
                 fault = self._consumer.fault_reason
                 if fault is not None:

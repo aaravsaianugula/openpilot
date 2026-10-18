@@ -14,6 +14,7 @@ import importlib.util
 import ipaddress
 import json
 import logging
+import os
 import re
 import sys
 import time
@@ -193,11 +194,16 @@ class NativeBinding:
 
         ``now_ns`` must come from ``cycle_now`` (the camera clock domain), never card's now_nanos.
         """
-        if self.stopped or (self.worker is not None and not self.worker.is_alive):
+        if self.stopped:
             self.last_status = "native_publisher_stopped"
             return None
         try:
             consumer = self.bridge.stage_cycle(now_ns)
+            if self.worker is not None and not self.worker.is_alive:
+                # Still fold parent-queued return faults/close on this actual
+                # controller clock while the observer is down. Never expose a cap.
+                self.last_status = "native_publisher_stopped"
+                return None
             self.last_status = self.bridge.status
             return consumer
         except Exception as error:
@@ -302,9 +308,8 @@ def start_native_runtime(controller: NativeController, config_path: Path) -> Nat
     spec = importlib.util.find_spec("vision_long_publisher")
     if spec is None or spec.origin is None or Path(spec.origin).resolve() != publisher_root / "__init__.py":
         raise RuntimeError("native_publisher_package_unavailable")
-    from vision_long_publisher.comma_context_publisher import (  # type: ignore[import-not-found]  # Device-only package.
-        start_embedded_publisher,
-    )
+    from vision_long.device_applied import DRIVES_ROOT, STATUS_FILE
+    from vision_long.observer_supervisor import IsolatedPublisher
 
     if not hasattr(controller, "vision_long_bridge"):
         raise ValueError("reviewed_native_bootstrap_hook_required")
@@ -313,7 +318,24 @@ def start_native_runtime(controller: NativeController, config_path: Path) -> Nat
     try:
         provider = AuthorityProvider(key, ROAD_BUILD_ID, boot_id, boottime_ns, toggle.enabled)
         bridge = provider.bridge()
-        worker = start_embedded_publisher(bridge, listen_ip=config["listen_ip"], port=config["port"], key=key)
+        child_env = os.environ.copy()
+        child_env["PYTHONPATH"] = str(publisher_root.parent) + os.pathsep + child_env.get("PYTHONPATH", "")
+        worker = IsolatedPublisher(
+            bridge,
+            command=[sys.executable, "-m", "vision_long_publisher.comma_observer"],
+            boot_id=boot_id,
+            build_id=ROAD_BUILD_ID,
+            clock=boottime_ns,
+            configuration={
+                "listen_ip": config["listen_ip"],
+                "port": config["port"],
+                "key_hex": key.hex(),
+                "drives_root": DRIVES_ROOT,
+                "status_path": STATUS_FILE,
+            },
+            cwd=str(publisher_root.parent),
+            env=child_env,
+        )
     except BaseException:
         toggle.stop()  # Nothing is bound: no reader thread outlives a failed start.
         raise

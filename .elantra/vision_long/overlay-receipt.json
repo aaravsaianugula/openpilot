@@ -25,17 +25,20 @@
     ".elantra/vision_long/control_authority.py": "70d6326e113796a94c1c479792d1352392079738968c4f1e68e9756f9f1e56c3",
     ".elantra/vision_long/device_applied.py": "75fe77f2991586932c79d6ece42b6207667a1e7ed47b6390aa36680c566d5c58",
     ".elantra/vision_long/integration.py": "b04ada8b8fa341ca9f8fb4051f1f0d0ebba8bad1a41ab1b61212d452a7683be0",
-    ".elantra/vision_long/native_bootstrap.py": "7eec47d403455f87c8b209c5fe4189961558b68f743234cc859c944c3b8653cf",
-    ".elantra/vision_long/native_bridge.py": "3648fa9f1ad9ce87dd4cd13feeb4433298c0a68ffb8ac0e4ac73e7ecc14d697b",
-    ".elantra/vision_long/native_consumer.py": "b8971a2f83c8863caa286c08ced5793504078e441bd740144e5ebc76bcd8fc9e",
+    ".elantra/vision_long/native_bootstrap.py": "5dc941a789013848831dad236dfe715cf3631696b58990990952cbd68555f103",
+    ".elantra/vision_long/native_bridge.py": "76d38c099ff365fc7110d93f6772ee3a7b4e10edec354412a9319cc109a759a7",
+    ".elantra/vision_long/native_consumer.py": "c450117acad8f5aa9d8517aaa4948cf5c1cef8b5d3f674c9389d91a5a9d20377",
     ".elantra/vision_long/native_context.py": "8501d04b6ae625cbdfcfffa2ee9a1244477ea46ef2d97858beda974fc058dcff",
+    ".elantra/vision_long/observer_ipc.py": "e8ec2f1dd80b89ab589b0bbcbbec06636c0b42007a7300590ff43b09270fb070",
+    ".elantra/vision_long/observer_supervisor.py": "9885035a5135c265e14add2f53a314b049acdd47205d57a5e4451f64bf32cffa",
     ".elantra/vision_long/transport.py": "a66b8b342fb862685450931279cb1739168b7ea16b081818e69e8e35f8a920e4",
     ".elantra/vision_long_publisher/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    ".elantra/vision_long_publisher/comma_context_publisher.py": "0485ae618964fc1be86cbc575218c658eaa04f07d2e17501c758751f18a46ed8",
+    ".elantra/vision_long_publisher/comma_context_publisher.py": "bda3d389b9c753dcdc1402048e19c4be161dd012671e6edb24ab7b553701d605",
+    ".elantra/vision_long_publisher/comma_observer.py": "702ff57dcb7bc7f1bbcfb64569b9579b739c1be973fee307abafdcf4434e925d",
     ".elantra/vision_long_publisher/extract_camera_context.py": "289ab07cfd7713ac293564910b83707711d46630b9af27aa5e35b50fdc879510",
     ".elantra/vision_long_publisher/extract_companion_context.py": "75555bb3a96eeb8bf82078c4c75e562176a78209208245863507c812b27f7f83",
     ".elantra/vision_long_publisher/extract_projection_height.py": "623d529c651e06b9a62f81004c447b02a3d4a6792d8a1f708d83f793e0de1800",
-    ".elantra/vision_long_publisher/native_source_identity.py": "92197508db86d433f05d5005028d029f2e76063b7abc15646d566025a9340f8d",
+    ".elantra/vision_long_publisher/native_source_identity.py": "87a7998f3e1e947d538270c5f9d928baf9c13e4c2236f8e5fa27479c6448d90d",
     "native-overlay.patch": "ccd31278394d8b027c296f80875c9eb5ae01281c5aeef0b48da601028244e2c0",
     "LICENSE-opendbc": "6543c4a66b46affddae1b9ae1e1992687f0b7191e74ba3a7235388b9f42a6d13"
   },
@@ -71,11 +74,18 @@
       "relative_imports": []
     },
     "comma_context_publisher.py": {
-      "source_sha256": "cf8fa7415a68911fca327b402263acf2c4044915ca1fd1d210faefa46e8e8931",
-      "exported_sha256": "0485ae618964fc1be86cbc575218c658eaa04f07d2e17501c758751f18a46ed8",
+      "source_sha256": "cc678f7947f734daeb68f5b4adc5e82768adb1140eab04c5cb234df20d8a7178",
+      "exported_sha256": "bda3d389b9c753dcdc1402048e19c4be161dd012671e6edb24ab7b553701d605",
       "relative_imports": [
         "from tools.extract_companion_context import",
         "from tools.native_source_identity import"
+      ]
+    },
+    "comma_observer.py": {
+      "source_sha256": "0f249376476f4e59fa304522215e3bf3e3f72bccd4dad43fd6fcfefc2f183801",
+      "exported_sha256": "702ff57dcb7bc7f1bbcfb64569b9579b739c1be973fee307abafdcf4434e925d",
+      "relative_imports": [
+        "from tools.comma_context_publisher import"
       ]
     },
     "extract_camera_context.py": {
@@ -97,8 +107,8 @@
       "relative_imports": []
     },
     "native_source_identity.py": {
-      "source_sha256": "92197508db86d433f05d5005028d029f2e76063b7abc15646d566025a9340f8d",
-      "exported_sha256": "92197508db86d433f05d5005028d029f2e76063b7abc15646d566025a9340f8d",
+      "source_sha256": "87a7998f3e1e947d538270c5f9d928baf9c13e4c2236f8e5fa27479c6448d90d",
+      "exported_sha256": "87a7998f3e1e947d538270c5f9d928baf9c13e4c2236f8e5fa27479c6448d90d",
       "relative_imports": []
     }
   },

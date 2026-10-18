@@ -46,6 +46,7 @@ from vision_long.native_context import (
     NativeEvent,
     canonical_json,
 )
+from vision_long.observer_ipc import PublisherBridge
 from vision_long.transport import CameraFrame, CameraPublisher, CameraTransportServer, TransportError
 
 MAX_NATIVE_MESSAGE_BYTES = 1024 * 1024
@@ -202,12 +203,14 @@ def publish_pair(publisher, frames, sequence, clock, bridge=None):
     if any(frame.session_id != publisher.session_id or frame.sequence != sequence for frame in frames):
         raise ValueError("publisher_pair_identity_mismatch")
     if bridge is not None:
-        bridge.dispatch(
+        accepted = bridge.dispatch(
             publisher.session_id,
             sequence,
             tuple(CameraReference(frame.camera, frame.frame_id, frame.capture_ns) for frame in frames),
             clock(),
         )
+        if accepted is False:
+            raise RuntimeError("native_dispatch_enqueue_rejected")
     for frame in frames:
         publisher.send_frame(frame)
 
@@ -222,7 +225,7 @@ class AppliedForwarder:
 
     def __init__(
         self,
-        bridge: NativeReturnBridge,
+        bridge: PublisherBridge,
         drive_log: DriveLog | None,
         *,
         status_file: StatusFile | None = None,
@@ -287,7 +290,7 @@ def serve_session(
     source: NativeSource,
     clock: Callable[[], int],
     *,
-    bridge: NativeReturnBridge | None,
+    bridge: PublisherBridge | None,
     forwarder: AppliedForwarder | None,
     stop: threading.Event,
     pairs: int | None = None,
@@ -385,7 +388,7 @@ def serve_sessions(
     server: CameraTransportServer,
     source: NativeSource,
     clock: Callable[[], int],
-    bridge: NativeReturnBridge,
+    bridge: PublisherBridge,
     forwarder: AppliedForwarder,
     stop: threading.Event,
     counters: SessionCounters,
@@ -557,6 +560,10 @@ def start_embedded_publisher(
             restarts=lambda: worker[0].restarts if worker else 0,
             boot_clock=boottime_ns,
         )
+
+        def returned(session_id: str, packet: bytes) -> None:
+            bridge.return_packet(session_id, packet)
+
         with CameraTransportServer(
             listen_ip,
             port,
@@ -565,7 +572,7 @@ def start_embedded_publisher(
             clock=boottime_ns,
             with_context=True,
             with_return=True,
-            on_proposal=bridge.return_packet,
+            on_proposal=returned,
             timeout_s=1,
         ) as server:
             serve_sessions(server, source, boottime_ns, bridge, forwarder, stop, counters)

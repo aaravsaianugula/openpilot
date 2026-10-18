@@ -69,6 +69,8 @@ INSTALLED_FILES = frozenset(
                 "native_bridge.py",
                 "native_consumer.py",
                 "native_context.py",
+                "observer_ipc.py",
+                "observer_supervisor.py",
                 "transport.py",
             )
         ),
@@ -77,6 +79,7 @@ INSTALLED_FILES = frozenset(
             for name in (
                 "__init__.py",
                 "comma_context_publisher.py",
+                "comma_observer.py",
                 "extract_camera_context.py",
                 "extract_companion_context.py",
                 "extract_projection_height.py",
