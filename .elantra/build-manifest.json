@@ -1,0 +1,17 @@
+{
+  "sunnypilot_upstream_sha": "a06366ce9246962f313380e4ebe15955e720e7a5",
+  "sunnypilot_upstream_date": "2026-10-26",
+  "sunnypilot_upstream_subject": "controls: decouple RELC from BSM blocking, allow nudge override (#2049)",
+  "upstream_ci_conclusion": "success",
+  "upstream_ci_checked": 41,
+  "upstream_ci_url": "https://github.com/sunnypilot/sunnypilot/commit/a06366ce9246962f313380e4ebe15955e720e7a5/checks",
+  "opendbc_sha": "c5a83c0126d539e092899e3eb36cf022f0601510",
+  "opendbc_repo": "aaravsaianugula/opendbc",
+  "elantra_platforms": [
+    "HYUNDAI_ELANTRA_2024",
+    "HYUNDAI_ELANTRA_HEV_2024"
+  ],
+  "previous_master_sha": "50c9d232600cf9f6f1acacecc2e571a960758b9f",
+  "rollback_branch": "master-previous",
+  "synced_at_utc": "2026-10-27T00:52:49Z"
+}
