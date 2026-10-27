@@ -6,18 +6,19 @@ See the LICENSE.md file in the root directory for more details.
 """
 import pyray as rl
 
+from openpilot.selfdrive.ui.sunnypilot.mici.onroad.steer_headroom_bar import SteerHeadroomBar
 from openpilot.selfdrive.ui.mici.onroad.hud_renderer import HudRenderer
 from openpilot.selfdrive.ui.sunnypilot.onroad.blind_spot_indicators import BlindSpotIndicators
-from openpilot.selfdrive.ui.sunnypilot.mici.onroad.steer_headroom_bar import SteerHeadroomBar
 
 
 class HudRendererSP(HudRenderer):
   def __init__(self):
     super().__init__()
-    self.blind_spot_indicators = BlindSpotIndicators()
     # Same arc, told where this build's two steering ceilings are. Inert on any car
     # without the raised limit, where it delegates back to upstream's TorqueBar.
+    # Kept above upstream's lines so the sync's three-way replay never shares a hunk with them.
     self._torque_bar = SteerHeadroomBar()
+    self.blind_spot_indicators = BlindSpotIndicators()
 
   def _update_state(self) -> None:
     super()._update_state()

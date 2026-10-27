@@ -142,7 +142,7 @@ class SteerHeadroomBar(TorqueBar):
 
     radius = 1200 * scale
     top_angle = -90.0
-    span = fade * TORQUE_ANGLE_SPAN
+    span = fade * TORQUE_ANGLE_SPAN * rect.width / 476  # upstream TorqueBar's narrow-view scaling
     half = span / 2.0
     mid_r = radius + height / 2
     cap = 7 * scale
