@@ -196,7 +196,7 @@ CASES = [
 
     ("a flag is aliased onto an existing value",
      "opendbc/car/hyundai/values.py",
-     "  RAISED_LIMITS = 2 ** 27",
+     "  RAISED_LIMITS = 2 ** 29",
      "  RAISED_LIMITS = 2 ** 26"),
 
     ("the Elantra Hybrid inherits the raised ceiling",

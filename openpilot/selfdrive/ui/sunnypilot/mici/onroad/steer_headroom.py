@@ -54,9 +54,9 @@ HYUNDAI_BRAND = "hyundai"
 
 # HyundaiFlags.RAISED_LIMITS, which is what CarParams.flags carries and what opendbc's own
 # CarControllerParams tests. NOT HyundaiSafetyFlags.RAISED_LIMITS: opendbc defines that name
-# twice, 2**27 on the car flags and 1024 on the safety param, and 1024 in CarParams.flags is a
+# twice, 2**29 on the car flags and 1024 on the safety param, and 1024 in CarParams.flags is a
 # different flag on a different platform. guards.guard_ui_headroom pins both halves.
-RAISED_LIMITS_FLAG = 2 ** 27
+RAISED_LIMITS_FLAG = 2 ** 29
 
 TIER_NORMAL = 0
 TIER_HEADROOM = 1
