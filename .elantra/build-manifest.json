@@ -1,0 +1,17 @@
+{
+  "sunnypilot_upstream_sha": "a86979d2b2b176413a7f3e5cccf8c807596a7def",
+  "sunnypilot_upstream_date": "2026-11-01",
+  "sunnypilot_upstream_subject": "sunnylink: gate steering arc toggle on MICI (#2085)",
+  "upstream_ci_conclusion": "success",
+  "upstream_ci_checked": 39,
+  "upstream_ci_url": "https://github.com/sunnypilot/sunnypilot/commit/a86979d2b2b176413a7f3e5cccf8c807596a7def/checks",
+  "opendbc_sha": "4028dd3213a1b9888cb35f8e0f7d170f694ad834",
+  "opendbc_repo": "aaravsaianugula/opendbc",
+  "elantra_platforms": [
+    "HYUNDAI_ELANTRA_2024",
+    "HYUNDAI_ELANTRA_HEV_2024"
+  ],
+  "previous_master_sha": "4525f753b1759e188a70f7556e54d0c65483aa5a",
+  "rollback_branch": "master-previous",
+  "synced_at_utc": "2026-11-02T19:00:29Z"
+}

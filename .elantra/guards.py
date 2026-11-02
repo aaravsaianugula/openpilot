@@ -1,0 +1,1255 @@
+#!/usr/bin/env python3
+"""
+Structural guards for the Elantra 2024-25 overlay.
+
+These run before anything is ever pushed. They are deliberately text/AST level so they work
+on any machine with a bare Python 3 and no opendbc dependencies installed -- the point is to
+prove the port survived a rebase onto new upstream code, not to replace opendbc's own test
+suite. CI runs that suite separately; both gates must pass.
+
+Every check raises on failure. Nothing here warns and continues: a guard that can be skipped
+is not a guard.
+
+Usage:
+    python .elantra/guards.py --opendbc <path-to-opendbc-checkout> [--repo <superproject>]
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import json
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+PLATFORMS = ("HYUNDAI_ELANTRA_2024", "HYUNDAI_ELANTRA_HEV_2024")
+
+# LFAHDA_MFC 0x485 is 8 bytes on the CN7 bus and 4 on every other Hyundai CAN platform.
+# panda allow-list matching is on EXACT length, so it must carry both entries and
+# hyundai_tx_hook picks by flag. A guard that only checked the CN7 half would stay green
+# while the other 79 platforms were widened along with it.
+LFAHDA_MFC_LEN_CN7 = 8
+LFAHDA_MFC_LEN_STOCK = 4
+
+# The CN7 raised steering torque ceiling, stated here as the third opinion. opendbc decides
+# what the car commands, panda decides what it will let out, and these literals are what both
+# are checked against -- a guard that only compared the two against each other would stay
+# green while they moved together.
+#
+# BOTH SIDES ARE FLAT, AT DIFFERENT NUMBERS. opendbc commands 409 at every speed; panda
+# enforces 512 at every speed (carrotpilot parity, and what lets opendbc's number move without
+# a reflash). The 103 counts between them are unenforced.
+#
+# That gap is why STEER_MAX_RAISED is checked as a LITERAL and not merely as "at or under
+# panda". Measured 2026-09-01: this MDPS accepts 409 and trips CF_Mdps_ToiFlt at 410 -- 19 fault
+# onsets across routes 000000dc (500 schedule) and 000000dd (450 schedule) at commanded counts
+# 410 through 433, against ~1.59M engaged frames at 409 or below with none at all. So 410-512 is
+# precisely the band the car fails in, and panda polices none of it. A relational check would
+# happily pass a 450, which stops the car steering. These guards are what hold 409.
+STEER_MAX_RAISED = 409
+PANDA_RAISED_CEILING = 512
+STEER_MAX_STOCK = 384
+STEER_RATES = (3, 7)
+
+# The CN7 driver-torque window. opendbc cuts the ceiling by twice the excess over this, and
+# CR_Mdps_StrColTq on this car carries the EPS's own reaction to road load, not just the driver
+# -- so at the HKG default of 50 the car throttles itself back on a signal nobody generated.
+#
+# panda runs the same clamp against max_torque 512 rather than opendbc's 409, so its window is
+# 103 counts wider at every driver torque. Requiring opendbc inside panda for ALL driver torques:
+#     409 + (A + d)*2  <=  512 + (50 + d)*2   ->   A <= 101.5
+# Anything above that commands torque panda rejects, which is a steering dropout rather than a
+# tuning regression. The bound is DERIVED from the two ceilings rather than written down, so if
+# either moves the permitted allowance moves with it instead of going quietly stale.
+DRIVER_ALLOWANCE_STOCK = 50
+DRIVER_ALLOWANCE_RAISED = 100
+DRIVER_MULTIPLIER = 2
+MAX_ALLOWANCE_INSIDE_PANDA = ((PANDA_RAISED_CEILING + DRIVER_ALLOWANCE_STOCK * DRIVER_MULTIPLIER
+                               - STEER_MAX_RAISED) // DRIVER_MULTIPLIER)
+
+# The CN7 lateral-acceleration schedule in clip_curvature (drive_helpers.py). This is a
+# DEMAND-side limit: it caps the commanded curvature before the steering controller ever sees
+# it, so no amount of torque work can recover what it removes.
+#
+# Both ends are pinned as literals, for opposite reasons.
+#
+# The TOP end, because a limit is only useful up to what the car can actually deliver. The MDPS
+# accepts 409 counts, which buys about 2.9 m/s^2 at 14-18 m/s (measured 2.64 at 13-16 and 3.27
+# at 16-22 by .elantra/plant_gain.py; an earlier note here said 3.65 and was not reproducible).
+# A limit above what the EPS can deliver is headroom
+# the EPS cannot produce, and would only move the failure from "clamped" to "saturated".
+#
+# The BOTTOM end, because above 18 m/s the archive holds ZERO turn frames tight enough to reach
+# the clamp at all -- 3.41M engaged frames, 0.0%. Anything but the stock constant up there is an
+# unmeasured change to highway behaviour, which is the one band of this car that already works.
+#
+# And the first breakpoint, because the measured clamp rate PEAKS at 80% of turn frames in
+# 14-16 m/s. A taper starting below 16 m/s puts the worst-affected band on the ramp instead of
+# the flat, quietly undoing most of the change while every other guard stayed green.
+LAT_ACCEL_LIMIT_MAX = 4.5
+LAT_ACCEL_STOCK = 3.0
+LAT_ACCEL_TAPER_START_MIN = 14.0
+
+# The CN7 low-speed feedforward gain schedule (lat_accel_factor_schedule.py). This is a SUPPLY-side
+# correction and the mirror of the clamp above: it does not change what may be asked for, it changes
+# how much torque the controller believes a given lateral acceleration costs.
+#
+# torqued.py fits latAccelFactor only on samples above MIN_VEL m/s and below 1 m/s^2 of lateral
+# acceleration, and emits one scalar for all speeds. Measured on the 20 archived 409-count routes
+# (1,992,979 frames; roll-compensated yaw rate regressed on delivered counts, lag-aligned), the
+# lateral acceleration this car produces at a full 409-count command is ~1.2 m/s^2 at 3-4 m/s and
+# ~3.3 at 16-22 (.elantra/plant_gain.py, which is the reproducible pass; re-run it rather than
+# trusting a number written down here). The learner's own latAccelFactor is NOT a constant to
+# compare against -- it moved 2.72-3.56 across those same routes -- so the schedule is trusted
+# below the learner floor as a RATIO of gains, and refuses to touch anything above it.
+#
+# The FLOOR, because 1/0.38 = 2.63x is the most feedforward this may ever add; a decimal-point slip
+# below it doubles the command, with nothing between there and the rate limiter to catch it.
+#
+# The CEILING, exactly 1.0, because x / 1.0 is bit-identical in IEEE-754 and that is what makes
+# "the highway is untouched" a proof rather than a hope. The measured ratio above 16 m/s is
+# 0.96-0.98, so a gain over 1.0 would also be an unmeasured change to the one band that works.
+#
+# And the last BREAKPOINT must equal torqued.py MIN_VEL, read out of that file rather than copied,
+# because the schedule's whole justification is "the learner has no evidence below here". If
+# upstream moves MIN_VEL, the justification moves with it.
+FF_GAIN_FLOOR = 0.38
+FF_GAIN_CEILING = 1.0
+
+# The low-speed KP cap, the second half of the same correction. The feedforward schedule above says
+# how much torque a given lateral acceleration costs; this says how hard the loop may push when it
+# is wrong. They are coupled and the coupling is the safety-relevant part: cutting the gain WITHOUT
+# the feedforward that replaces it simply removes authority, so the guard refuses that combination.
+#
+# Measured on the same archive: below 13 mph the controller requests full torque on 71% of hands-off
+# turn frames but the EPS receives >=405 counts on only 29%, because the request holds for a median
+# of 0.34 s against a rate limiter that needs 1.36 s to ramp 0 -> 409. The command chatters, and it
+# chatters because KP_INTERP rises 25x from highway to 3.5 m/s while the plant weakens only 2.8x --
+# a loop gain ~9x the highway's, which a routine 0.17 m/s^2 error saturates.
+#
+# The FLOOR is 0.26, the deepest cut the measurement supports (the 2-3 m/s band). Below 2.5 m/s the
+# archive holds no hands-off turn frames at all, so np.interp's clamp makes that an extrapolation --
+# bounded deliberately, because a constant-loop-gain target would have implied 25x there.
+#
+# The CEILING is exactly 1.0: this may only ever reduce the stock gain. And the last breakpoint is
+# where the cap stops binding at all (the stock schedule is already under it from ~8 m/s), which is
+# what keeps every speed at or above 20 mph on the stock gain untouched.
+KP_SCALE_FLOOR = 0.26
+KP_SCALE_CEILING = 1.0
+
+EXPECTED_FLAGS = {
+    "HYUNDAI_ELANTRA_2024": {"CHECKSUM_CRC8", "CAMERA_SCC", "RAISED_LIMITS", "LFAHDA_MFC_8"},
+    "HYUNDAI_ELANTRA_HEV_2024": {"CHECKSUM_CRC8", "CAMERA_SCC", "HYBRID", "LFAHDA_MFC_8"},
+}
+
+EXPECTED_CAR_LIST = {
+    "Hyundai Elantra 2024-25": "HYUNDAI_ELANTRA_2024",
+    "Hyundai Elantra Hybrid 2024-25": "HYUNDAI_ELANTRA_HEV_2024",
+    "Hyundai i30 Hybrid 2024": "HYUNDAI_ELANTRA_HEV_2024",
+}
+
+_failures: list[str] = []
+_passes: list[str] = []
+
+
+def check(label: str, condition: bool, detail: str = "") -> None:
+    suffix = ": " + detail if detail else ""
+    if condition:
+        _passes.append(label)
+        print("  ok    " + label)
+    else:
+        _failures.append(label + suffix)
+        print("  FAIL  " + label + suffix)
+
+
+def read(path: Path) -> str:
+    if not path.is_file():
+        raise SystemExit("guard setup error: expected file is missing: " + str(path))
+    return path.read_text(encoding="utf-8", errors="replace")
+
+
+def _parse(source: str) -> ast.Module | None:
+    """ast.parse that returns None instead of raising.
+
+    A guard is allowed to say "I could not verify this"; it is not allowed to abort the run.
+    sync.py cannot tell a crash from a real divergence, so every parse in this file goes here.
+    """
+    try:
+        return ast.parse(source)
+    except SyntaxError:
+        return None
+
+
+def _flags_in_assignment(source: str, platform: str) -> set[str] | None:
+    """Pull the HyundaiFlags.* names out of a platform's flags= argument via AST.
+
+    Returns None when the platform is absent entirely, so the caller can tell "not defined"
+    apart from "defined with the wrong flags".
+    """
+    tree = _parse(source)
+    if tree is None:
+        return None
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        targets = [t.id for t in node.targets if isinstance(t, ast.Name)]
+        if platform not in targets:
+            continue
+        if not isinstance(node.value, ast.Call):
+            return set()
+        for kw in node.value.keywords:
+            if kw.arg != "flags":
+                continue
+            found: set[str] = set()
+            for sub in ast.walk(kw.value):
+                if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name):
+                    if sub.value.id == "HyundaiFlags":
+                        found.add(sub.attr)
+            return found
+        return set()
+    return None
+
+
+def guard_values(opendbc: Path) -> None:
+    print("\n[values.py] platform definitions")
+    source = read(opendbc / "opendbc/car/hyundai/values.py")
+    for platform in PLATFORMS:
+        flags = _flags_in_assignment(source, platform)
+        check(platform + " is defined", flags is not None,
+              "platform vanished from CAR -- the port did not survive the rebase")
+        if flags is None:
+            continue
+        expected = EXPECTED_FLAGS[platform]
+        check(platform + " carries " + " | ".join(sorted(expected)),
+              expected.issubset(flags),
+              "expected " + str(sorted(expected)) + ", found " + str(sorted(flags)))
+    # CAMERA_SCC is what makes this port work at all on the CN7: SCC lives on the camera, not
+    # a separate radar module. Losing it silently gives a car that fingerprints but never
+    # engages.
+    check("both platforms are CAMERA_SCC",
+          all((_flags_in_assignment(source, p) or set()) >= {"CAMERA_SCC"} for p in PLATFORMS))
+    check("Hyundai K harness referenced for the 2024 platforms",
+          source.count("hyundai_k") >= 2)
+
+
+def guard_fingerprints(opendbc: Path) -> None:
+    print("\n[fingerprints.py] firmware fingerprints")
+    source = read(opendbc / "opendbc/car/hyundai/fingerprints.py")
+    for platform in PLATFORMS:
+        check(platform + " has a fingerprint block", "CAR." + platform + ":" in source)
+    # Without a camera FW entry the car cannot be recognised at all.
+    check("2024 camera firmware present (99210-AA500/AA510)",
+          "99210-AA500" in source or "99210-AA510" in source)
+
+
+def guard_hyundaican(opendbc: Path) -> None:
+    print("\n[hyundaican.py] LKAS11 LDWS mode list")
+    source = read(opendbc / "opendbc/car/hyundai/hyundaican.py")
+    for platform in PLATFORMS:
+        check(platform + " in the LDWS-active-mode list", "CAR." + platform in source)
+
+
+def guard_lfahda_pair(opendbc: Path) -> None:
+    """The safety-critical one. Per platform, dbc byte count and panda TX length must agree."""
+    print("\n[dbc <-> safety] LFAHDA_MFC 0x485 length agreement")
+
+    def dbc_len(name: str) -> int:
+        src = read(opendbc / ("opendbc/dbc/generator/hyundai/" + name))
+        m = re.search(r"^BO_\s+1157\s+LFAHDA_MFC:\s*(\d+)\s", src, re.MULTILINE)
+        check("LFAHDA_MFC message found in " + name, m is not None)
+        return int(m.group(1)) if m else -1
+
+    cn7 = dbc_len("hyundai_can_cn7.dbc")
+    check("hyundai_can_cn7.dbc declares LFAHDA_MFC as " + str(LFAHDA_MFC_LEN_CN7) + " bytes",
+          cn7 == LFAHDA_MFC_LEN_CN7, "found " + str(cn7))
+
+    stock = dbc_len("hyundai_can.dbc")
+    check("the SHARED hyundai_can.dbc is still " + str(LFAHDA_MFC_LEN_STOCK) + " bytes",
+          stock == LFAHDA_MFC_LEN_STOCK,
+          "found " + str(stock) + " -- widening the shared dbc changes every Hyundai CAN " +
+          "platform, not just the CN7")
+
+    values = read(opendbc / "opendbc/car/hyundai/values.py")
+    for platform in PLATFORMS:
+        block = re.search(re.escape(platform) + r"\s*=\s*HyundaiPlatformConfig\((.*?)\n  \)",
+                          values, re.S)
+        check(platform + " platform block parsed", block is not None)
+        if block is not None:
+            check(platform + " uses hyundai_can_cn7_generated",
+                  "hyundai_can_cn7_generated" in block.group(1),
+                  "it would pack 4 bytes into a message this bus carries as 8")
+
+    safety_src = read(opendbc / "opendbc/safety/modes/hyundai.h")
+    lens = sorted(int(m) for m in re.findall(r"\{\s*0x485\s*,\s*0\s*,\s*(\d+)\s*,", safety_src))
+    check("panda allow-list carries BOTH 0x485 lengths",
+          lens == [LFAHDA_MFC_LEN_STOCK, LFAHDA_MFC_LEN_CN7],
+          "found " + str(lens) + " -- tx_msg_safety_check matches exact length, so a single " +
+          "entry silently blocks every platform that uses the other one")
+
+    check("hyundai_tx_hook gates 0x485 length on the flag",
+          re.search(r"hyundai_lfahda_mfc_8\s*\?\s*8U\s*:\s*4U", safety_src) is not None,
+          "without this both lengths are accepted for every platform")
+
+    common_h = read(opendbc / "opendbc/safety/modes/hyundai_common.h")
+    check("the flag is assigned from the safety param",
+          re.search(r"hyundai_lfahda_mfc_8\s*=\s*GET_FLAG\(param,\s*HYUNDAI_PARAM_LFAHDA_MFC_8\)",
+                    common_h) is not None,
+          "the flag would be false forever and the CN7 could not send 0x485 at all")
+
+    iface = read(opendbc / "opendbc/car/hyundai/interface.py")
+    check("interface.py carries the LFAHDA_MFC_8 car flag into safetyParam",
+          re.search(r"HyundaiFlags\.LFAHDA_MFC_8[\s\S]{0,160}?" +
+                    r"HyundaiSafetyFlags\.LFAHDA_MFC_8\.value", iface) is not None,
+          "panda would enforce 4 bytes on a car whose dbc packs 8")
+
+
+def guard_car_list(opendbc: Path) -> None:
+    print("\n[car_list.json] sunnypilot vehicle list")
+    raw = read(opendbc / "opendbc/sunnypilot/car/car_list.json")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as e:
+        check("car_list.json parses as JSON", False, str(e))
+        return
+    check("car_list.json parses as JSON", True)
+    for name, platform in EXPECTED_CAR_LIST.items():
+        entry = data.get(name)
+        check(repr(name) + " listed", entry is not None)
+        if entry is not None:
+            check(repr(name) + " -> " + platform, entry.get("platform") == platform,
+                  "found " + repr(entry.get("platform")))
+
+
+def guard_torque(opendbc: Path) -> None:
+    print("\n[substitute.toml] torque parameters")
+    source = read(opendbc / "opendbc/car/torque_data/substitute.toml")
+    for platform in PLATFORMS:
+        check(platform + " has a torque substitute", '"' + platform + '"' in source)
+
+
+def _module_ints(source: str, names: tuple[str, ...]) -> dict:
+    """{name: value} for top-level `NAME = <int expr>` assignments. Missing names are absent."""
+    out: dict = {}
+    tree = _parse(source)
+    if tree is None:
+        return {}
+    for stmt in tree.body:
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
+                and isinstance(stmt.targets[0], ast.Name) and stmt.targets[0].id in names:
+            out[stmt.targets[0].id] = _int_expr(stmt.value)
+    return out
+
+
+def guard_ui_headroom(repo: Path, opendbc: Path) -> None:
+    """The onroad arc's two ceilings, and the chain that has to hold for it to mean anything.
+
+    This is display only -- it cannot change what the car commands -- so what is guarded here
+    is not safety but honesty. An arc that says "past the stock ceiling" while reading a stale
+    constant, the wrong flag, or a field nothing populates any more is worse than no arc at
+    all, because it is the instrument this build's raised ceiling gets judged by.
+    """
+    print("\n[ui] steering headroom indicator")
+    onroad = repo / "openpilot/selfdrive/ui/sunnypilot/mici/onroad"
+    logic, widget = onroad / "steer_headroom.py", onroad / "steer_headroom_bar.py"
+    hud = onroad / "hud_renderer.py"
+    for f in (logic, widget):
+        check("overlay file " + f.name + " present", f.is_file(),
+              "a dropped overlay file is an ImportError on the driving screen")
+    if not (logic.is_file() and widget.is_file() and hud.is_file()):
+        return
+
+    logic_src = read(logic)
+    consts = _module_ints(logic_src, ("STOCK_COUNTS", "RAISED_COUNTS", "RAISED_LIMITS_FLAG",
+                                      "RAISED_COUNTS_LOW_SPEED", "NEAR_MARGIN"))
+    check("the UI's stock ceiling is " + str(STEER_MAX_STOCK),
+          consts.get("STOCK_COUNTS") == STEER_MAX_STOCK,
+          "found " + str(consts.get("STOCK_COUNTS"))
+          + " -- the arc would mark the old line in the wrong place")
+    check("the UI's high-speed ceiling is " + str(STEER_MAX_RAISED),
+          consts.get("RAISED_COUNTS") == STEER_MAX_RAISED,
+          "found " + str(consts.get("RAISED_COUNTS"))
+          + " -- the arc would be scaled against a ceiling nothing commands")
+    check("the UI carries no schedule of its own",
+          "RAISED_SCHEDULE_BP" not in logic_src and "RAISED_COUNTS_LOW_SPEED" not in logic_src,
+          "the ceiling is flat; a schedule here would draw an edge the car does not have")
+    check("the UI's ceiling does not vary with speed",
+          "def ceiling_at" not in logic_src,
+          "leftover schedule machinery in the arc")
+
+    # The arc reads the signed integer actually put on CAN, not the value normalised by
+    # STEER_MAX. If opendbc stops populating it the bar reads a constant zero and simply never
+    # lights: no error, no alert, just an indicator that has quietly stopped being one.
+    carctl = read(opendbc / "opendbc/car/hyundai/carcontroller.py")
+    check("carcontroller still reports the raw CAN counts the arc reads",
+          "new_actuators.torqueOutputCan = apply_torque" in carctl,
+          "the arc would read zero for ever and never light")
+    widget_src = read(widget)
+    check("the arc still reads torqueOutputCan rather than the normalised value",
+          "torqueOutputCan" in widget_src,
+          "normalising by STEER_MAX draws the raised ceiling exactly where 384 used to be, "
+          + "which is the whole bug this exists to fix")
+    # Raw counts only mean something against the ceiling in force, so the widget has to feed
+    # the state a speed. Without this the arc silently reverts to a fixed 409 and paints the
+    # limit tier 91 counts early at low speed -- the failure this whole section guards.
+    check("the arc does not read speed",
+          "vEgoRaw" not in widget_src,
+          "a flat ceiling needs no speed; leftovers mean half-reverted")
+
+    hud_src = read(hud)
+    check("SteerHeadroomBar is installed in the SP mici HUD",
+          "steer_headroom_bar import SteerHeadroomBar" in hud_src
+          and re.search(r"self\._torque_bar\s*=\s*SteerHeadroomBar\(", hud_src) is not None,
+          "the widget exists but the arc on screen is still upstream's")
+
+    # It subclasses upstream rather than copying it, so upstream's shape is a real dependency.
+    # A rename there is an ImportError on the driving screen, which is not a place to find one.
+    upstream = repo / "openpilot/selfdrive/ui/mici/onroad/torque_bar.py"
+    if not upstream.is_file():
+        check("upstream torque_bar.py present", False,
+              "SteerHeadroomBar has nothing to subclass. In a sparse checkout, "
+              + "git sparse-checkout add openpilot/selfdrive/ui/mici/onroad")
+        return
+    up = read(upstream)
+    for name in ("class TorqueBar", "def arc_bar_pts", "TORQUE_ANGLE_SPAN"):
+        check("upstream still provides " + name, name in up,
+              "SteerHeadroomBar imports it by name")
+    check("arc_bar_pts still takes cap_radius",
+          re.search(r"def arc_bar_pts\([^)]*cap_radius", up, re.S) is not None)
+    check("TorqueBar still takes demo, scale and always",
+          re.search(r"class TorqueBar.*?def __init__\(self, demo[^)]*scale[^)]*always", up, re.S) is not None)
+
+
+def _lat_accel_limit_v(source: str, stock: object) -> list[float] | None:
+    """LAT_ACCEL_LIMIT_V, with the MAX_LATERAL_ACCEL_NO_ROLL reference resolved.
+
+    Deliberately textual: the value list mixes a float literal with a name, so
+    ast.literal_eval refuses it, and importing drive_helpers here would drag numpy and the
+    whole openpilot package onto a machine these guards are meant to run on with a bare
+    Python 3.
+    """
+    if stock is None:
+        return None
+    marker = "LAT_ACCEL_LIMIT_V"
+    for line in source.splitlines():
+        head, sep, tail = line.partition("=")
+        if sep and head.strip() == marker:
+            body = tail.split("#")[0].strip()
+            if not (body.startswith("[") and body.endswith("]")):
+                return None
+            out: list[float] = []
+            for part in body[1:-1].split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                if part == "MAX_LATERAL_ACCEL_NO_ROLL":
+                    out.append(float(stock))  # type: ignore[arg-type]
+                    continue
+                try:
+                    out.append(float(part))
+                except ValueError:
+                    return None
+            return out or None
+    return None
+
+
+def guard_lateral_accel_schedule(repo: Path) -> None:
+    """The clip_curvature lateral-accel schedule, and the overlay registration that keeps it.
+
+    Two halves, and they are a coupled edit in the same sense as the 0x485 LFAHDA_MFC pair.
+    The schedule lives in an UPSTREAM file, so it survives the weekly rebuild only while
+    drive_helpers.py is in OVERLAY_MODIFIED and its test is in OVERLAY_ADDED. Editing both and
+    registering one is exactly what that list exists to prevent, and it fails silently: the car
+    reverts to a flat 3.0 m/s^2 on the next sync with nothing to see in the diff.
+    """
+    print("")
+    print("[drive_helpers.py] CN7 lateral-accel schedule")
+    dh = repo / "openpilot/selfdrive/controls/lib/drive_helpers.py"
+    check("drive_helpers.py present", dh.is_file())
+    if not dh.is_file():
+        return
+    source = read(dh)
+    consts: dict[str, object] = {}
+    tree = _parse(source)
+    check("drive_helpers.py parses", tree is not None,
+          "the schedule cannot be read from a file that does not parse")
+    if tree is None:
+        return
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if not isinstance(target, ast.Name):
+                continue
+            try:
+                consts[target.id] = ast.literal_eval(node.value)
+            except (ValueError, TypeError, SyntaxError):
+                pass
+
+    stock = consts.get("MAX_LATERAL_ACCEL_NO_ROLL")
+    check("MAX_LATERAL_ACCEL_NO_ROLL is still the stock ISO value",
+          stock == LAT_ACCEL_STOCK,
+          "expected " + str(LAT_ACCEL_STOCK) + ", found " + repr(stock)
+          + " -- the schedule is defined against it, so moving it moves the highway too")
+
+    bp = consts.get("LAT_ACCEL_LIMIT_BP")
+    vals = _lat_accel_limit_v(source, stock)
+
+    check("LAT_ACCEL_LIMIT_BP is a 2-point increasing schedule",
+          isinstance(bp, list) and len(bp) == 2 and bp == sorted(bp),
+          "found " + repr(bp) + " -- np.interp requires increasing breakpoints")
+    check("LAT_ACCEL_LIMIT_V resolved from source", vals is not None,
+          "could not read the schedule values; a guard that cannot see the number is not a guard")
+    if not (isinstance(bp, list) and len(bp) == 2) or vals is None:
+        return
+
+    check("schedule taper starts at or above " + str(LAT_ACCEL_TAPER_START_MIN) + " m/s",
+          bp[0] >= LAT_ACCEL_TAPER_START_MIN,
+          "first breakpoint " + repr(bp[0]) + " puts 14-16 m/s, where the clamp binds on 80%"
+          + " of turn frames, on the taper instead of the flat")
+    check("schedule returns to the stock limit before highway speed",
+          vals[-1] == LAT_ACCEL_STOCK,
+          "ends at " + repr(vals[-1]) + "; above 18 m/s the clamp is measured at 0.0%, so"
+          + " there is nothing to buy up there and everything to risk")
+    check("schedule never exceeds " + str(LAT_ACCEL_LIMIT_MAX) + " m/s^2",
+          max(vals) <= LAT_ACCEL_LIMIT_MAX,
+          "peaks at " + repr(max(vals)) + "; 409 counts buys about 2.9 m/s^2 at 14-18, so more is"
+          + " headroom the EPS cannot deliver")
+    check("schedule is non-increasing in speed",
+          list(vals) == sorted(vals, reverse=True),
+          "found " + repr(vals) + " -- the car would be allowed to turn harder as it speeds up")
+    check("clip_curvature actually reads the schedule",
+          "np.interp(v_ego, LAT_ACCEL_LIMIT_BP, LAT_ACCEL_LIMIT_V)" in source,
+          "the constants exist but clip_curvature still uses the flat value")
+
+    sync = read(repo / ".elantra/sync.py")
+    check("drive_helpers.py is registered in OVERLAY_MODIFIED",
+          '"openpilot/selfdrive/controls/lib/drive_helpers.py"' in sync,
+          "the weekly rebuild would silently revert the schedule to a flat 3.0 m/s^2")
+    check("its test is registered in OVERLAY_ADDED",
+          '"openpilot/selfdrive/controls/tests/test_drive_helpers.py"' in sync,
+          "the test would be deleted on the next sync, leaving the schedule unguarded")
+    check("the schedule test file is present",
+          (repo / "openpilot/selfdrive/controls/tests/test_drive_helpers.py").is_file())
+
+
+def _ff_schedule_consts(source: str) -> dict:
+    tree = _parse(source)
+    if tree is None:
+        return {}
+    out: dict = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                try:
+                    out[target.id] = ast.literal_eval(node.value)
+                except (ValueError, TypeError, SyntaxError):
+                    pass
+    return out
+
+
+def guard_ff_lat_accel_schedule(repo: Path) -> None:
+    """The low-speed feedforward gain schedule, its call site, and its overlay registration.
+
+    Three things can each break this silently, and none of them shows up in a diff of the schedule
+    itself: the constants can drift off the learner's floor, the single line that reads them can be
+    dropped or duplicated, and either half can fall out of the overlay lists. The last is the worst
+    -- the weekly rebuild would keep the numbers and delete the only line that uses them, which
+    reads exactly like the fix is still installed.
+    """
+    print("")
+    print("[lat_accel_factor_schedule.py] CN7 low-speed feedforward gain")
+    sched_path = repo / "openpilot/sunnypilot/selfdrive/controls/lib/lat_accel_factor_schedule.py"
+    jerk_path = repo / "openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_jerk_aware.py"
+    v0_path = repo / "openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py"
+    torqued_path = repo / "openpilot/selfdrive/locationd/torqued.py"
+
+    check("lat_accel_factor_schedule.py present", sched_path.is_file())
+    check("latcontrol_torque_jerk_aware.py present", jerk_path.is_file())
+    if not (sched_path.is_file() and jerk_path.is_file()):
+        return
+
+    consts = _ff_schedule_consts(read(sched_path))
+    check("lat_accel_factor_schedule.py parses", bool(consts),
+          "a schedule that cannot be read is a schedule nothing is checking")
+    if not consts:
+        return
+
+    bp = consts.get("FF_LAT_ACCEL_GAIN_BP")
+    vals = consts.get("FF_LAT_ACCEL_GAIN_V")
+    blend = consts.get("LOW_SPEED_FF_BLEND")
+    floor_vel = consts.get("LEARNER_MIN_VEL")
+
+    ok_shape = isinstance(bp, list) and isinstance(vals, list) and len(bp) == len(vals) >= 2
+    check("FF_LAT_ACCEL_GAIN_BP and _V are same-length lists of at least two points",
+          ok_shape, "found bp=" + repr(bp) + " v=" + repr(vals))
+    if not ok_shape:
+        return
+
+    check("FF_LAT_ACCEL_GAIN_BP is strictly increasing",
+          bp == sorted(bp) and len(set(bp)) == len(bp),
+          "found " + repr(bp) + " -- np.interp requires increasing breakpoints")
+    check("FF_LAT_ACCEL_GAIN_V is non-decreasing in speed",
+          vals == sorted(vals),
+          "found " + repr(vals) + " -- the car would feedforward harder as it slows down")
+    check("the schedule ends at exactly " + str(FF_GAIN_CEILING),
+          vals[-1] == FF_GAIN_CEILING,
+          "ends at " + repr(vals[-1]) + " -- x/1.0 is bit-identical and x/0.999 is not, so"
+          + " anything else forfeits the proof that the highway is unchanged")
+    check("the schedule never exceeds " + str(FF_GAIN_CEILING),
+          max(vals) == FF_GAIN_CEILING,
+          "peaks at " + repr(max(vals)) + " -- above the learner floor the measured ratio is"
+          + " 0.96-0.98, so a gain over 1.0 is an unmeasured change to the band that works")
+    check("the schedule never falls below " + str(FF_GAIN_FLOOR),
+          min(vals) >= FF_GAIN_FLOOR,
+          "floors at " + repr(min(vals)) + " -- 1/" + str(FF_GAIN_FLOOR)
+          + " is the most feedforward this may add")
+    platforms = consts.get("MEASURED_PLATFORMS")
+    check("the schedule applies only to the platform it was measured on",
+          platforms == ("HYUNDAI_ELANTRA_2024",),
+          "found " + repr(platforms) + " -- latcontrol_torque_jerk_aware is fork-wide code, and"
+          + " these ratios were measured on this platform's plant and on no other."
+          + " Widening this list is a claim that somebody measured that car's plant gain too")
+    check("LOW_SPEED_FF_BLEND is in [0, 1]",
+          isinstance(blend, (int, float)) and 0.0 <= blend <= 1.0,
+          "found " + repr(blend) + " -- outside that range it is no longer a blend")
+
+    # The pair check. Line-anchored on purpose: an unanchored match takes the first hit anywhere in
+    # the file, including a stale number inside a comment, and then fails open.
+    match = re.search(r"^MIN_VEL\s*=\s*([0-9.]+)", read(torqued_path), re.M)
+    check("torqued.py MIN_VEL is readable", match is not None,
+          "the schedule justification is 'the learner has no evidence below here'; without MIN_VEL"
+          + " there is nothing to justify it against")
+    if match is not None:
+        check("the schedule ends exactly at torqued.py MIN_VEL",
+              float(match.group(1)) == floor_vel == bp[-1],
+              "MIN_VEL=" + match.group(1) + " LEARNER_MIN_VEL=" + repr(floor_vel)
+              + " last breakpoint=" + repr(bp[-1]))
+
+    # The call site.
+    jerk = read(jerk_path)
+    uses = jerk.count("lat_accel_factor_gain(CS.vEgo)")
+    check("the feedforward reads the schedule exactly once", uses == 1,
+          "found " + str(uses) + " uses -- zero means the constants exist but nothing reads them,"
+          + " more than one means it is applied twice")
+    divides = jerk.count("/ ff_gain")
+    check("the feedforward is actually divided by the gain", divides == 1,
+          "found " + str(divides) + " divisions -- computing the gain and then not applying it"
+          + " leaves every guard green and the car on the old feedforward")
+    check("the fingerprint gate is computed",
+          "ff_gain_applies(CP.carFingerprint)" in jerk,
+          "latcontrol_torque_jerk_aware runs on every sunnypilot car; this correction was measured"
+          + " on the CN7 and on nothing else")
+    # Computing the gate and then not consuming it is the failure this pair exists to catch: the
+    # __init__ line survives, the call site reads the schedule unconditionally, and every other
+    # check here stays green while the CN7 correction goes out to the whole fleet.
+    check("the fingerprint gate is applied at the call site",
+          "lat_accel_factor_gain(CS.vEgo) if self._low_speed_ff_gain else 1.0" in jerk,
+          "the gate is computed in __init__ but the feedforward does not consult it")
+    check("the error path still uses the unscheduled latAccelFactor",
+          "self._pid_log.error = float(torque_from_setpoint - torque_from_measurement)" in jerk,
+          "a scheduled error term changes the closed-loop P gain, which this change explicitly"
+          + " does not do")
+    for line in jerk.splitlines():
+        stripped = line.strip()
+        scheduled = "lat_accel_factor_gain" in line or "ff_gain" in line
+        if "gravity_adjusted=False" in line:
+            check("the error conversion is not scheduled", not scheduled,
+                  "found the schedule on an error-path conversion: " + stripped)
+        if "get_friction_in_torque_space(" in line and "def " not in line:
+            check("the friction term is not scheduled", not scheduled,
+                  "torque_params.friction is already in torque space and is never divided by"
+                  + " latAccelFactor, so scheduling it is a different change")
+    v0 = read(v0_path)
+    check("the feedforward correction is not duplicated into the v0 path",
+          "lat_accel_factor_gain" not in v0,
+          "the v0 feedforward is in lat-accel space and needs a different expression; a half-edit"
+          + " there is a second, unreviewed formula for the same correction. (v0 legitimately"
+          + " imports scaled_kp_interp -- that is the KP half, which does apply to both paths.)")
+
+    # ---- the KP cap, the coupled half ----
+    kp_bp = consts.get("KP_SCALE_BP")
+    kp_v = consts.get("KP_SCALE_V")
+    kp_blend = consts.get("LOW_SPEED_KP_BLEND")
+    kp_shape = isinstance(kp_bp, list) and isinstance(kp_v, list) and len(kp_bp) == len(kp_v) >= 2
+    check("KP_SCALE_BP and _V are same-length lists of at least two points", kp_shape,
+          "found bp=" + repr(kp_bp) + " v=" + repr(kp_v))
+    if kp_shape:
+        check("KP_SCALE_BP is strictly increasing",
+              kp_bp == sorted(kp_bp) and len(set(kp_bp)) == len(kp_bp),
+              "found " + repr(kp_bp) + " -- np.interp requires increasing breakpoints")
+        check("KP_SCALE_V is non-decreasing in speed", kp_v == sorted(kp_v),
+              "found " + repr(kp_v) + " -- the gain would be cut harder as the car speeds up")
+        check("the KP cap ends at exactly " + str(KP_SCALE_CEILING), kp_v[-1] == KP_SCALE_CEILING,
+              "ends at " + repr(kp_v[-1]) + " -- above the band where the cap binds the stock gain"
+              + " must be arithmetically untouched")
+        check("the KP cap never raises the stock gain", max(kp_v) == KP_SCALE_CEILING,
+              "peaks at " + repr(max(kp_v)) + " -- this may only ever reduce KP; raising it is an"
+              + " unmeasured change to the closed loop")
+        check("the KP cap never falls below " + str(KP_SCALE_FLOOR), min(kp_v) >= KP_SCALE_FLOOR,
+              "floors at " + repr(min(kp_v)) + " -- 3.8x is the deepest cut the measurement supports,"
+              + " and below 2.5 m/s there is no measurement at all")
+    check("LOW_SPEED_KP_BLEND is in [0, 1]",
+          isinstance(kp_blend, (int, float)) and 0.0 <= kp_blend <= 1.0,
+          "found " + repr(kp_blend))
+
+    # THE coupling. Cutting the proportional gain is only safe because the feedforward now carries
+    # the demand; without it this is a pure authority reduction and the car steers less than today.
+    check("the KP cap is not applied without the feedforward that replaces it",
+          not (isinstance(kp_blend, (int, float)) and kp_blend > 0.0
+               and isinstance(blend, (int, float)) and blend == 0.0),
+          "LOW_SPEED_KP_BLEND=" + repr(kp_blend) + " with LOW_SPEED_FF_BLEND=" + repr(blend)
+          + " -- that removes low-speed gain and puts nothing back, which steers LESS than stock")
+
+    check("the v0 controller builds its PID from the scaled table",
+          "scaled_kp_interp(INTERP_SPEEDS, KP_INTERP, CP.carFingerprint)" in v0,
+          "the KP cap exists but the controller still constructs its PID from the stock schedule")
+    check("the KP cap is gated on the fingerprint",
+          "if not ff_gain_applies(car_fingerprint):" in read(sched_path),
+          "scaled_kp_interp must return the stock table for every platform this was not measured on")
+
+    # Overlay registration.
+    sync = read(repo / ".elantra/sync.py")
+    check("the v0 controller is registered in OVERLAY_MODIFIED",
+          '"openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_v0.py"' in sync,
+          "the rebuild would restore the stock 25x low-speed gain while the feedforward schedule"
+          + " stayed in place, which looks like the fix is installed and is half of it")
+    check("the call site is registered in OVERLAY_MODIFIED",
+          '"openpilot/sunnypilot/selfdrive/controls/lib/latcontrol_torque_jerk_aware.py"' in sync,
+          "the weekly rebuild would keep the constants and delete the only line that reads them")
+    check("the schedule module is registered in OVERLAY_ADDED",
+          '"openpilot/sunnypilot/selfdrive/controls/lib/lat_accel_factor_schedule.py"' in sync,
+          "the module would be deleted on the next sync and the call site would ImportError"
+          + " on the car")
+    check("its test is registered in OVERLAY_ADDED",
+          '"openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lat_accel_factor_schedule.py"' in sync,
+          "the test would be deleted on the next sync, leaving the schedule unguarded")
+    check("the schedule test file is present",
+          (repo / "openpilot/sunnypilot/selfdrive/controls/lib/tests/test_lat_accel_factor_schedule.py").is_file())
+
+
+def guard_superproject(repo: Path) -> None:
+    print("\n[superproject] submodule wiring")
+    gitmodules = read(repo / ".gitmodules")
+    check("opendbc submodule points at the Elantra-enabled fork",
+          "aaravsaianugula/opendbc" in gitmodules,
+          "the .gitmodules overlay did not apply -- the build would use stock opendbc and the car would not be supported")
+    check("opendbc submodule path is still opendbc_repo", "path = opendbc_repo" in gitmodules)
+
+    # Every file the panel needs must have survived the rebuild. A dropped overlay file is
+    # an ImportError on the car's settings screen, and the sync would otherwise publish it
+    # happily because the *diff* still applied cleanly.
+    ui_dir = repo / "openpilot/selfdrive/ui/sunnypilot/mici/layouts"
+    for name in ("port_updates.py", "port_manifest.py"):
+        check(f"UI overlay file {name} present", (ui_dir / name).is_file(),
+              "the settings panel would fail to import on the device")
+    settings = ui_dir / "settings.py"
+    if settings.is_file():
+        text = settings.read_text(encoding="utf-8", errors="replace")
+        check("port panel is registered in the mici settings",
+              "ElantraPortLayoutMici" in text and "port_btn" in text,
+              "the panel exists but nothing opens it")
+
+    manifest_path = repo / ".elantra/build-manifest.json"
+    if manifest_path.is_file():
+        manifest = json.loads(read(manifest_path))
+        for key in ("sunnypilot_upstream_sha", "opendbc_sha", "synced_at_utc",
+                    "upstream_ci_conclusion", "elantra_platforms"):
+            check("manifest carries " + key, key in manifest)
+        check("manifest lists both Elantra platforms",
+              set(PLATFORMS).issubset(set(manifest.get("elantra_platforms", []))))
+
+
+def _git(cwd: Path, *args: str) -> str | None:
+    """Run git and return stripped stdout, or None if it fails for any reason.
+
+    Guards must never raise: sync.py reads a non-zero exit as "do not publish", and an
+    exception here would be indistinguishable from a real divergence.
+    """
+    try:
+        out = subprocess.run(("git", *args), cwd=str(cwd), capture_output=True,
+                             text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip() or None
+
+
+def _gitlink_sha(repo: Path, path: str) -> str | None:
+    """The commit the superproject's index pins for a submodule path, or None."""
+    line = _git(repo, "ls-files", "-s", "--", path)
+    if not line:
+        return None
+    # "160000 <sha> 0\t<path>" -- any mode other than 160000 is not a gitlink.
+    fields = line.split()
+    if len(fields) < 2 or fields[0] != "160000":
+        return None
+    return fields[1]
+
+
+def guard_opendbc_pin(repo: Path, opendbc: Path) -> None:
+    """The tree the other guards just read must be the tree the superproject actually ships.
+
+    Every guard above opens files under --opendbc. Not one of them looks at the gitlink. So a
+    superproject branch can pass all of them while pinning an opendbc commit that has never
+    heard of the change being guarded -- which is not hypothetical: elantra-torque-test carries
+    the guards for a 409 schedule and pins 69e2e548, which contains none of it, and
+    `git diff master elantra-torque-test -- opendbc_repo` is empty. Every guard was green and
+    the car would have run stock code.
+
+    Equality is the whole check. If the pinned commit is the checkout the guards just verified,
+    then whatever they proved is what actually gets built.
+    """
+    print("\n[superproject <-> opendbc] the guarded tree is the pinned tree")
+    pinned = _gitlink_sha(repo, "opendbc_repo")
+    check("superproject records an opendbc_repo gitlink", pinned is not None,
+          "git ls-files -s opendbc_repo returned no mode-160000 entry")
+    if pinned is None:
+        return
+
+    head = _git(opendbc, "rev-parse", "HEAD")
+    check("the guarded opendbc checkout resolves to a commit", head is not None,
+          "--opendbc is not a git checkout, so the pin cannot be proven")
+    if head is None:
+        return
+
+    check("pinned opendbc is the opendbc these guards just checked", pinned == head,
+          "superproject pins " + pinned[:12] + " but --opendbc is at " + head[:12]
+          + " -- these guards passed against a tree the build will not use")
+
+    # The manifest was checked for the PRESENCE of opendbc_sha and nothing else, so it drifted
+    # three commits behind the gitlink and stayed green. A manifest that records a different
+    # commit from the one being shipped is not provenance, it is decoration -- and it is read
+    # by verify_published.py and by the port panel on the car.
+    manifest_path = repo / ".elantra/build-manifest.json"
+    if manifest_path.is_file():
+        try:
+            recorded = json.loads(manifest_path.read_text(encoding="utf-8")).get("opendbc_sha")
+        except (OSError, ValueError):
+            recorded = None
+        check("manifest opendbc_sha matches the pinned gitlink", recorded == pinned,
+              "manifest says " + str(recorded)[:12] + ", gitlink says " + pinned[:12])
+
+
+def _int_expr(node) -> int | None:
+    """Evaluate the integer forms these enums are written in, and nothing else.
+
+    Deliberately neither eval nor ast.literal_eval: the former is an arbitrary code path in a
+    guard that is supposed to be inert, and the latter cannot handle `2 ** 27`, which is how
+    most of HyundaiFlags is written. An earlier version of this guard used literal_eval,
+    silently parsed zero members, and passed against a real flag collision. Anything outside
+    this grammar returns None and the caller reports it as a failure.
+    """
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) \
+            and not isinstance(node.value, bool):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Pow, ast.LShift)):
+        left, right = _int_expr(node.left), _int_expr(node.right)
+        if left is None or right is None or right < 0 or right > 64:
+            return None
+        return left ** right if isinstance(node.op, ast.Pow) else left << right
+    return None
+
+
+def _enum_members(source: str, enum_name: str) -> dict:
+    """{member: value} for an IntFlag class; None where a value is not an integer expression.
+    Callers must assert the dict is non-empty and fully evaluated."""
+    out: dict = {}
+    tree = _parse(source)
+    if tree is None:
+        return {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ClassDef) or node.name != enum_name:
+            continue
+        for stmt in node.body:
+            if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 \
+                    and isinstance(stmt.targets[0], ast.Name):
+                out[stmt.targets[0].id] = _int_expr(stmt.value)
+    return out
+
+
+def _allowance_raised_beside_ceiling(source: str) -> bool:
+    """STEER_DRIVER_ALLOWANCE is raised in the same RAISED_LIMITS branch as STEER_MAX.
+
+    Structural, not textual. The pair only means anything if BOTH assignments sit inside the
+    branch guarded by the flag: assigned at the top of __init__ instead, every Hyundai gets the
+    wider window and yields to its driver later than its own panda expects -- which reads
+    identically in a diff and is caught by nothing else in this file.
+    """
+    tree = _parse(source)
+    if tree is None:
+        return False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        if "RAISED_LIMITS" not in ast.dump(node.test):
+            continue
+        assigned = {t.attr for stmt in node.body if isinstance(stmt, ast.Assign)
+                    for t in stmt.targets if isinstance(t, ast.Attribute)}
+        if {"STEER_MAX", "STEER_DRIVER_ALLOWANCE"} <= assigned:
+            return True
+    return False
+
+
+def _raised_assigned_in_else(source: str) -> bool:
+    """Is STEER_MAX raised inside the `else` of the chain that picks STEER_MAX?
+
+    Precedence is the whole point. Assigned after the chain instead of inside its last branch,
+    the raised ceiling silently outranks every other one: a car carrying RAISED_LIMITS together
+    with ALT_LIMITS_2 would command 409 while panda enforced 170. Text matching cannot see the
+    difference between the two placements, so this walks the tree.
+    """
+    tree = _parse(source)
+    if tree is None:
+        return False
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.FunctionDef) and node.name == "__init__"):
+            continue
+        for stmt in ast.walk(node):
+            if not isinstance(stmt, ast.If):
+                continue
+            # the tail `else` of an if/elif chain, i.e. one whose orelse is not another If
+            if not stmt.orelse or isinstance(stmt.orelse[0], ast.If):
+                continue
+            for inner in ast.walk(ast.Module(body=stmt.orelse, type_ignores=[])):
+                if not isinstance(inner, ast.If):
+                    continue
+                if "RAISED_LIMITS" not in ast.dump(inner.test):
+                    continue
+                for asn in ast.walk(ast.Module(body=inner.body, type_ignores=[])):
+                    if isinstance(asn, ast.Assign) and _int_expr(asn.value) == STEER_MAX_RAISED \
+                            and any(getattr(t, "attr", None) == "STEER_MAX" for t in asn.targets):
+                        return True
+    return False
+
+
+def guard_panda_enforcement(opendbc: Path) -> None:
+    """What lateral.h actually DOES with the limits hyundai.h declares.
+
+    Every other check in this file reads a DECLARATION -- the limit struct, the flag word.
+    None of them reads the code that consumes it. lateral.h decides what the numbers mean.
+
+    The CN7 used to ride the `dynamic_max_torque` branch, which shifts the speed down 1 m/s
+    and adds a count of slack on top of the interpolated ceiling. It does not any more: a flat
+    limit takes the static path, where the declared number IS the number. These checks exist to
+    keep that true, because the slack moving out of that branch would hand every static Hyundai
+    -- not just this one -- a count of headroom nobody asked for.
+    """
+    print("\n" + "[lateral.h] what panda actually enforces")
+    lat = read(opendbc / "opendbc/safety/lateral.h")
+
+    m = re.search(r"if\s*\(limits\.dynamic_max_torque\)\s*\{(.*?)\n\s*\}", lat, re.S)
+    check("lateral.h still has a dynamic_max_torque branch (rivian uses it)", m is not None)
+    if m is None:
+        return
+
+    # The static path: max_torque is taken straight from the struct, with no fudge before it.
+    before = lat[:m.start()]
+    static_init = re.search(r"int\s+max_torque\s*=\s*limits\.max_torque\s*;", before)
+    check("the static path takes max_torque straight from the limits struct",
+          static_init is not None)
+    if static_init is not None:
+        check("no slack is added before the dynamic branch",
+              "+ 1" not in before[static_init.end():],
+              "a +1 here would widen every static limit in every brand, silently")
+
+    # Both fudges must stay INSIDE the branch the CN7 no longer takes.
+    body = m.group(1)
+    check("the -1 m/s speed shift is inside the dynamic branch",
+          re.search(r"-\s*1\.", body) is not None)
+    check("the +1 count of slack is inside the dynamic branch",
+          re.search(r"safety_interpolate\([^)]*\)\s*\+\s*1", body) is not None)
+
+    # And the global ceiling check has to compare against that unfudged max_torque, symmetric.
+    check("the global torque check bounds both signs by max_torque",
+          re.search(r"safety_max_limit_check\(\s*desired_torque\s*,\s*max_torque\s*," +
+                    r"\s*-\s*max_torque\s*\)", lat) is not None,
+          "an asymmetric or wider bound here is the whole ceiling, in one line")
+
+
+def guard_raised_torque_pair(opendbc: Path) -> None:
+    """The CN7 raised torque ceiling, end to end: flat 409 in opendbc, flat 512 in panda.
+
+    The ceiling lives in four files that cannot see each other, and every link has a failure
+    mode that looks exactly like success. Each check below exists because breaking that link
+    alone leaves every other check green.
+    """
+    print("\n[values.py <-> safety] raised steering torque, flat 409 in opendbc under a flat 512 panda")
+    values = read(opendbc / "opendbc/car/hyundai/values.py")
+    carctl = read(opendbc / "opendbc/car/hyundai/carcontroller.py")
+    iface = read(opendbc / "opendbc/car/hyundai/interface.py")
+    safety = read(opendbc / "opendbc/safety/modes/hyundai.h")
+    common_h = read(opendbc / "opendbc/safety/modes/hyundai_common.h")
+
+    rate_up, rate_down = STEER_RATES
+
+    # --- the opendbc half -------------------------------------------------------------
+    check(f"opendbc raises STEER_MAX to {STEER_MAX_RAISED} under the flag, inside the else branch",
+          _raised_assigned_in_else(values),
+          "assigned outside it, RAISED_LIMITS outranks ALT_LIMITS/ALT_LIMITS_2/CANFD and the " +
+          f"car commands {STEER_MAX_RAISED} where panda enforces 270 or 170")
+    check(f"the stock ceiling under it is still {STEER_MAX_STOCK}",
+          re.search(rf"self\.STEER_MAX\s*=\s*{STEER_MAX_STOCK}\b", values) is not None)
+
+    # --- the ceiling is FLAT, and the MECHANISM for anything else is absent -------------
+    # A speed schedule was built and driven here; the EPS faulted at both 500 and 450, so it
+    # is not coming back. These guards assert the machinery is GONE rather than merely unused,
+    # because inert machinery is one edit away from live machinery.
+    check("carcontroller multiplies by the static STEER_MAX",
+          "int(round(actuators.torque * self.params.STEER_MAX))" in carctl)
+    check("carcontroller normalises the feedback by the same STEER_MAX",
+          "new_actuators.torque = apply_torque / self.params.STEER_MAX" in carctl)
+    for dead in ("STEER_MAX_LOOKUP", "steer_max_at", "steer_max"):
+        check(f"no {dead} left in values.py or carcontroller",
+              dead not in values and dead not in carctl,
+              "a flat ceiling needs none of the schedule machinery; leftovers mean half-applied")
+
+    # --- the bridge -------------------------------------------------------------------
+    check("interface.py carries the car flag into safetyParam",
+          re.search(r"HyundaiFlags\.RAISED_LIMITS[\s\S]{0,140}?" +
+                    r"HyundaiSafetyFlags\.RAISED_LIMITS\.value", iface) is not None,
+          f"without this the car commands {STEER_MAX_RAISED} and panda rejects " +
+          f"every frame above {STEER_MAX_STOCK}")
+
+    # --- the panda half ---------------------------------------------------------------
+    # Anchored to a real DECLARATION at the start of a line. Unanchored, re.search takes the
+    # FIRST match in the file, so a stale value left in a comment above the live line reads
+    # instead of the value in force -- and PANDA_RAISED_CEILING below, the "third opinion", is
+    # fed from this same match, so it is neutralised too. Verified by decoy: with the real line
+    # lowered to 450 and a 512 comment above it, every guard in this file passed green.
+    raised_decl = (r"^\s*const\s+TorqueSteeringLimits\s+HYUNDAI_STEERING_LIMITS_RAISED\s*=" +
+                   r"\s*HYUNDAI_LIMITS\(([^)]*)\)")
+    inst = re.search(raised_decl, safety, re.MULTILINE)
+    check("panda instantiates the raised limits from the plain HYUNDAI_LIMITS macro",
+          inst is not None,
+          "anything else is a different enforcement path with different fudges")
+    if inst is not None:
+        args = [a.strip() for a in inst.group(1).split(",")]
+        check(f"panda's flat ceiling is {PANDA_RAISED_CEILING}",
+              args[:1] == [str(PANDA_RAISED_CEILING)], "found " + str(args[:1]))
+        # The relationship, kept -- but note it is the WEAK half of this pair. panda sits 103
+        # counts above what opendbc commands, and the EPS faults inside that gap, so passing
+        # this check says nothing about whether the car can steer. The literal 409 asserted
+        # against values.py above is what actually holds the line; this only catches the case
+        # where someone raises opendbc past panda as well.
+        check(f"what opendbc commands is within panda's {PANDA_RAISED_CEILING}",
+              STEER_MAX_RAISED <= int(args[0]) if args[:1] and args[0].isdigit() else False,
+              f"opendbc commands {STEER_MAX_RAISED}")
+        check(f"the unenforced headroom is still {PANDA_RAISED_CEILING - STEER_MAX_RAISED} counts",
+              int(args[0]) - STEER_MAX_RAISED == PANDA_RAISED_CEILING - STEER_MAX_RAISED
+              if args[:1] and args[0].isdigit() else False,
+              "someone widened the band panda does not police; the EPS faults inside it")
+        check(f"steer ramp rates are unchanged at {rate_up}/{rate_down}",
+              args[1:3] == [str(rate_up), str(rate_down)], "found " + str(args[1:3]))
+
+    # --- the driver window, the other half of this branch ------------------------------
+    # STEER_MAX and STEER_DRIVER_ALLOWANCE are a pair on this car: the ceiling decides what may
+    # be asked for, the allowance decides how much survives the column-torque sensor. Asserted
+    # as literals AND against panda, because the relational check alone would pass an allowance
+    # of 200 that panda silently rejects, and the literal alone goes stale if a ceiling moves.
+    check(f"opendbc raises STEER_DRIVER_ALLOWANCE to {DRIVER_ALLOWANCE_RAISED} beside the ceiling",
+          _allowance_raised_beside_ceiling(values)
+          and re.search(rf"STEER_DRIVER_ALLOWANCE\s*=\s*{DRIVER_ALLOWANCE_RAISED}\b", values)
+          is not None,
+          "it must be assigned inside the RAISED_LIMITS branch next to STEER_MAX = "
+          + f"{STEER_MAX_RAISED}; anywhere else and every Hyundai picks up the wider window")
+    check(f"the default under it is still the HKG {DRIVER_ALLOWANCE_STOCK}",
+          re.search(rf"self\.STEER_DRIVER_ALLOWANCE\s*=\s*{DRIVER_ALLOWANCE_STOCK}\b", values)
+          is not None,
+          "every other Hyundai must keep the stock driver window")
+    check(f"the raised allowance stays inside panda's window (max {MAX_ALLOWANCE_INSIDE_PANDA})",
+          DRIVER_ALLOWANCE_RAISED <= MAX_ALLOWANCE_INSIDE_PANDA,
+          f"{DRIVER_ALLOWANCE_RAISED} commands torque panda rejects -- a steering dropout, not "
+          + "a tuning regression")
+    pa = re.search(r"\.driver_torque_allowance\s*=\s*(\d+)", safety)
+    pm = re.search(r"\.driver_torque_multiplier\s*=\s*(\d+)", safety)
+    check("panda's driver window is the one that bound was derived from",
+          pa is not None and pm is not None
+          and int(pa.group(1)) == DRIVER_ALLOWANCE_STOCK
+          and int(pm.group(1)) == DRIVER_MULTIPLIER,
+          "panda's allowance or multiplier moved, so the derived bound above is now wrong")
+
+    # NEITHER SIDE READS SPEED, and this is panda's half of that. If anything puts the CN7
+    # back on panda's dynamic path, panda silently regains the -1 m/s shift and the +1 count of
+    # slack, and every "no speed reading can move what panda accepts" claim here becomes false.
+    for dead in ("dynamic_max_torque", "HYUNDAI_LIMITS_DYNAMIC", "max_torque_lookup"):
+        check(f"no {dead} anywhere on the hyundai path",
+              dead not in safety and dead not in common_h)
+
+    check("panda selects the raised limits on the flag",
+          re.search(r"hyundai_raised_limits\s*\?\s*HYUNDAI_STEERING_LIMITS_RAISED", safety)
+          is not None)
+    # The ternary mentioning the flag is not enough -- nothing has to ever set it.
+    check("hyundai_raised_limits is actually assigned from the safety param",
+          re.search(r"hyundai_raised_limits\s*=\s*GET_FLAG\(param,\s*HYUNDAI_PARAM_RAISED_LIMITS\)",
+                    common_h) is not None,
+          "the flag would be false forever and the ceiling would never be raised")
+
+    # Order inside the ternary is precedence. ALT_LIMITS_2 (170) and ALT_LIMITS (270) are
+    # LOWER ceilings; if raised were tested first, a car carrying both flags would be handed
+    # 409 by panda. This is the panda-side twin of the else-branch check above.
+    tern = re.search(r"const TorqueSteeringLimits limits =(.*?);", safety, re.S)
+    check("panda's limit ternary parsed", tern is not None)
+    if tern is not None:
+        order = list(re.findall(r"hyundai_(alt_limits_2|alt_limits|raised_limits)",
+                                       tern.group(1)))
+        check("the raised ceiling is tested last, after both ALT_LIMITS",
+              order and order[-1] == "raised_limits",
+              "found order " + str(order) + "; a lower ceiling must always win")
+
+    # --- the two flag words must agree ------------------------------------------------
+    sf = _enum_members(values, "HyundaiSafetyFlags")
+    cf = _enum_members(values, "HyundaiFlags")
+    check("HyundaiSafetyFlags parsed", len(sf) > 0)
+    check("HyundaiFlags parsed", len(cf) > 0)
+    param = re.search(r"HYUNDAI_PARAM_RAISED_LIMITS\s*=\s*(\d+)", common_h)
+    check("panda declares HYUNDAI_PARAM_RAISED_LIMITS", param is not None)
+    if param is not None and sf.get("RAISED_LIMITS") is not None:
+        check("safety flag values agree",
+              int(param.group(1)) == sf["RAISED_LIMITS"],
+              "opendbc says " + str(sf["RAISED_LIMITS"]) + ", panda says " + param.group(1))
+
+    # IntFlag turns a duplicate value into a silent alias, so a platform carrying one member
+    # tests True for the other. That is how the hybrid could have inherited this ceiling.
+    for name, members in (("HyundaiFlags", cf), ("HyundaiSafetyFlags", sf)):
+        vals = [v for v in members.values() if v is not None]
+        check(name + " has no unevaluable members",
+              len(vals) == len(members), "some member is not a plain integer expression")
+        dupes = {v for v in vals if vals.count(v) > 1}
+        check(name + " has no aliased members (" + str(len(vals)) + " checked)",
+              not dupes, "duplicate value(s) " + str(sorted(dupes)))
+
+    # --- and only the car it was measured on gets it -----------------------------------
+    hev = _flags_in_assignment(values, "HYUNDAI_ELANTRA_HEV_2024") or set()
+    check("the Elantra Hybrid does NOT get the raised ceiling",
+          "RAISED_LIMITS" not in hev,
+          "heavier car, no fleet data, and it borrows HYUNDAI_SONATA torque params")
+
+
+# The catalog merge that puts our own models in sunnypilot's picker. Two halves that are only
+# useful together: the module that does the merging, and the one line in sunnypilot's fetcher
+# that calls it. Registering one without the other is the exact failure this file exists to
+# catch -- the module survives the rebuild, nothing calls it, and the picker silently goes back
+# to sunnypilot's list with no error anywhere.
+CATALOG_MODULE = "openpilot/sunnypilot/models/elantra_catalog.py"
+CATALOG_CALLER = "openpilot/sunnypilot/models/fetcher.py"
+
+
+def guard_model_catalog(repo: Path) -> None:
+    """Our models still reach the Models screen, and cannot take sunnypilot's list down with them.
+
+    sunnypilot's catalog is the only route into the picker: two hardcoded URLs, no local source,
+    no sideload path, and validate_active_bundles clears any active bundle missing from the
+    fetched list. So a model carried ahead of them lives or dies on this merge.
+
+    The fail-open checks are not defensive padding. This code runs inside the fetch that
+    populates the cache every reader uses -- the manager downloads from it and the UI lists from
+    it -- so an exception escaping here does not degrade our model, it empties the picker for
+    every model and invalidates whatever the driver had selected.
+    """
+    print("\n[model catalog] our bundles still reach sunnypilot's picker")
+
+    module = repo / CATALOG_MODULE
+    check("the catalog merge module is present", module.is_file(),
+          CATALOG_MODULE + " is missing -- nothing would add our models to the list")
+    if not module.is_file():
+        return
+    source = read(module)
+
+    check("a chestnut source is declared over https",
+          re.search(r'"chestnut"\s*:\s*"https://', source) is not None,
+          "the big model is chestnut-only and the catalog must be fetched over https")
+    check("no qcom source is declared",
+          re.search(r'"qcom"\s*:\s*"http', source) is None,
+          "offering a big model in the qcom list gives the driver something undownloadable")
+
+    # Fail-open, checked structurally: the fetch swallows everything and the merge refuses to
+    # invent a document it would then hand back to be cached.
+    check("the catalog fetch swallows every error",
+          "except Exception:" in source and "return None" in source,
+          "an exception here propagates into _fetch_and_cache_models and empties the picker")
+    check("the merge defers to sunnypilot on a ref collision",
+          "known_refs" in source,
+          "without it the driver sees two entries for one model, on different hosts")
+
+    caller = read(repo / CATALOG_CALLER)
+    check("sunnypilot's fetcher imports the merge",
+          "from openpilot.sunnypilot.models.elantra_catalog import merge_for_source" in caller,
+          "the module is present but nothing imports it")
+    check("the merge is on the fetch path, wrapping the parsed document",
+          re.search(r"json_data\s*=\s*merge_for_source\(source,\s*response\.json\(\)\)", caller)
+          is not None,
+          "it must wrap response.json() before the cache is written -- that cache is the single"
+          + " point the manager and the UI both read")
+
+    sync = read(repo / ".elantra/sync.py")
+    check("the merge module is registered in OVERLAY_ADDED",
+          '"' + CATALOG_MODULE + '"' in sync,
+          "the rebuild would delete it and leave fetcher.py importing a module that is gone,"
+          + " which breaks the fetch outright rather than quietly")
+    check("sunnypilot's fetcher is registered in OVERLAY_MODIFIED",
+          '"' + CATALOG_CALLER + '"' in sync,
+          "the rebuild would restore the stock fetcher and our models would vanish from the"
+          + " picker with no error")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--opendbc", required=True, type=Path,
+                    help="path to the opendbc checkout carrying the Elantra delta")
+    ap.add_argument("--repo", type=Path, default=None,
+                    help="path to the sunnypilot superproject (optional)")
+    args = ap.parse_args()
+
+    opendbc = args.opendbc.resolve()
+    if not (opendbc / "opendbc/car/hyundai/values.py").is_file():
+        raise SystemExit("not an opendbc checkout: " + str(opendbc))
+
+    print("Elantra 2024-25 overlay guards")
+    print("  opendbc: " + str(opendbc))
+    if args.repo:
+        print("  repo:    " + str(args.repo.resolve()))
+
+    guard_values(opendbc)
+    guard_fingerprints(opendbc)
+    guard_hyundaican(opendbc)
+    guard_lfahda_pair(opendbc)
+    guard_raised_torque_pair(opendbc)
+    guard_panda_enforcement(opendbc)
+    guard_car_list(opendbc)
+    guard_torque(opendbc)
+    if args.repo:
+        guard_superproject(args.repo.resolve())
+        guard_lateral_accel_schedule(args.repo.resolve())
+        guard_ff_lat_accel_schedule(args.repo.resolve())
+        guard_ui_headroom(args.repo.resolve(), opendbc)
+        guard_opendbc_pin(args.repo.resolve(), opendbc)
+        guard_model_catalog(args.repo.resolve())
+
+    print("\n" + "-" * 60)
+    if _failures:
+        print("FAILED: " + str(len(_failures)) + " guard(s) failed, "
+              + str(len(_passes)) + " passed\n")
+        for f in _failures:
+            print("  - " + f)
+        print("\nNothing will be published. Elantra support is not intact in this tree.")
+        return 1
+    if args.repo:
+        print("PASSED: all " + str(len(_passes)) + " guards green -- Elantra support is intact.")
+    else:
+        # Without --repo, guard_superproject and guard_opendbc_pin never ran. Those are the
+        # two that answer "is the tree I just checked the tree that actually ships?", so a
+        # bare pass here is not the same claim and must not be printed as if it were.
+        print("PASSED: " + str(len(_passes)) + " opendbc guards green.")
+        print("SKIPPED: the superproject and opendbc-pin guards -- pass --repo to run them.")
+        print("         Without them this says nothing about which opendbc the car ships.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
