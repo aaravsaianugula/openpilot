@@ -58,7 +58,10 @@ DILEMMA_FRAMES = 10
 # leads
 LEAD_PROB = 0.5
 LEAD_S0 = 4.0
-CLOSING_RATE = 0.2       # 1/s, (v_ego - v_lead) / d, i.e. TTC < 5 s
+LEAD_BRAKE_T = 5.0       # s a lead keeps braking; replay of 74 takeovers: 3 s braked before the driver 15x, 5 s 22x, 8 s 27x, phantoms 2/6/14
+LEAD_T = np.arange(0.25, 15.01, 0.25)
+LEAD_LOW_V = 3.0         # m/s, creeping up behind a car is ended gently, not at A_MIN
+LEAD_LOW_V_MAX = 1.5
 TTC_SAFETY = 2.0         # s, the only brake kept during a turn
 CUTOUT_BLOCK_FRAMES = int(1.5 / DT_MDL)
 LEAD_MIN_FRAMES = 3      # replay: 1-2 frame lead-accel spikes became 0.2-0.5 s brake taps
@@ -121,6 +124,34 @@ def plan_stop_distance(t: np.ndarray, x: np.ndarray, v: np.ndarray) -> float | N
     if a_end < -0.1:
       return float(x[-1] + v[-1] ** 2 / (2 * -a_end))
   return None
+
+
+def lead_decel(d: float, v_ego: float, v_l: float, a_l: float) -> float:
+  """Least constant deceleration, starting after TAU, that keeps LEAD_S0 behind the lead's predicted path.
+
+  The lead keeps its braking for up to LEAD_BRAKE_T (stopping if it reaches zero), then holds its speed.
+  Replay of 10 drives (2026-11-04): the bare relative formula a_l - dv^2/2d extrapolates every brake through
+  zero speed (-3.5 asked for a stop needing -2.2), and gating it on closing rate missed a stopped car found
+  at 79 m until 0.1 s before the driver braked.
+  """
+  if v_ego < 0.1:
+    return 0.
+  v_l, a_l = max(v_l, 0.), min(a_l, 0.)
+  tb = min(LEAD_BRAKE_T, v_l / -a_l) if a_l < 0. else 0.
+  tt = np.minimum(LEAD_T, tb)
+  v_f = v_l + a_l * tb
+  x = d - LEAD_S0 + v_l * tt + a_l * tt ** 2 / 2 + v_f * (LEAD_T - tt)
+  overrun = v_ego * LEAD_T - x            # how far past the buffer holding our speed would take us
+  u = LEAD_T - TAU
+  room = x - v_ego * TAU
+  with np.errstate(divide='ignore', invalid='ignore'):
+    a_moving = 2 * overrun / u ** 2         # still rolling at that time
+    a_stopped = np.where(room > 0., v_ego ** 2 / (2 * room), np.inf)  # stopped before it
+  a = np.where(u > 0., np.where(a_moving * u <= v_ego, a_moving, a_stopped), np.inf)
+  req = float(np.max(np.where(overrun > 0., a, 0.)))
+  if v_f < 0.1:  # a stopped lead binds where it stopped, even past the time grid
+    req = max(req, v_ego ** 2 / (2 * room[-1]) if room[-1] > 0. else np.inf)
+  return min(req, LEAD_LOW_V_MAX) if v_ego < LEAD_LOW_V else min(req, 50.)
 
 
 class LongAssist:
@@ -202,13 +233,14 @@ class LongAssist:
     ttc = np.inf
     if lead is not None:
       d, v_l, a_l = lead
-      dv = v_ego - v_l
-      if dv > 0.:
-        ttc = d / dv
-        if dv / max(d, 1.) > CLOSING_RATE or not lead_one.present:
-          a_req = min(a_l, 0.) - dv ** 2 / (2 * max(d - LEAD_S0, 0.5))
-          if a_req < -STOP_ONSET:
-            a_lead = max(a_req, A_MIN)
+      if v_ego > v_l:
+        ttc = d / (v_ego - v_l)
+    # every lead hypothesis (camera radar point, model lead) is a possible obstacle: the most demanding one
+    # brakes. Closest-wins picked a vision lead at 58 m doing 13 m/s over a stopped radar car at 79 m.
+    # Normal following needs far less than this (it aims LEAD_S0 behind, the MPC keeps a time gap).
+    a_req = max((lead_decel(ld[0], v_ego, ld[1], ld[2]) for ld in leads), default=0.)
+    if a_req > STOP_ONSET:
+      a_lead = max(-a_req, A_MIN)
     self.lead_frames = self.lead_frames + 1 if a_lead is not None else 0
     if self.lead_frames < LEAD_MIN_FRAMES:
       a_lead = None

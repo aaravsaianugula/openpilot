@@ -50,7 +50,8 @@ def episodes(frames: list[dict], key: str) -> list[dict]:
 def summarize(frames: list[dict]) -> dict:
     for f in frames:
         f["brake"] = f["brake_active"] and f["a_brake"] < f["plan"] - MARGIN
-        f["lift"] = not f["brake_active"] and f["lift_v"] > f["plan"] + MARGIN
+        # a zero lift under a braking plan is not a lift: apply() only raises e2e when a_lift > 0
+        f["lift"] = not f["brake_active"] and f["lift_v"] > max(f["plan"], 0.) + MARGIN
     brake = episodes([dict(f, la=f["a_brake"]) for f in frames], "brake")
     lift = episodes([dict(f, la=f["lift_v"]) for f in frames], "lift")
     n = len(frames)
