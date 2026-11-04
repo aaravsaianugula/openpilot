@@ -17,7 +17,7 @@ if (-not (Test-Path "$env:SystemRoot\System32\vcruntime140_1.dll")) {  # onnxrun
   Start-Process "$env:TEMP\vc_redist.x64.exe" "/install /quiet /norestart" -Wait
 }
 if (-not (Test-Path "$root\venv")) { & $py -m venv "$root\venv" }
-& "$root\venv\Scripts\python.exe" -m pip install -q --upgrade numpy onnx sympy "onnxruntime-gpu[cuda,cudnn]"  # onnx rebuilds pre-Sep-14 exports; sympy: the BiasGelu fusion
+& "$root\venv\Scripts\python.exe" -m pip install -q --upgrade numpy onnx "onnxruntime-gpu[cuda,cudnn]"  # onnx rebuilds pre-Sep-14 exports
 if ($LASTEXITCODE) { throw "pip install failed" }
 
 # only the comma's end of the USB link may reach the server

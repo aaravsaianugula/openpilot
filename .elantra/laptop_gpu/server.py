@@ -41,7 +41,6 @@ MAX_DIFF = 0.05  # |gpu - cpu| / (1 + |cpu|): fp16 rounding gives ~0.015, a brok
 SESSION_TIMEOUT = 10  # a comma that goes this long without a frame is gone
 # one graph launch per frame (4x faster, no jitter); NHWC convs with the bias fused in: 11% faster, same gate diff
 CUDA_EP = {"enable_cuda_graph": "1", "cudnn_conv_algo_search": "EXHAUSTIVE", "prefer_nhwc": "1", "fuse_conv_bias": "1"}
-FUSE = "bias_gelu"  # graph rewrite in fuse(); models checked without it are re-gated
 TYPES = {"tensor(float)": "float32", "tensor(float16)": "float16", "tensor(uint8)": "uint8"}
 _preparing: set[str] = set()
 
@@ -64,21 +63,7 @@ def onnx_path(oid: str) -> Path:
 def prepared() -> dict[str, dict]:
   """oid -> {"onnx", "name", "diff"} for every model checked on this GPU."""
   oks = {ok.stem: json.loads(ok.read_text()) for ok in (CACHE / ".git/lfs/objects").glob("*/*/*.ok")}
-  return {oid: p for oid, p in oks.items() if p.get("ep") == CUDA_EP and p.get("fuse") == FUSE}  # a check under other kernels does not count
-
-
-def fuse(src: Path) -> Path:
-  """The model with each MatMul bias + Gelu as one BiasGelu kernel: 6% faster on the power-capped RTX 2050."""
-  import logging
-  from onnxruntime.transformers.optimizer import optimize_model
-  dst = src.with_name(src.name + ".fused.onnx")
-  if not dst.is_file():
-    logging.getLogger("onnxruntime.transformers").setLevel(logging.WARNING)
-    m = optimize_model(str(src), model_type="bert", num_heads=0, hidden_size=0, opt_level=0, use_gpu=True)
-    tmp = dst.with_suffix(".tmp")
-    m.save_model_to_file(str(tmp))
-    tmp.replace(dst)
-  return dst
+  return {oid: p for oid, p in oks.items() if p.get("ep") == CUDA_EP}  # a check under other kernels does not count
 
 
 def wrap_history(src: Path) -> Path:
@@ -256,12 +241,11 @@ def prepare(oid: str, size: int, name: str) -> Path:
     onnx = onnx_path(oid)
     if "features_buffer" in {i.name for i in ort.InferenceSession(str(onnx), providers=["CPUExecutionProvider"]).get_inputs()}:
       onnx = wrap_history(onnx)
-    fused = fuse(onnx)
-    diff = check(Model(fused), onnx)  # against the unfused model on the CPU
+    diff = check(Model(onnx), onnx)
     print(f"{name}: worst relative diff vs CPU {diff:.4f} (pass <= {MAX_DIFF})", flush=True)
     if not diff <= MAX_DIFF:
       raise RuntimeError(f"{name} is wrong on this GPU: relative diff {diff} > {MAX_DIFF}")
-    ok.write_text(json.dumps({"onnx": fused.name, "name": name, "diff": diff, "ep": CUDA_EP, "fuse": FUSE}))
+    ok.write_text(json.dumps({"onnx": onnx.name, "name": name, "diff": diff, "ep": CUDA_EP}))
   return onnx_path(oid).with_name(json.loads(ok.read_text())["onnx"])
 
 
