@@ -79,18 +79,23 @@ class LongitudinalPlannerSP:
     # Long Assist (Elantra overlay)
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
       self.long_assist.mode = LongAssistMode(min(max(int(self.params.get("LongAssistMode", return_default=True) or 0), 0), 3))
-    map_ahead = MAP_EMPTY
-    if self.long_assist.mode != LongAssistMode.off:
-      if self.frame % 5 == 0:
-        self.map_ctx.set_targets(self.mem_params.get("MapTargetVelocities"))
-      gps = sm[self.gps_location_service]
-      gps_fresh = 0 < sm.logMonoTime['modelV2'] - sm.logMonoTime[self.gps_location_service] < 2e9
-      map_ahead = self.map_ctx.ahead(gps.latitude, gps.longitude, gps.bearingDeg, gps.speed, gps.hasFix and gps_fresh)
     self.frame += 1
-    v_limit = self.resolver.speed_limit_final if self.resolver.speed_limit_valid else 0.
-    healthy = sm.all_checks(service_list=['modelV2', 'carState', 'radarState'])
-    self.long_assist.update(sm['modelV2'], sm['radarState'].leadOne, CS, long_enabled and not long_override,
-                            self.output_v_target, v_limit, healthy, map_ahead)
+    if self.long_assist.mode == LongAssistMode.off:
+      self.long_assist.reset()
+    else:
+      # test harnesses (longitudinal_maneuvers Plant) pass a plain dict: no validity, no GPS timing
+      real_sm = isinstance(sm, messaging.SubMaster)
+      map_ahead = MAP_EMPTY
+      if real_sm:
+        if self.frame % 5 == 0:
+          self.map_ctx.set_targets(self.mem_params.get("MapTargetVelocities"))
+        gps = sm[self.gps_location_service]
+        gps_fresh = 0 < sm.logMonoTime['modelV2'] - sm.logMonoTime[self.gps_location_service] < 2e9
+        map_ahead = self.map_ctx.ahead(gps.latitude, gps.longitude, gps.bearingDeg, gps.speed, gps.hasFix and gps_fresh)
+      healthy = sm.all_checks(service_list=['modelV2', 'carState', 'radarState']) if real_sm else True
+      v_limit = self.resolver.speed_limit_final if self.resolver.speed_limit_valid else 0.
+      self.long_assist.update(sm['modelV2'], sm['radarState'].leadOne, CS, long_enabled and not long_override,
+                              self.output_v_target, v_limit, healthy, map_ahead)
 
     return self.output_v_target, self.output_a_target
 
