@@ -29,7 +29,7 @@ class Mode(IntEnum):
 
 
 A_MIN = -3.5             # ACCEL_MIN, panda clamp
-TAU = 1.1                # s, actuator 0.5 + model/CAN latency 0.2 + jerk ramp ~0.4
+TAU = 0.7                # s, actuator 0.5 + model/CAN latency 0.2; the brake ramps in, so no jerk term
 
 # model stop point
 V_STOP = 0.5             # m/s, plan speed treated as stopped
@@ -39,8 +39,13 @@ STOP_OVERBRAKE = 1.1     # >1 so the required decel shrinks as we approach
 STOP_HIST = 10           # frames of world-frame stop observations
 STOP_MIN_OBS = 4         # observations in STOP_HIST needed to latch
 STOP_MEDIAN_N = 5
-UNCORROBORATED_BRAKE = -1.5
-CORROBORATE_FRAMES = 6
+STOP_MISS_MAX = 2        # frames the plan may drop the stop before the latch (and its hold time) resets
+# Replay (2026-11-03, 8 drives): plans that flicker to a stop for a few frames, and far stops the model
+# drops a second later, were most brake episodes. So nothing until the stop has held CORROBORATE_FRAMES,
+# then the cap opens from STOP_CAP_START at STOP_CAP_RATE per second while it keeps holding.
+CORROBORATE_FRAMES = 10
+STOP_CAP_START = 1.0
+STOP_CAP_RATE = 1.0      # m/s^2 per s
 DILEMMA_ACCEL = 3.0      # a fresh stop needing more than this is likely a yellow light: leave it to the model
 DILEMMA_FRAMES = 10
 
@@ -50,12 +55,15 @@ LEAD_S0 = 4.0
 CLOSING_RATE = 0.2       # 1/s, (v_ego - v_lead) / d, i.e. TTC < 5 s
 TTC_SAFETY = 2.0         # s, the only brake kept during a turn
 CUTOUT_BLOCK_FRAMES = int(1.5 / DT_MDL)
+LEAD_MIN_FRAMES = 3      # replay: 1-2 frame lead-accel spikes became 0.2-0.5 s brake taps
 
 # curves
-A_LAT_BP = [0., 8., 15., 30.]
-A_LAT_V = [3.0, 2.5, 2.0, 1.5]
+A_LAT_BP = [0., 8., 15., 25., 35.]
+A_LAT_V = [3.0, 2.8, 2.5, 2.4, 2.4]  # replay: 1.5-1.8 at 25-32 m/s braked for highway curves driven fine
+CURVE_ONSET = 0.5
+A_CURVE_MAX_BP = [20., 30.]
+A_CURVE_MAX_V = [2.0, 1.0]           # highway curvature from the plan is noisy: never brake hard on it
 A_CURVE_DECEL = 1.2
-A_CURVE_MAX = 2.0
 CURVE_V_MIN = 3.0        # plan points slower than this give unreliable curvature
 CURVE_RANGE = 120.
 
@@ -118,6 +126,7 @@ class LongAssist:
     self.odom = 0.
     self.stop_hist: deque = deque(maxlen=STOP_HIST)
     self.stop_frames = 0
+    self.stop_miss = 0
     self.prev_plan: tuple[np.ndarray, np.ndarray] | None = None
     self.c_plan = 1.
     self.conf_ok = False
@@ -125,6 +134,7 @@ class LongAssist:
     self.turning = False
     self.turn_exit = 0
     self.had_lead = False
+    self.lead_frames = 0
     self.cutout_block = 0
 
     self.state = State.off
@@ -193,6 +203,9 @@ class LongAssist:
           a_req = min(a_l, 0.) - dv ** 2 / (2 * max(d - LEAD_S0, 0.5))
           if a_req < -STOP_ONSET:
             a_lead = max(a_req, A_MIN)
+    self.lead_frames = self.lead_frames + 1 if a_lead is not None else 0
+    if self.lead_frames < LEAD_MIN_FRAMES:
+      a_lead = None
 
     # --- confidence
     cur = np.interp(T_CMP, t, v)
@@ -219,7 +232,8 @@ class LongAssist:
     obs = [s for s in self.stop_hist if s is not None]
     a_stop = None
     stop_spread = 0.
-    if len(obs) >= STOP_MIN_OBS:
+    self.stop_miss = 0 if d_obs is not None else self.stop_miss + 1
+    if len(obs) >= STOP_MIN_OBS and self.stop_miss <= STOP_MISS_MAX:
       recent = obs[-STOP_MEDIAN_N:]
       self.stop_frames += 1
       stop_spread = float(np.std(recent))
@@ -235,13 +249,16 @@ class LongAssist:
         a_req = v_ego ** 2 / (2 * d_eff) if d_eff > 0.5 else np.inf
         if a_req > (STOP_ONSET_PRIMED if at_hazard else STOP_ONSET):
           a_stop = max(-STOP_OVERBRAKE * a_req, A_MIN)
-      if a_stop is not None and not behind_lead:
+      if a_stop is not None:
         # a stop sign, give-way or crossing has no yellow phase, so a late stop there is still braked for
-        dilemma_possible = not at_hazard or self.hazard_kind == Kind.signal
-        if dilemma_possible and a_req > DILEMMA_ACCEL and self.stop_frames <= DILEMMA_FRAMES:
+        dilemma_possible = not (behind_lead or at_hazard) or self.hazard_kind == Kind.signal
+        # a mapped stop, or a stopped lead the camera radar also sees, needs no waiting
+        corroborated = at_hazard or (behind_lead and lead_one.present and lead_one.radar)
+        held = self.stop_frames - (0 if corroborated else CORROBORATE_FRAMES)
+        if (dilemma_possible and a_req > DILEMMA_ACCEL and self.stop_frames <= DILEMMA_FRAMES) or held < 0:
           a_stop = None
-        elif not at_hazard and self.stop_frames < CORROBORATE_FRAMES:
-          a_stop = max(a_stop, UNCORROBORATED_BRAKE)
+        else:
+          a_stop = max(a_stop, -(STOP_CAP_START + max(STOP_CAP_RATE, a_req) * held * DT_MDL))
     else:
       self.stop_frames = 0
       self.stop_dist = -1.
@@ -262,14 +279,17 @@ class LongAssist:
       self.v_curve = float(min(self.v_curve, np.min(np.sqrt(v_c ** 2 + 2 * A_CURVE_DECEL * reach))))
       # at least 1 s to shed speed, so being slightly fast mid-curve is not a hard brake
       a_req = float(np.max((v_ego ** 2 - np.minimum(v_c, v_ego) ** 2) / (2 * (reach + v_ego))))
-      if a_req > STOP_ONSET:
-        a_curve = -min(a_req, A_CURVE_MAX)
+      if a_req > CURVE_ONSET:
+        a_curve = -min(a_req, float(np.interp(v_ego, A_CURVE_MAX_BP, A_CURVE_MAX_V)))
     if map_ahead.curve_dist.size:
       reach = np.maximum(map_ahead.curve_dist - v_ego * TAU, 0.)
       self.v_curve = float(min(self.v_curve, np.min(np.sqrt(map_ahead.curve_v ** 2 + 2 * A_CURVE_DECEL * reach))))
       a_req = float(np.max((v_ego ** 2 - np.minimum(map_ahead.curve_v, v_ego) ** 2) / (2 * (reach + v_ego))))
-      if a_req > STOP_ONSET:
+      if a_req > CURVE_ONSET:
         a_curve = min(a_curve if a_curve is not None else 0., -min(a_req, A_MAP_CURVE_MAX))
+    lane_change = model.meta.laneChangeState != LaneChangeState.off
+    if lane_change:
+      a_curve = None  # the plan's yaw rate during a lane change is the lane change, not the road
 
     # --- turn hand-off: once the path bends into the turn, the model owns it
     k_near = float(np.max(kappa[t <= TURN_LOOKAHEAD_T]))
@@ -308,7 +328,7 @@ class LongAssist:
     v_plan = float(np.interp(INTENT_T, t, v))
     intent_decel = v_plan - v_ego < INTENT_DECEL_DV or model.action.desiredAcceleration < E2E_BRAKING
     lift_ok = (self.conf_ok and not (CS.gasPressed or CS.brakePressed) and not self.turning and
-               model.meta.laneChangeState == LaneChangeState.off and not intent_decel and
+               not lane_change and not intent_decel and
                self.stop_frames == 0 and self.cutout_block == 0 and self.a_brake is None and
                (v_ego > V_STOP or v_plan > LAUNCH_PLAN_V) and not (primed and v_ego > PRIME_V))
     self.lift_weight = min(self.lift_weight + 1. / LIFT_FADE_FRAMES, 1.) if lift_ok else 0.

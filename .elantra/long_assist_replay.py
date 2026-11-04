@@ -10,7 +10,10 @@ episode logic, then labels every brake episode with what happened next:
   slowed    it did not stop but lost >= 30% of its speed -- a slow lead or a curve;
   phantom   neither -- Long Assist would have braked for nothing. These are the ones to tune out.
 
-Also reports how often the radard lead was radar-matched (camera SCC11 point) vs vision-only.
+Also reports how often the radard lead was radar-matched (camera SCC11 point) vs vision-only; which
+planner candidate was winning during each lift episode (a lift only reaches the car when the model's
+e2e candidate is the one holding the output down); and exec_gap, the median of a_ego 0.5 s later minus
+the planner's braking target, i.e. how much less the car actually brakes than it is told to.
 
     python .elantra/long_assist_replay.py [route ...]       # on the device, newest 10 by default
 """
@@ -27,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import long_assist_scan as las
 
 STOP_WINDOW = 15.
+EXEC_DELAY_FRAMES = 10   # 0.5 s, the actuator delay
 DEFAULT_ROUTES = 10
 
 
@@ -85,6 +89,7 @@ def replay_route(segs: list[str]) -> dict:
           "t": (ev.logMonoTime - t0) * 1e-9, "v": float(cs.vEgo), "plan": float(ev.longitudinalPlan.aTarget),
           "mode": 1, "state": str(la.state), "conf": float(la.confidence), "brake_active": la.a_brake is not None,
           "a_brake": float(la.a_brake or 0.), "lift_v": float(la.a_lift), "stop_dist": float(la.stop_dist),
+          "a_ego": float(cs.aEgo), "src": str(ev.longitudinalPlan.longitudinalPlanSource),
         })
     except Exception as e:  # a corrupt or partial segment must not lose the rest of the route
       print(f"# skipped {seg}: {e}", file=sys.stderr)
@@ -92,6 +97,12 @@ def replay_route(segs: list[str]) -> dict:
   rep = las.summarize(frames)
   for ep in rep["brake_episodes"]:
     ep["outcome"] = label(ep, frames)
+  for ep in rep["lift_episodes"]:
+    srcs = [f["src"] for f in frames if ep["t"] <= f["t"] <= ep["t"] + ep["dur"]]
+    ep["src"] = max(set(srcs), key=srcs.count) if srcs else ""
+  gaps = [frames[i + EXEC_DELAY_FRAMES]["a_ego"] - f["plan"] for i, f in enumerate(frames[:-EXEC_DELAY_FRAMES])
+          if f["plan"] < -1.]
+  rep["exec_gap"] = round(float(sorted(gaps)[len(gaps) // 2]), 2) if gaps else 0.
   rep["lead_frames"] = leads
   rep["radar_lead_share"] = round(radar_leads / leads, 3) if leads else 0.
   rep["hazards_loaded"] = map_ctx.hazards is not None
@@ -114,7 +125,8 @@ def main() -> int:
     outcomes = [ep["outcome"] for ep in rep["brake_episodes"]]
     print(f"{route} engaged_frames={rep['frames']} radar_lead={rep['radar_lead_share']} conf_on={rep['conf_on_share']} " +
           f"brake_ep={len(outcomes)} stopped={outcomes.count('stopped')} slowed={outcomes.count('slowed')} " +
-          f"phantom={outcomes.count('phantom')} primed={rep['primed_share']} lift_ep={len(rep['lift_episodes'])} states={rep['states']}", flush=True)
+          f"phantom={outcomes.count('phantom')} primed={rep['primed_share']} lift_ep={len(rep['lift_episodes'])} " +
+          f"lift_ep_e2e={sum(ep['src'] == 'e2e' for ep in rep['lift_episodes'])} exec_gap={rep['exec_gap']} states={rep['states']}", flush=True)
 
   dest = os.environ.get("LA_REPLAY_OUT", "/data/long_assist_replay.json")
   with open(dest, "w") as f:

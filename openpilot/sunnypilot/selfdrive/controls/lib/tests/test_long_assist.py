@@ -7,8 +7,8 @@ from openpilot.cereal import log
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.long_assist import (
-  LongAssist, Mode, State, plan_stop_distance, A_MIN, A_MAP_CURVE_MAX, UNCORROBORATED_BRAKE, CORROBORATE_FRAMES,
-  DILEMMA_FRAMES,
+  LongAssist, Mode, State, plan_stop_distance, A_MIN, A_MAP_CURVE_MAX, CORROBORATE_FRAMES, DILEMMA_FRAMES,
+  STOP_CAP_START,
 )
 from openpilot.sunnypilot.selfdrive.controls.lib.long_assist_map import EMPTY, Kind, MapAhead
 
@@ -81,21 +81,34 @@ class TestLongAssist:
       assert la.apply(0.5, True) == (0.5, True)
     assert la.a_brake is not None  # shadow still computes
 
-  def test_dilemma_then_uncorroborated_cap(self):
-    # stop needing > 3 m/s^2 that just appeared: not amplified while fresh
+  def test_dilemma_then_fast_ramp(self):
+    # stop needing > 3 m/s^2 that just appeared: not amplified while fresh, then opens fast
     m = make_model(20., stop_at=40.)
     run(self.la, 5, m, cs=make_cs(20.))
     assert self.la.a_brake is None
-    run(self.la, DILEMMA_FRAMES, m, cs=make_cs(20.))
+    run(self.la, DILEMMA_FRAMES + 8, m, cs=make_cs(20.))
     assert self.la.a_brake is not None and self.la.a_brake <= -3.0
 
-  def test_comfortable_stop_capped_until_corroborated(self):
+  def test_radar_confirmed_lead_stop_needs_no_wait(self):
+    m = make_model(15., stop_at=50.)
+    run(self.la, 5, m, lead=make_lead(True, 55., 0., 0.), cs=make_cs(15.))
+    assert self.la.a_brake is not None and self.la.a_brake <= -STOP_CAP_START
+
+  def test_stop_waits_for_corroboration_then_ramps(self):
     m = make_model(15., stop_at=80.)
-    run(self.la, 4, m, cs=make_cs(15.))
-    assert self.la.a_brake == UNCORROBORATED_BRAKE
-    run(self.la, CORROBORATE_FRAMES, m, cs=make_cs(15.))
-    assert -3.0 < self.la.a_brake < UNCORROBORATED_BRAKE
+    run(self.la, 4 + CORROBORATE_FRAMES - 2, m, cs=make_cs(15.))
+    assert self.la.a_brake is None  # a flicker of a few frames never brakes
+    run(self.la, 2, m, cs=make_cs(15.))
+    assert abs(self.la.a_brake + STOP_CAP_START) < 0.15
+    run(self.la, 20, m, cs=make_cs(15.))
+    assert -3.0 < self.la.a_brake < -STOP_CAP_START - 0.5
     assert self.la.state == State.stop
+
+  def test_flicker_never_brakes(self):
+    for _ in range(5):
+      run(self.la, 6, make_model(15., stop_at=60.), cs=make_cs(15.))
+      run(self.la, 6, make_model(15.), cs=make_cs(15.))
+      assert self.la.a_brake is None
 
   def test_lead_braking_without_plan_stop(self):
     run(self.la, 3, make_model(20.), lead=make_lead(True, 40., 10., -2.), cs=make_cs(20.))
@@ -103,11 +116,13 @@ class TestLongAssist:
     assert A_MIN <= self.la.a_brake < -3.0
 
   def test_curve_ahead(self):
-    m = make_model(20., kappa=lambda x: np.where(x > 100., 0.01, 0.))
+    m = make_model(20., kappa=lambda x: np.where(x > 100., 0.015, 0.))
     run(self.la, 3, m, cs=make_cs(20.))
     assert self.la.state == State.curve
     assert -1.5 < self.la.a_brake < -0.5
     assert self.la.v_curve < 20.
+    run(self.la, 3, make_model(20., kappa=lambda x: np.where(x > 100., 0.01, 0.), lane_change=True), cs=make_cs(20.))
+    assert self.la.state != State.curve
 
   def test_turn_hands_off(self):
     m = make_model(8., stop_at=25., kappa=lambda x: np.full_like(x, 0.05))
@@ -180,7 +195,9 @@ class TestLongAssist:
   def test_stop_sign_trusted_at_once_even_when_late(self):
     m = make_model(20., stop_at=40.)
     run(self.la, 4, m, cs=make_cs(20.), map_ahead=hazard(42., Kind.stop))
-    assert self.la.a_brake is not None and self.la.a_brake < -3.0  # no dilemma skip, no -1.5 cap
+    assert self.la.a_brake is not None  # no corroboration wait, no yellow-light skip
+    run(self.la, 6, m, cs=make_cs(20.), map_ahead=hazard(42., Kind.stop))
+    assert self.la.a_brake < -3.0
 
   def test_signal_keeps_dilemma_rule(self):
     run(self.la, 5, make_model(20., stop_at=40.), cs=make_cs(20.), map_ahead=hazard(42., Kind.signal))
