@@ -5,15 +5,19 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 
+import platform
+
 from openpilot.cereal import messaging, custom
 from opendbc.car import structs
 from openpilot.common.constants import CV
+from openpilot.common.gps import get_gps_location_service
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.long_assist import LongAssist, Mode as LongAssistMode
+from openpilot.sunnypilot.selfdrive.controls.lib.long_assist_map import EMPTY as MAP_EMPTY, MapContext
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitAssist
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver
@@ -35,6 +39,9 @@ class LongitudinalPlannerSP:
     self.e2e_alerts_helper = E2EAlertsHelper()
     self.long_assist = LongAssist()
     self.params = Params()
+    self.mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else self.params
+    self.gps_location_service = get_gps_location_service(self.params)
+    self.map_ctx = MapContext()
     self.frame = 0
 
     self.output_v_target = 0.
@@ -72,11 +79,18 @@ class LongitudinalPlannerSP:
     # Long Assist (Elantra overlay)
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
       self.long_assist.mode = LongAssistMode(min(max(int(self.params.get("LongAssistMode", return_default=True) or 0), 0), 3))
+    map_ahead = MAP_EMPTY
+    if self.long_assist.mode != LongAssistMode.off:
+      if self.frame % 5 == 0:
+        self.map_ctx.set_targets(self.mem_params.get("MapTargetVelocities"))
+      gps = sm[self.gps_location_service]
+      gps_fresh = 0 < sm.logMonoTime['modelV2'] - sm.logMonoTime[self.gps_location_service] < 2e9
+      map_ahead = self.map_ctx.ahead(gps.latitude, gps.longitude, gps.bearingDeg, gps.speed, gps.hasFix and gps_fresh)
     self.frame += 1
     v_limit = self.resolver.speed_limit_final if self.resolver.speed_limit_valid else 0.
     healthy = sm.all_checks(service_list=['modelV2', 'carState', 'radarState'])
     self.long_assist.update(sm['modelV2'], sm['radarState'].leadOne, CS, long_enabled and not long_override,
-                            self.output_v_target, v_limit, healthy)
+                            self.output_v_target, v_limit, healthy, map_ahead)
 
     return self.output_v_target, self.output_a_target
 
@@ -153,5 +167,7 @@ class LongitudinalPlannerSP:
     longAssist.clearStop = la.clear_stop
     longAssist.vCurve = float(la.v_curve)
     longAssist.vTarget = float(la.v_target)
+    longAssist.hazardDistance = float(la.hazard_dist)
+    longAssist.hazardKind = int(la.hazard_kind)
 
     pm.send('longitudinalPlanSP', plan_sp_send)

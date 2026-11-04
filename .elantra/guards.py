@@ -1197,6 +1197,46 @@ def guard_model_catalog(repo: Path) -> None:
           + " picker with no error")
 
 
+LONG_ASSIST_FILES = (
+    "openpilot/sunnypilot/selfdrive/controls/lib/long_assist.py",
+    "openpilot/sunnypilot/selfdrive/controls/lib/long_assist_map.py",
+    "openpilot/sunnypilot/selfdrive/controls/lib/tests/test_long_assist.py",
+    "openpilot/sunnypilot/selfdrive/controls/lib/tests/test_long_assist_map.py",
+    "openpilot/cereal/custom.capnp",
+    "openpilot/selfdrive/controls/lib/longitudinal_planner.py",
+    "openpilot/sunnypilot/selfdrive/controls/lib/longitudinal_planner.py",
+)
+LONG_ASSIST_HOOK = "output_a_target_e2e, output_should_stop_e2e"
+
+
+def guard_long_assist(repo: Path) -> None:
+    """Long Assist ships OFF and reaches the car through exactly one line.
+
+    LongAssistMode defaulting to anything but 0 would hand braking and acceleration to an untuned
+    module on every device that updates. apply() on the e2e candidate, before the candidates
+    min(), is the only path to the car: dropped, the feature still logs and looks installed but
+    does nothing; moved after the min() or onto another candidate, "braking always wins" is gone.
+    """
+    print("\n[long assist] default off, one hook, overlay complete")
+    keys = read(repo / "openpilot/common/params_keys.h")
+    planner = read(repo / "openpilot/selfdrive/controls/lib/longitudinal_planner.py")
+    sp_planner = read(repo / "openpilot/sunnypilot/selfdrive/controls/lib/longitudinal_planner.py")
+    sync = read(repo / ".elantra/sync.py")
+
+    check("LongAssistMode defaults to 0 (off)",
+          '{"LongAssistMode", {PERSISTENT | BACKUP, INT, "0"}}' in keys)
+    hooks = re.findall(r"^\s*(.+?) = self\.long_assist\.apply\((.+?)\)\s*$", planner, re.M)
+    check("the upstream planner calls long_assist.apply() once, on the e2e candidate",
+          hooks == [(LONG_ASSIST_HOOK, LONG_ASSIST_HOOK)], str(hooks))
+    check("apply() runs before the candidates min()",
+          0 < planner.find("self.long_assist.apply(") < planner.find("candidates = ["))
+    check("the SP planner updates and publishes Long Assist",
+          "self.long_assist.update(" in sp_planner and "longitudinalPlanSP.longAssist" in sp_planner)
+    for path in LONG_ASSIST_FILES:
+        check(path.rsplit("/", 1)[-1] + " is registered in the overlay", '"' + path + '"' in sync,
+              "the weekly rebuild would drop it")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -1230,6 +1270,7 @@ def main() -> int:
         guard_ui_headroom(args.repo.resolve(), opendbc)
         guard_opendbc_pin(args.repo.resolve(), opendbc)
         guard_model_catalog(args.repo.resolve())
+        guard_long_assist(args.repo.resolve())
 
     print("\n" + "-" * 60)
     if _failures:

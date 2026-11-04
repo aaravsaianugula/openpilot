@@ -129,7 +129,9 @@ OVERLAY_ADDED = [
     # the schema group, the SP planner that runs and publishes it, and the one apply() line in the
     # upstream planner. Unregistered, the rebuild keeps the module and nothing ever calls it.
     "openpilot/sunnypilot/selfdrive/controls/lib/long_assist.py",
+    "openpilot/sunnypilot/selfdrive/controls/lib/long_assist_map.py",
     "openpilot/sunnypilot/selfdrive/controls/lib/tests/test_long_assist.py",
+    "openpilot/sunnypilot/selfdrive/controls/lib/tests/test_long_assist_map.py",
 ]
 
 # Upstream files we modify. Kept deliberately tiny -- this is the only conflict surface in
