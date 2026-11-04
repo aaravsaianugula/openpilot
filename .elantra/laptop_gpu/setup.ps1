@@ -12,6 +12,10 @@ if (-not (Test-Path $py)) {
   Invoke-WebRequest https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe -OutFile "$env:TEMP\python312.exe"
   Start-Process "$env:TEMP\python312.exe" "/quiet InstallAllUsers=1 Include_launcher=0 Include_test=0" -Wait
 }
+if (-not (Test-Path "$env:SystemRoot\System32\vcruntime140_1.dll")) {  # onnxruntime's DLLs need the VC++ runtime
+  Invoke-WebRequest https://aka.ms/vs/17/release/vc_redist.x64.exe -OutFile "$env:TEMP\vc_redist.x64.exe"
+  Start-Process "$env:TEMP\vc_redist.x64.exe" "/install /quiet /norestart" -Wait
+}
 if (-not (Test-Path "$root\venv")) { & $py -m venv "$root\venv" }
 & "$root\venv\Scripts\python.exe" -m pip install -q --upgrade numpy "onnxruntime-gpu[cuda,cudnn]"
 if ($LASTEXITCODE) { throw "pip install failed" }
