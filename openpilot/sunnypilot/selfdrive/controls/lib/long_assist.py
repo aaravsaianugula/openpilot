@@ -30,6 +30,12 @@ class Mode(IntEnum):
 
 A_MIN = -3.5             # ACCEL_MIN, panda clamp
 TAU = 0.7                # s, actuator 0.5 + model/CAN latency 0.2; the brake ramps in, so no jerk term
+# The car delivers ~0.8x the braking it is commanded: 38 min of engaged logs, aEgo 0.75 s after the command,
+# 0.69-0.86x across every bin from -0.5 to -3.5 (acceleration 0.85-1.0x). Plan, actuators and CAN output agree,
+# so the shortfall is in the car, and Hyundai longcontrol has kiV = 0, so nothing closes it. Requests below are
+# physical decelerations; they are divided by this before reaching the planner.
+# shortcut: one constant, upgrade to an online estimate if it varies with load, grade or weather in later logs.
+BRAKE_DELIVERY = 0.8
 
 # model stop point
 V_STOP = 0.5             # m/s, plan speed treated as stopped
@@ -307,7 +313,7 @@ class LongAssist:
       requests = {State.stop: a_stop, State.lead: a_lead, State.curve: a_curve}
     requests = {k: a for k, a in requests.items() if a is not None}
     brake_state = min(requests, key=requests.get) if requests else None
-    a_brake = requests[brake_state] if requests else None
+    a_brake = max(requests[brake_state] / BRAKE_DELIVERY, A_MIN) if requests else None
     if self.a_brake is not None:
       released = self.a_brake + J_BRAKE_RELEASE * DT_MDL
       if a_brake is None:
