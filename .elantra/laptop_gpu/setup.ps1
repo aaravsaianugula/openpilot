@@ -1,35 +1,39 @@
-# One-time laptop GPU setup on Windows 11, in an Administrator PowerShell (or over SSH as an admin).
-# Needs WSL's Ubuntu-24.04 installed (wsl --install -d Ubuntu-24.04 --no-launch, then a reboot). Safe to re-run.
+# One-time laptop GPU setup on Windows 11 with an NVIDIA GPU, in an Administrator PowerShell. Safe to re-run.
+#   irm https://raw.githubusercontent.com/aaravsaianugula/openpilot/master/.elantra/laptop_gpu/setup.ps1 -OutFile $env:TEMP\lg.ps1; & $env:TEMP\lg.ps1
 param([string]$Branch = "master")
 $ErrorActionPreference = "Stop"
-$raw = "https://raw.githubusercontent.com/aaravsaianugula/openpilot/$Branch/.elantra/laptop_gpu"
+$root = "$env:ProgramData\laptop_gpu"
+New-Item -ItemType Directory -Force $root | Out-Null
 
-# mirrored networking: the server in WSL listens on the comma's USB network adapter itself
-$cfg = "$env:USERPROFILE\.wslconfig"
-if (-not (Select-String -Quiet -Pattern networkingMode -Path $cfg -ErrorAction SilentlyContinue)) {
-  Add-Content $cfg "[wsl2]`nnetworkingMode=mirrored"
-  wsl --shutdown
+# Python 3.12 (python.org's last 3.12 installer) and onnxruntime with CUDA and cuDNN from pip
+$py = "$env:ProgramFiles\Python312\python.exe"
+if (-not (Test-Path $py)) {
+  Invoke-WebRequest https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe -OutFile "$env:TEMP\python312.exe"
+  Start-Process "$env:TEMP\python312.exe" "/quiet InstallAllUsers=1 Include_launcher=0 Include_test=0" -Wait
 }
+if (-not (Test-Path "$root\venv")) { & $py -m venv "$root\venv" }
+& "$root\venv\Scripts\python.exe" -m pip install -q --upgrade numpy "onnxruntime-gpu[cuda,cudnn]"
+if ($LASTEXITCODE) { throw "pip install failed" }
 
-# only the comma's end of the link may reach the server, through both firewalls WSL traffic crosses
-$wslVm = "{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}"
-if (-not (Get-NetFirewallHyperVRule -Name LaptopGpu -ErrorAction SilentlyContinue)) {
-  New-NetFirewallHyperVRule -Name LaptopGpu -DisplayName "Laptop GPU (comma)" -Direction Inbound -VMCreatorId $wslVm -Protocol TCP -LocalPorts 8390 -RemoteAddresses 192.168.250.1 | Out-Null
-}
+# only the comma's end of the USB link may reach the server
 if (-not (Get-NetFirewallRule -Name LaptopGpu -ErrorAction SilentlyContinue)) {
-  New-NetFirewallRule -Name LaptopGpu -DisplayName "Laptop GPU (comma)" -Direction Inbound -Protocol TCP -LocalPort 8390 -RemoteAddress 192.168.250.1 -Action Allow | Out-Null
+  New-NetFirewallRule -Name LaptopGpu -DisplayName "Laptop GPU (comma)" -Direction Inbound -Program $py -Protocol TCP -LocalPort 8390 -RemoteAddress 192.168.250.1 -Action Allow | Out-Null
 }
 
-# code, GPU runtime, and the default model compiled and checked for this GPU (the compile takes a while)
-wsl -d Ubuntu-24.04 -u root -- sh -c "curl -fsSL $raw/setup_wsl.sh | sh -s $Branch"
-if ($LASTEXITCODE -ne 0) { throw "WSL setup failed" }
+# stay awake on the charger and with the lid shut: the laptop rides in the car
+powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
+powercfg /setdcvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
+powercfg /change standby-timeout-ac 0
+powercfg /setactive SCHEME_CURRENT
 
-# start at logon: keeps the link addressed and the server running
-$dir = "$env:ProgramData\laptop_gpu"
-New-Item -ItemType Directory -Force $dir | Out-Null
-Invoke-WebRequest "$raw/start.ps1" -OutFile "$dir\start.ps1"
-$action = New-ScheduledTaskAction -Execute powershell.exe -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$dir\start.ps1`""
+# code, then the default model fetched and checked against the CPU (several minutes the first time)
+Invoke-WebRequest "https://raw.githubusercontent.com/aaravsaianugula/openpilot/$Branch/.elantra/laptop_gpu/start.ps1" -OutFile "$root\start.ps1"
+& "$root\start.ps1" -Branch $Branch -Prepare
+if ($LASTEXITCODE) { throw "model check failed, see above" }
+
+# start at logon: keeps the code current, the link addressed and the server running
+$action = New-ScheduledTaskAction -Execute powershell.exe -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$root\start.ps1`" -Branch $Branch"
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0
 Register-ScheduledTask LaptopGpu -Action $action -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME) -Settings $settings -RunLevel Highest -User $env:USERNAME -Force | Out-Null
 Start-ScheduledTask LaptopGpu
-"laptop GPU ready: plug the comma's aux USB-C port into this laptop"
+"laptop GPU ready: plug the comma's aux USB-C port into this laptop. Log: $root\server.log"

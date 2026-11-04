@@ -3,37 +3,37 @@
 Laptop half of the laptop GPU; the comma half and the protocol are openpilot/selfdrive/modeld/laptop.py.
 
     server.py              serve the comma on :8390 until killed
-    server.py --prepare    fetch, compile and check the default model, then exit
+    server.py --prepare    fetch and check the default model, then exit
     server.py --bench 200  time 200 frames of the default model, then exit
 
 The comma names the chestnut model selected on it or in sunnylink by its upstream ref. The big
-ONNX at that ref (comma's newest published one when the ref has none) is fetched from git-LFS,
-compiled once for this GPU with tinygrad's compile_onnx.py into ~/.cache/laptop_gpu/<oid>.pkl, and
-served only after it matches onnxruntime on the CPU: tinygrad's CUDA renderer has been silently
-wrong on openpilot models before (tinygrad #11705).
+ONNX at that ref (comma's newest published one when the ref has none) is fetched from git-LFS and
+run with onnxruntime on this GPU, recurrent state kept on the GPU. A model is served only after
+its GPU outputs match onnxruntime on the CPU.
 """
 import argparse
 import base64
-import math
-import os
 import pickle
 import socket
-import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(REPO), str(REPO / "tinygrad_repo"), str(REPO / ".elantra")]
+sys.path[:0] = [str(REPO), str(REPO / ".elantra")]
 import numpy as np  # noqa: E402
 import fetch_lfs_object as lfs  # noqa: E402
 from openpilot.selfdrive.modeld import laptop as link  # noqa: E402
 
-CACHE = Path(os.getenv("LAPTOP_GPU_CACHE", Path.home() / ".cache/laptop_gpu"))
+CACHE = REPO  # LFS objects land in REPO/.git/lfs/objects, checks beside them
+FORK = "https://raw.githubusercontent.com/aaravsaianugula/openpilot"
 ONNX_PATH = "openpilot/selfdrive/modeld/models/big_driving_supercombo.onnx"
-MAX_DIFF = 0.2  # fp16 model: known-good backends land at ~0.08, the broken CUDA path at ~150
+LFS_ENDPOINTS = ["https://huggingface.co/sunnypilot/sunnypilot-lfs.git/info/lfs", *lfs.FALLBACK_ENDPOINTS]
+MAX_DIFF = 0.05  # |gpu - cpu| / (1 + |cpu|): fp16 rounding gives ~0.015, a broken backend was off by ~150
 SESSION_TIMEOUT = 10  # a comma that goes this long without a frame is gone
+TYPES = {"tensor(float)": "float32", "tensor(float16)": "float16", "tensor(uint8)": "uint8"}
 _preparing: set[str] = set()
 
 
@@ -41,104 +41,112 @@ def resolve(ref: str | None, name: str | None) -> tuple[str, int, str]:
   """(oid, size, name) of the big ONNX at the comma's selected ref, else the default."""
   if ref:
     try:
-      return (*lfs.read_pointer(REPO, ONNX_PATH, ref), name or ref[:9])
+      with urllib.request.urlopen(f"{FORK}/{ref}/{ONNX_PATH}", timeout=10) as r:
+        return (*lfs.parse_pointer(r.read().decode()), name or ref[:9])
     except Exception:
       pass
   return link.DEFAULT_ONNX
 
 
-def random_feeds(specs: dict, seed: int) -> dict[str, np.ndarray]:
-  rng = np.random.default_rng(seed)
-  return {n: (rng.integers(0, 256, shape, dtype=np.uint8) if np.dtype(dtype) == np.uint8 else rng.standard_normal(shape).astype(dtype))
-          for n, (shape, dtype, _) in specs.items()}
+def onnx_path(oid: str) -> Path:
+  return lfs.object_path(CACHE, oid)
 
 
 class Model:
-  def __init__(self, pkl: Path):
-    from tinygrad import Tensor
-    from tinygrad.dtype import _from_np_dtype
-    from tinygrad.engine.realize import lower_and_compile
-    from tinygrad.uop.ops import UOp
-    from examples.openpilot.helpers import load_pickle
-
-    def view(buffer, shape, dtype, offset):  # modeld's input_view
-      v = buffer.view(math.prod(shape) * dtype.itemsize, offset).ensure_allocated()
-      return Tensor(UOp.from_buffer(v, dtype)).reshape(shape)
-
-    jits = load_pickle(pkl, out_of_band=True)
-    self.run = jits['run']
-    self.run.captured._linear = lower_and_compile(self.run.captured._linear)
-    self.specs, out_shapes = jits['input_specs'], jits['metadata']['output_shapes']
-    self.dev = self.specs['new_img'][2]
-    self.state = [n for n in self.specs if f'next_{n}' in out_shapes]
-    self.feed = [(n, list(shape), np.dtype(dtype).name) for n, (shape, dtype, _) in self.specs.items() if n not in self.state]
+  def __init__(self, onnx: Path):
+    import onnxruntime as ort
+    if hasattr(ort, "preload_dlls"):
+      ort.preload_dlls()  # CUDA and cuDNN from the nvidia pip wheels
+    opts = ort.SessionOptions()
+    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    self.sess = ort.InferenceSession(str(onnx), opts, providers=[("CUDAExecutionProvider", {"enable_cuda_graph": "1", "cudnn_conv_algo_search": "EXHAUSTIVE"})])  # one graph launch per frame: 4x faster, no jitter
+    if self.sess.get_providers()[0] != "CUDAExecutionProvider":
+      raise RuntimeError(f"no CUDA on this laptop: onnxruntime offers {self.sess.get_providers()}")
+    self.dev = "CUDA"
+    ins = {i.name: i for i in self.sess.get_inputs()}
+    outs = {o.name: o for o in self.sess.get_outputs()}
+    self.state = [n for n in ins if f"next_{n}" in outs]
+    self.specs = {n: (list(i.shape), TYPES[i.type]) for n, i in ins.items()}
+    self.feed = [(n, *self.specs[n]) for n in ins if n not in self.state]
     if sorted(n for n, _, _ in self.feed) != sorted(link.FEED):
       raise RuntimeError(f"model takes {[n for n, _, _ in self.feed]}, the comma's modeld fills {link.FEED}")
-    out_shape, out_dtype, _ = jits['output_specs']['outputs']
-    assert np.dtype(out_dtype) == np.float32, out_dtype
-    self.numel = math.prod(out_shape)
-    self.slices = {k: [s.start, s.stop] for k, s in pickle.loads(base64.b64decode(jits['metadata']['metadata']['output_slices'])).items()}
+    if outs["outputs"].type != "tensor(float)":
+      raise RuntimeError(f"outputs are {outs['outputs'].type}, the comma reads float32")
+    meta = self.sess.get_modelmeta().custom_metadata_map
+    self.slices = {k: [s.start, s.stop] for k, s in pickle.loads(base64.b64decode(meta["output_slices"])).items()}  # our own LFS-verified file
+    self.numel = int(np.prod(outs["outputs"].shape))
 
-    # the frame message lands in self.host and goes to the GPU in one copy, inputs read in place
+    # the frame message lands in self.host; CUDA graphs replay fixed addresses, so every input and output
+    # lives in a GPU buffer bound once, and the recurrent state alternates between two of them (A->B, B->A)
     offsets, size = link.layout(self.feed)
     self.host = np.zeros(size, dtype=np.uint8)
-    self.host_buf = Tensor(self.host, device='NPY')._buffer()
-    self.device_buf = Tensor(self.host, device=self.dev)._buffer()
-    self.inputs = {n: view(self.device_buf, shape, _from_np_dtype(np.dtype(dtype)), offsets[n]) for n, shape, dtype in self.feed}
-    self.inputs |= {n: Tensor(np.zeros(self.specs[n][0], self.specs[n][1]), device=self.dev).realize() for n in self.state}
-    self.outputs = {n: Tensor(np.zeros(shape, dtype), device=d).realize() for n, (shape, dtype, d) in jits['output_specs'].items()}
-    for n in self.state:
-      self.outputs[f'next_{n}'] = view(self.inputs[n]._buffer(), self.specs[n][0], _from_np_dtype(np.dtype(self.specs[n][1])), 0)
-    self.feed_views = {n: np.ndarray(shape, dtype=dtype, buffer=self.host, offset=offsets[n]) for n, shape, dtype in self.feed}
+    self.feed_views = {n: np.ndarray(shape, dtype=dt, buffer=self.host, offset=offsets[n]) for n, shape, dt in self.feed}
+    gpu = lambda shape, dt: ort.OrtValue.ortvalue_from_numpy(np.zeros(shape, dt), "cuda", 0)  # noqa: E731
+    self.feeds = {n: gpu(shape, dt) for n, shape, dt in self.feed}
+    self.out = gpu(outs["outputs"].shape, np.float32)
+    self.states = [{n: gpu(*self.specs[n]) for n in self.state} for _ in range(2)]
+    self.runs = []
+    for graph, (cur, nxt) in enumerate(((0, 1), (1, 0)), start=1):
+      io = self.sess.io_binding()
+      for n, v in self.feeds.items():
+        io.bind_ortvalue_input(n, v)
+      for n in self.state:
+        io.bind_ortvalue_input(n, self.states[cur][n])
+        io.bind_ortvalue_output(f"next_{n}", self.states[nxt][n])
+      io.bind_ortvalue_output("outputs", self.out)
+      opts = ort.RunOptions()
+      opts.add_run_config_entry("gpu_graph_id", str(graph))
+      self.runs.append((io, opts))
+    self.turn = 0
+    for _ in range(2):  # capture both graphs
+      self.step()
     self.reset()
 
   def reset(self) -> None:
-    for n in self.state:
-      self.inputs[n].assign(0).realize()
+    for states in self.states:
+      for n, v in states.items():
+        v.update_inplace(np.zeros(*self.specs[n]))
+    self.turn = 0
 
   def step(self) -> np.ndarray:
-    self.device_buf.copy_from(self.host_buf)
-    self.run(output_buffers=self.outputs, **self.inputs)
-    return self.outputs['outputs'].numpy()
+    for n, v in self.feeds.items():
+      v.update_inplace(self.feed_views[n])
+    self.sess.run_with_iobinding(*self.runs[self.turn])
+    self.turn ^= 1
+    return self.out.numpy()
 
 
 def check(model: Model, onnx: Path, steps: int = 2) -> float:
-  """Max abs diff against onnxruntime over `steps` frames, recurrent state fed back on both sides."""
+  """Worst |gpu - cpu| / (1 + |cpu|) against onnxruntime on the CPU over `steps` frames, state fed back on both sides."""
   import onnxruntime as ort
-  sess = ort.InferenceSession(str(onnx), providers=["CPUExecutionProvider"])
-  names = [o.name for o in sess.get_outputs()]
-  state = {n: np.zeros(model.specs[n][0], model.specs[n][1]) for n in model.state}
+  cpu = ort.InferenceSession(str(onnx), providers=["CPUExecutionProvider"])
+  names = [o.name for o in cpu.get_outputs()]
+  state = {n: np.zeros(*model.specs[n]) for n in model.state}
+  rng = np.random.default_rng(42)
   model.reset()
   worst = 0.
-  for i in range(steps):
-    feeds = {n: v for n, v in random_feeds(model.specs, 42 + i).items() if n not in model.state}
-    for n, v in feeds.items():
-      model.feed_views[n][...] = v
-    got = model.step()
-    ref = dict(zip(names, sess.run(names, feeds | state), strict=True))
-    state = {n: ref[f'next_{n}'] for n in model.state}
-    worst = max(worst, float(np.max(np.abs(got.astype(np.float64) - ref['outputs'].reshape(got.shape)))))  # NaN propagates and fails below
+  for _ in range(steps):
+    for n, shape, dt in model.feed:
+      model.feed_views[n][...] = rng.integers(0, 256, shape) if dt == "uint8" else rng.random(shape)
+    got = model.step().copy()
+    ref = dict(zip(names, cpu.run(names, {n: v.copy() for n, v in model.feed_views.items()} | state), strict=True))
+    state = {n: ref[f"next_{n}"] for n in model.state}
+    worst = max(worst, float(np.max(np.abs(got.astype(np.float64) - ref["outputs"]) / (1 + np.abs(ref["outputs"])))))  # NaN fails the gate
   model.reset()
   return worst
 
 
 def prepare(oid: str, size: int) -> Path:
-  """The checked, compiled model for this GPU, building it if needed."""
-  pkl, ok = CACHE / f"{oid}.pkl", CACHE / f"{oid}.ok"
+  """The checked ONNX for this GPU, fetching and checking it if needed."""
+  onnx, ok = onnx_path(oid), onnx_path(oid).with_suffix(".ok")
   if not ok.is_file():
-    CACHE.mkdir(parents=True, exist_ok=True)
-    if not pkl.is_file():
-      lfs.fetch(REPO, oid, size)
-      tmp = CACHE / f"{oid}.tmp"
-      subprocess.run([sys.executable, str(REPO / "tinygrad_repo/examples/openpilot/compile_onnx.py"), str(lfs.object_path(REPO, oid)), str(tmp),
-                      "--out-of-band", "--benchmark-runs", "3"], check=True, cwd=CACHE, env=dict(os.environ, PYTHONPATH=str(REPO / "tinygrad_repo")))
-      tmp.replace(pkl)
-    diff = check(Model(pkl), lfs.object_path(REPO, oid))
-    print(f"{oid[:12]}: max abs diff vs onnxruntime {diff:.4f} (pass <= {MAX_DIFF})", flush=True)
+    lfs.fetch(CACHE, oid, size, endpoints=LFS_ENDPOINTS)
+    diff = check(Model(onnx), onnx)
+    print(f"{oid[:12]}: worst relative diff vs CPU {diff:.4f} (pass <= {MAX_DIFF})", flush=True)
     if not diff <= MAX_DIFF:
-      raise RuntimeError(f"compiled model is wrong on this GPU: max abs diff {diff} > {MAX_DIFF}")
+      raise RuntimeError(f"model is wrong on this GPU: relative diff {diff} > {MAX_DIFF}")
     ok.write_text(f"{diff}\n")
-  return pkl
+  return onnx
 
 
 def prepare_in_background(oid: str, size: int) -> None:
@@ -154,14 +162,14 @@ def prepare_in_background(oid: str, size: int) -> None:
     threading.Thread(target=work, daemon=True).start()
 
 
-def session(conn: socket.socket, models: dict) -> None:
+def serve_one(conn: socket.socket, models: dict) -> None:
   hello = link.recv_msg(conn)
   oid, size, name = resolve(hello.get("ref"), hello.get("name"))
-  if not (CACHE / f"{oid}.ok").is_file():
+  if not onnx_path(oid).with_suffix(".ok").is_file():
     prepare_in_background(oid, size)
     return link.send_msg(conn, {"ok": False, "error": f"preparing {name} for this GPU, ready on a later drive"})
   try:
-    model = models[oid] if oid in models else models.setdefault(oid, Model(CACHE / f"{oid}.pkl"))
+    model = models[oid] if oid in models else models.setdefault(oid, Model(onnx_path(oid)))
   except Exception as e:
     return link.send_msg(conn, {"ok": False, "error": repr(e)})
   model.reset()
@@ -187,7 +195,7 @@ def serve() -> None:
     conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     conn.settimeout(SESSION_TIMEOUT)
     try:
-      session(conn, models)
+      serve_one(conn, models)
     except (OSError, ConnectionError) as e:
       print(f"{addr[0]} gone: {e!r}", flush=True)
     finally:
@@ -196,9 +204,9 @@ def serve() -> None:
 
 def bench(frames: int) -> None:
   model = Model(prepare(*link.DEFAULT_ONNX[:2]))
-  for n, v in random_feeds(model.specs, 0).items():
-    if n not in model.state:
-      model.feed_views[n][...] = v
+  rng = np.random.default_rng(0)
+  for n, shape, dt in model.feed:
+    model.feed_views[n][...] = rng.integers(0, 256, shape) if dt == "uint8" else rng.random(shape)
   times = []
   for _ in range(frames):
     t = time.perf_counter()
