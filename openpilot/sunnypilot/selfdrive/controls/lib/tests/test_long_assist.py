@@ -7,8 +7,8 @@ from openpilot.cereal import log
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.long_assist import (
-  LongAssist, Mode, State, plan_stop_distance, A_MIN, A_MAP_CURVE_MAX, BRAKE_DELIVERY, CORROBORATE_FRAMES,
-  DILEMMA_FRAMES, STOP_CAP_START,
+  LongAssist, Mode, State, lead_decel, plan_stop_distance, A_MIN, A_MAP_CURVE_MAX, BRAKE_DELIVERY, CORROBORATE_FRAMES,
+  DILEMMA_FRAMES, STOP_CAP_START, STOP_ONSET,
 )
 from openpilot.sunnypilot.selfdrive.controls.lib.long_assist_map import EMPTY, Kind, MapAhead
 
@@ -115,6 +115,13 @@ class TestLongAssist:
     assert self.la.state == State.lead
     assert A_MIN <= self.la.a_brake < -3.0
 
+  def test_stopped_lead_found_far_brakes_at_once(self):
+    # 2026-11-04 commute: stopped car first seen at 79 m from 14.6 m/s, closing rate 0.12/s
+    run(self.la, 3, make_model(14.6), lead=make_lead(True, 79., 0., 0.), cs=make_cs(14.6))
+    assert self.la.state == State.lead
+    assert abs(self.la.a_brake * BRAKE_DELIVERY + lead_decel(79., 14.6, 0., 0.)) < 1e-6
+    assert 1.3 < lead_decel(79., 14.6, 0., 0.) < 1.8
+
   def test_curve_ahead(self):
     m = make_model(20., kappa=lambda x: np.where(x > 100., 0.015, 0.))
     run(self.la, 3, m, cs=make_cs(20.))
@@ -212,3 +219,25 @@ class TestLongAssist:
     la.mode = Mode.full
     run(la, 60, make_model(0., accel=1.0), cs=make_cs(0.), v_cruise=20., map_ahead=hazard(15., Kind.signal))
     assert 0.9 < la.a_lift <= 1.0
+
+
+class TestLeadDecel:
+  def test_stopped_lead_is_its_stop_point(self):
+    # 13 m/s, stopped car at 52 m: needed ~2.2 m/s^2; the old relative formula asked 3.5 with a noisy a_lead
+    assert abs(lead_decel(52.4, 13., 0., -1.5) - 13. ** 2 / (2 * (48.4 - 13. * 0.7))) < 1e-6
+
+  def test_slower_lead_at_constant_speed(self):
+    # 20 m/s on a 10 m/s lead 60 m ahead: close 7 m during the latency, then dv^2 / 2 gap
+    assert abs(lead_decel(60., 20., 10., 0.) - 100. / (2 * (56. - 7.))) < 0.1
+
+  def test_brake_tap_is_not_a_full_stop(self):
+    full_stop = 20. ** 2 / (2 * (36. + 20. ** 2 / 4. - 20. * 0.7))
+    assert 0.3 < lead_decel(40., 20., 20., -2.) < 0.8 * full_stop
+
+  def test_following_with_alead_noise_asks_nothing(self):
+    assert lead_decel(30., 15., 15., -0.5) < STOP_ONSET  # below the brake onset
+    assert lead_decel(30., 15., 16., 0.3) == 0.
+
+  def test_standstill_and_creep(self):
+    assert lead_decel(3., 0., 0.5, 0.) == 0.          # launch behind a close lead is never braked
+    assert lead_decel(3.5, 1., 0., 0.) <= 1.5          # creeping up behind a stopped car ends gently
