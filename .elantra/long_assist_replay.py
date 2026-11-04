@@ -10,12 +10,17 @@ episode logic, then labels every brake episode with what happened next:
   slowed    it did not stop but lost >= 30% of its speed -- a slow lead or a curve;
   phantom   neither -- Long Assist would have braked for nothing. These are the ones to tune out.
 
+--manual feeds every frame as if engaged and adds human_stops: each stop the driver braked into
+(brake held from >= 5 m/s down to standstill), with when Long Assist would have started braking relative
+to the driver and how hard, against the driver's own average deceleration. Most stops on this car are
+still driven by hand, so this is the stop validation shadow mode alone cannot give.
+
 Also reports how often the radard lead was radar-matched (camera SCC11 point) vs vision-only; which
 planner candidate was winning during each lift episode (a lift only reaches the car when the model's
 e2e candidate is the one holding the output down); and exec_gap, the median of a_ego 0.5 s later minus
 the planner's braking target, i.e. how much less the car actually brakes than it is told to.
 
-    python .elantra/long_assist_replay.py [route ...]       # on the device, newest 10 by default
+    python .elantra/long_assist_replay.py [--manual] [route ...]   # on the device, newest 10 by default
 """
 from __future__ import annotations
 
@@ -32,6 +37,8 @@ import long_assist_scan as las
 STOP_WINDOW = 15.
 EXEC_DELAY_FRAMES = 10   # 0.5 s, the actuator delay
 DEFAULT_ROUTES = 10
+V_STOPPED = 0.5
+LA_LOOKBACK = 8.         # s before the driver's brake onset that still counts as Long Assist being early
 
 
 def label(ep: dict, frames: list[dict]) -> str:
@@ -43,7 +50,34 @@ def label(ep: dict, frames: list[dict]) -> str:
   return "slowed" if min(after) <= 0.7 * after[0] else "phantom"
 
 
-def replay_route(segs: list[str]) -> dict:
+def human_stops(frames: list[dict]) -> list[dict]:
+  from openpilot.sunnypilot.selfdrive.controls.lib.long_assist import BRAKE_DELIVERY
+  out = []
+  for i in range(1, len(frames)):
+    if not (frames[i]["v"] < V_STOPPED <= frames[i - 1]["v"] and frames[i]["brk"]):
+      continue
+    j = i
+    while j > 0 and frames[j - 1]["brk"]:
+      j -= 1
+    on = frames[j]
+    if on["v"] < 5.:
+      continue
+    dist = sum(f["v"] * (g["t"] - f["t"]) for f, g in zip(frames[j:i], frames[j + 1:i + 1], strict=True))
+    la = [f for f in frames if on["t"] - LA_LOOKBACK <= f["t"] <= frames[i]["t"] and f["brake_active"] and f["a_brake"] < -0.5]
+    out.append({
+      "t": round(on["t"], 1), "v": round(on["v"], 1), "dist": round(dist, 1),
+      "a_driver": round(-on["v"] ** 2 / (2 * max(dist, 1.)), 2),
+      "la_lead_s": round(on["t"] - la[0]["t"], 1) if la else None,  # > 0: Long Assist before the driver
+      "la_state": la[0]["state"] if la else "",
+      "la_at_onset": round(on["a_brake"] * BRAKE_DELIVERY, 2) if on["brake_active"] else 0.,
+      "la_max": round(min(f["a_brake"] for f in la) * BRAKE_DELIVERY, 2) if la else 0.,
+      "la_stop_dist": round(on["stop_dist"], 1),
+      "lead": round(on["lead_d"], 1),
+    })
+  return out
+
+
+def replay_route(segs: list[str], manual: bool = False) -> dict:
   from openpilot.tools.lib.logreader import LogReader
   from openpilot.common.constants import CV
   from openpilot.sunnypilot.selfdrive.controls.lib.long_assist import LongAssist, Mode
@@ -73,7 +107,7 @@ def replay_route(segs: list[str]) -> dict:
         if w != "longitudinalPlan" or len(latest) < 5:
           continue
         cs, cc, sp, lead = latest["carState"], latest["carControl"], latest["longitudinalPlanSP"], latest["radarState"].leadOne
-        enabled = cc.enabled and not cc.cruiseControl.override
+        enabled = manual or (cc.enabled and not cc.cruiseControl.override)
         v_cruise = sp.vTarget if sp.vTarget > 0 else cs.vCruise * CV.KPH_TO_MS
         res = sp.speedLimit.resolver
         v_limit = res.speedLimitFinal if res.speedLimitValid else 0.
@@ -86,7 +120,10 @@ def replay_route(segs: list[str]) -> dict:
         radar_leads += lead.present and lead.radar
         t0 = ev.logMonoTime if t0 is None else t0
         frames.append({
-          "t": (ev.logMonoTime - t0) * 1e-9, "v": float(cs.vEgo), "plan": float(ev.longitudinalPlan.aTarget),
+          # by hand, what the driver did is the reference instead of the idle planner
+          "t": (ev.logMonoTime - t0) * 1e-9, "v": float(cs.vEgo),
+          "plan": float(cs.aEgo) if manual else float(ev.longitudinalPlan.aTarget),
+          "brk": bool(cs.brakePressed), "lead_d": float(lead.dRel) if lead.present else -1.,
           "mode": 1, "state": str(la.state), "conf": float(la.confidence), "brake_active": la.a_brake is not None,
           "a_brake": float(la.a_brake or 0.), "lift_v": float(la.a_lift), "stop_dist": float(la.stop_dist),
           "a_ego": float(cs.aEgo), "src": str(ev.longitudinalPlan.longitudinalPlanSource),
@@ -107,6 +144,8 @@ def replay_route(segs: list[str]) -> dict:
   rep["radar_lead_share"] = round(radar_leads / leads, 3) if leads else 0.
   rep["hazards_loaded"] = map_ctx.hazards is not None
   rep["primed_share"] = round(primed / len(frames), 3) if frames else 0.
+  if manual:
+    rep["human_stops"] = human_stops(frames)
   return rep
 
 
@@ -114,11 +153,12 @@ def main() -> int:
   by_route = defaultdict(list)
   for s in sorted(glob.glob("/data/media/0/realdata/*/rlog.zst")):
     by_route[os.path.basename(os.path.dirname(s)).split("--")[0]].append(s)
-  routes = sys.argv[1:] or sorted(by_route)[-DEFAULT_ROUTES:]
+  manual = "--manual" in sys.argv
+  routes = [a for a in sys.argv[1:] if not a.startswith("--")] or sorted(by_route)[-DEFAULT_ROUTES:]
 
   out = {}
   for route in routes:
-    rep = replay_route(sorted(by_route[route], key=lambda s: int(os.path.basename(os.path.dirname(s)).split("--")[-1])))
+    rep = replay_route(sorted(by_route[route], key=lambda s: int(os.path.basename(os.path.dirname(s)).split("--")[-1])), manual)
     if not rep["frames"]:
       continue
     out[route] = rep
@@ -127,6 +167,8 @@ def main() -> int:
           f"brake_ep={len(outcomes)} stopped={outcomes.count('stopped')} slowed={outcomes.count('slowed')} " +
           f"phantom={outcomes.count('phantom')} primed={rep['primed_share']} lift_ep={len(rep['lift_episodes'])} " +
           f"lift_ep_e2e={sum(ep['src'] == 'e2e' for ep in rep['lift_episodes'])} exec_gap={rep['exec_gap']} states={rep['states']}", flush=True)
+    for hs in rep.get("human_stops", []):
+      print(f"  human stop {hs}", flush=True)
 
   dest = os.environ.get("LA_REPLAY_OUT", "/data/long_assist_replay.json")
   with open(dest, "w") as f:

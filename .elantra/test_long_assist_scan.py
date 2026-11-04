@@ -34,6 +34,8 @@ def test_brake_matching_planner_is_not_an_episode():
 def test_lift_episode():
   rep = las.summarize([frame(i * 0.05, 0.2, lift=1.0) for i in range(8)])
   assert len(rep["lift_episodes"]) == 1 and rep["conf_on_share"] == 1.0
+  # no lift under a braking plan is not a lift episode
+  assert las.summarize([frame(i * 0.05, -0.5) for i in range(8)])["lift_episodes"] == []
 
 
 if __name__ == "__main__":
