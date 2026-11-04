@@ -2,6 +2,7 @@
 #   irm https://raw.githubusercontent.com/aaravsaianugula/openpilot/master/.elantra/laptop_gpu/setup.ps1 -OutFile $env:TEMP\lg.ps1; & $env:TEMP\lg.ps1
 param([string]$Branch = "master")
 $ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"  # Windows PowerShell downloads crawl with the progress bar on
 $root = "$env:ProgramData\laptop_gpu"
 New-Item -ItemType Directory -Force $root | Out-Null
 
