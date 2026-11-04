@@ -4,6 +4,7 @@ from pathlib import Path
 
 from openpilot.common.hardware import AGNOS
 from openpilot.common.hardware.usb import CHESTNUT_USB_PRODUCT, USB_DEVICES_PATH, is_chestnut_usb_id
+from openpilot.selfdrive.modeld import laptop
 
 MODELS_DIR = Path(__file__).resolve().parent / 'models'
 
@@ -28,7 +29,7 @@ def chestnut_present() -> bool:
         return True
     except Exception:
       pass
-  return False
+  return laptop.link_up()  # a laptop GPU on the aux port stands in for the chestnut
 
 def wait_for_chestnut(timeout: float = 10.) -> None:
   # the cable is detected before chestnut enumerates

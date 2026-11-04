@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+from openpilot.selfdrive.modeld import laptop
+
 CHESTNUT_FW_VERSION = "8516b768"
 CHESTNUT_USB_IDS = ((0xADD1, 0x0001), (0x3801, 0x0001))
 CHESTNUT_ROM_USB_IDS = ((0x174C, 0x2464), (0x174C, 0x2463))
@@ -94,5 +96,5 @@ def set_usb_state(device_state, devices: list[dict]) -> None:
     if is_chestnut_usb_id(entry.vendorId, entry.productId):
       chestnut_present = True
 
-  device_state.chestnutPresent = chestnut_present
+  device_state.chestnutPresent = chestnut_present or laptop.ensure_link()
   device_state.usbState.connected = cable_connected()

@@ -132,6 +132,9 @@ OVERLAY_ADDED = [
     "openpilot/sunnypilot/selfdrive/controls/lib/long_assist_map.py",
     "openpilot/sunnypilot/selfdrive/controls/lib/tests/test_long_assist.py",
     "openpilot/sunnypilot/selfdrive/controls/lib/tests/test_long_assist_map.py",
+    # Laptop GPU in place of a chestnut: the comma half (aux-port gadget, client, protocol). The laptop
+    # half is .elantra/laptop_gpu. Paired with its four call sites in OVERLAY_MODIFIED below.
+    "openpilot/selfdrive/modeld/laptop.py",
 ]
 
 # Upstream files we modify. Kept deliberately tiny -- this is the only conflict surface in
@@ -167,6 +170,13 @@ OVERLAY_MODIFIED = [
     # distance were inert on device. Two lines plus the matching test fixture.
     "openpilot/sunnypilot/selfdrive/controls/lib/speed_limit/speed_limit_resolver.py",
     "openpilot/sunnypilot/selfdrive/controls/lib/speed_limit/tests/test_speed_limit_resolver.py",
+    # Laptop GPU call sites (module in OVERLAY_ADDED above), one or two lines each: the laptop counts as
+    # a chestnut (helpers, deviceState), stock modeld runs the model on it, modeld_v2 skips the chestnut
+    # wait. Unregistered, a rebuild keeps laptop.py and nothing ever calls it.
+    "openpilot/selfdrive/modeld/helpers.py",
+    "openpilot/common/hardware/usb.py",
+    "openpilot/selfdrive/modeld/modeld.py",
+    "openpilot/sunnypilot/modeld_v2/modeld.py",
 ]
 
 # Paths that legitimately move between builds without being overlay files. The submodule gitlink
