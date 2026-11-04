@@ -344,7 +344,7 @@ if __name__ == "__main__":
   args = ap.parse_args()
   if sys.platform == "win32":  # what OMEN's game booster does for a game: high priority, so background apps can't delay a frame
     import ctypes
-    ctypes.windll.kernel32.SetPriorityClass(ctypes.windll.kernel32.GetCurrentProcess(), 0x80)  # HIGH_PRIORITY_CLASS
+    ctypes.windll.kernel32.SetPriorityClass(ctypes.c_void_p(-1), 0x80)  # current process (64-bit pseudo-handle), HIGH_PRIORITY_CLASS
   if args.prepare:
     prepare_catalog()
   elif args.bench:
