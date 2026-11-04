@@ -161,6 +161,10 @@ OVERLAY_MODIFIED = [
     "openpilot/cereal/custom.capnp",
     "openpilot/sunnypilot/selfdrive/controls/lib/longitudinal_planner.py",
     "openpilot/selfdrive/controls/lib/longitudinal_planner.py",
+    # GPS fix age compared UTC epoch against time.monotonic(), so map staleness and next-limit
+    # distance were inert on device. Two lines plus the matching test fixture.
+    "openpilot/sunnypilot/selfdrive/controls/lib/speed_limit/speed_limit_resolver.py",
+    "openpilot/sunnypilot/selfdrive/controls/lib/speed_limit/tests/test_speed_limit_resolver.py",
 ]
 
 # Paths that legitimately move between builds without being overlay files. The submodule gitlink
