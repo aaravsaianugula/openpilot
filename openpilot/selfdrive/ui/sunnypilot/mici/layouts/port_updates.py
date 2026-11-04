@@ -20,7 +20,7 @@ import subprocess
 
 import pyray as rl
 
-from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigParamControl, GreyBigButton
+from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigMultiParamToggle, BigParamControl, GreyBigButton
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationDialog
 from openpilot.selfdrive.ui.sunnypilot.mici.layouts.port_manifest import (
   age, install_offered, load_manifest, update_blocked,
@@ -123,6 +123,9 @@ class ElantraPortLayoutMici(NavScroller):
     # so this is a second, visible line of defence rather than the only one.
     self._verified_toggle = BigParamControl(tr("verified builds only"), "ElantraVerifiedUpdatesOnly")
 
+    # Off by default. Shadow logs what it would do; brake and full let it act (see long_assist.py).
+    self._long_assist_toggle = BigMultiParamToggle(tr("long assist"), "LongAssistMode", ["off", "shadow", "brake", "full"])
+
     self._check_btn = BigButton(tr("check for update"))
     self._check_btn.set_click_callback(self._on_check)
 
@@ -148,6 +151,7 @@ class ElantraPortLayoutMici(NavScroller):
     self._scroller.add_widgets([
       self._status,
       self._verified_toggle,
+      self._long_assist_toggle,
       self._check_btn,
       self._install_btn,
       self._blocked_note,

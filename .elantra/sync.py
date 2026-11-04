@@ -125,6 +125,11 @@ OVERLAY_ADDED = [
     # in OVERLAY_MODIFIED below: registering this without the call site leaves a module
     # nothing imports, and registering the call site without this breaks the fetch outright.
     "openpilot/sunnypilot/models/elantra_catalog.py",
+    # Long Assist (LongAssistMode param). Paired with its call sites in OVERLAY_MODIFIED below:
+    # the schema group, the SP planner that runs and publishes it, and the one apply() line in the
+    # upstream planner. Unregistered, the rebuild keeps the module and nothing ever calls it.
+    "openpilot/sunnypilot/selfdrive/controls/lib/long_assist.py",
+    "openpilot/sunnypilot/selfdrive/controls/lib/tests/test_long_assist.py",
 ]
 
 # Upstream files we modify. Kept deliberately tiny -- this is the only conflict surface in
@@ -150,6 +155,12 @@ OVERLAY_MODIFIED = [
     # in the cache every reader uses. Unregistered, the rebuild restores the stock fetcher
     # and our models disappear from the Models screen with no error at all.
     "openpilot/sunnypilot/models/fetcher.py",
+    # Long Assist call sites (module in OVERLAY_ADDED above): longitudinalPlanSP.longAssist @8, the
+    # SP planner that updates and publishes it, and apply() on the e2e candidate in the upstream
+    # planner. If upstream claims longitudinalPlanSP @8 the capnp merge conflicts loudly.
+    "openpilot/cereal/custom.capnp",
+    "openpilot/sunnypilot/selfdrive/controls/lib/longitudinal_planner.py",
+    "openpilot/selfdrive/controls/lib/longitudinal_planner.py",
 ]
 
 # Paths that legitimately move between builds without being overlay files. The submodule gitlink

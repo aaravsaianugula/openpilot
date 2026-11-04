@@ -171,6 +171,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ElantraBuildManifest", {CLEAR_ON_MANAGER_START, STRING}},  // .elantra/build-manifest.json of the running build
     {"ElantraNewBuildManifest", {CLEAR_ON_MANAGER_START, STRING}},  // ...and of the build staged by updated
     {"ElantraVerifiedUpdatesOnly", {PERSISTENT | BACKUP, BOOL, "1"}},  // only offer builds whose upstream CI passed
+    {"LongAssistMode", {PERSISTENT | BACKUP, INT, "0"}},  // Long Assist: 0 off, 1 shadow, 2 brake, 3 full
     {"EnableCopyparty", {PERSISTENT | BACKUP, BOOL}},
     {"EnableGithubRunner", {PERSISTENT | BACKUP, BOOL}},
     {"GreenLightAlert", {PERSISTENT | BACKUP, BOOL, "0"}},
