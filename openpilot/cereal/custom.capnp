@@ -206,6 +206,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   aTarget @5 :Float32;
   events @6 :List(OnroadEventSP.Event);
   e2eAlerts @7 :E2eAlerts;
+  longAssist @8 :LongAssist;  # Elantra overlay; if upstream claims @8 the sync conflicts loudly
 
   deprecated :group {
     dec @0 :DynamicExperimentalControlDEPRECATED;
@@ -311,6 +312,33 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   struct E2eAlerts {
     greenLightAlert @0 :Bool;
     leadDepartAlert @1 :Bool;
+  }
+
+  struct LongAssist {
+    mode @0 :UInt8;
+    state @1 :State;
+    confidence @2 :Float32;
+    confidencePlan @3 :Float32;
+    confidenceLead @4 :Float32;
+    stopDistance @5 :Float32;  # m to the latched model stop point, -1 when none
+    brakeActive @6 :Bool;
+    aBrake @7 :Float32;
+    aLift @8 :Float32;
+    clearStop @9 :Bool;
+    vCurve @10 :Float32;
+    vTarget @11 :Float32;
+
+    enum State {
+      off @0;
+      standby @1;
+      stop @2;
+      lead @3;
+      curve @4;
+      launch @5;
+      cruise @6;
+      turn @7;
+      override @8;
+    }
   }
 }
 

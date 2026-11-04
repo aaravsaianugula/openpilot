@@ -130,6 +130,11 @@ OVERLAY_ADDED = [
     # blob is on sunnypilot's own LFS store. Drop this entry once upstream carries CH or newer,
     # or every sync keeps pinning CH over it.
     "openpilot/selfdrive/modeld/models/driving_supercombo.onnx",
+    # Long Assist (LongAssistMode param). Paired with its call sites in OVERLAY_MODIFIED below:
+    # the schema group, the SP planner that runs and publishes it, and the one apply() line in the
+    # upstream planner. Unregistered, the rebuild keeps the module and nothing ever calls it.
+    "openpilot/sunnypilot/selfdrive/controls/lib/long_assist.py",
+    "openpilot/sunnypilot/selfdrive/controls/lib/tests/test_long_assist.py",
 ]
 
 # Upstream files we modify. Kept deliberately tiny -- this is the only conflict surface in
@@ -158,6 +163,12 @@ OVERLAY_MODIFIED = [
     # One line, paired with the CH pin above: comma's low-speed curvature floor for its current
     # models (openpilot 0c40995cd7, max(1.0 -> 2.5, v_ego)), already in sunnypilot's modeld_v2.
     "openpilot/selfdrive/modeld/modeld.py",
+    # Long Assist call sites (module in OVERLAY_ADDED above): longitudinalPlanSP.longAssist @8, the
+    # SP planner that updates and publishes it, and apply() on the e2e candidate in the upstream
+    # planner. If upstream claims longitudinalPlanSP @8 the capnp merge conflicts loudly.
+    "openpilot/cereal/custom.capnp",
+    "openpilot/sunnypilot/selfdrive/controls/lib/longitudinal_planner.py",
+    "openpilot/selfdrive/controls/lib/longitudinal_planner.py",
 ]
 
 # Paths that legitimately move between builds without being overlay files. The submodule gitlink
