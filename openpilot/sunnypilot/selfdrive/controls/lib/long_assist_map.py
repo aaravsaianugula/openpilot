@@ -22,7 +22,10 @@ DEG = np.pi / 180.
 CURVE_RANGE = 400.     # m of road ahead used for map curve speeds
 NEAREST_MAX = 50.      # m, farther than this from every target point means the list is not for our road
 HAZARD_RANGE = 150.    # m ahead
-HAZARD_LATERAL = 25.   # m either side of our heading line
+# m either side of our heading line. Stop and give-way nodes sit on the road they control, so a tight
+# corridor skips the side-street signs along an arterial (replay: primed on up to 44% of frames at 25 m);
+# signal and crossing nodes are often mapped at the junction centre, so they keep a wide one.
+HAZARD_LATERAL = np.array([0., 6., 20., 6., 20.])  # indexed by Kind
 WINDOW_DEG = 0.004     # ~450 m latitude pre-filter before projecting
 BEARING_MIN_SPEED = 2.  # m/s, GPS bearing is noise below this: keep the last good one
 
@@ -110,7 +113,7 @@ class MapContext:
       if hi > lo:
         e, n = to_local(lat, lon, h_lat[lo:hi], h_lon[lo:hi])
         along, cross = e * s + n * c, e * c - n * s
-        m = (along > 0.) & (along < HAZARD_RANGE) & (np.abs(cross) < HAZARD_LATERAL)
+        m = (along > 0.) & (along < HAZARD_RANGE) & (np.abs(cross) < HAZARD_LATERAL[h_kind[lo:hi]])
         if m.any():
           j = int(np.argmin(np.where(m, along, np.inf)))
           hazard_dist, hazard_kind = float(along[j]), int(h_kind[lo:hi][j])

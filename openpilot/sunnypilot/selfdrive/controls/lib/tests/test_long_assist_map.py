@@ -29,8 +29,9 @@ class TestMapContext:
   def test_nearest_hazard_ahead_on_our_line(self, tmp_path):
     ctx = MapContext(write_hazards(tmp_path, [(-40, 0, Kind.signal),   # behind
                                               (120, 0, Kind.stop),
-                                              (60, 2, Kind.signal),
-                                              (30, 80, Kind.stop),      # off to the side
+                                              (60, 15, Kind.signal),    # junction-centre signal, inside its wide corridor
+                                              (30, 12, Kind.stop),      # side-street stop sign along an arterial
+                                              (30, 80, Kind.signal),    # off to the side
                                               (400, 0, Kind.stop)]))    # out of range
     ahead = ctx.ahead(LAT0, LON0, 0., 10., True)  # heading north
     assert ahead.hazard_kind == Kind.signal and abs(ahead.hazard_dist - 60.) < 1.
