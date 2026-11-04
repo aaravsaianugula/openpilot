@@ -327,6 +327,8 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     clearStop @9 :Bool;
     vCurve @10 :Float32;
     vTarget @11 :Float32;
+    hazardDistance @12 :Float32;  # m to the nearest mapped stop/signal/give-way/crossing ahead, -1 when none
+    hazardKind @13 :UInt8;  # long_assist_map.Kind
 
     enum State {
       off @0;
@@ -338,6 +340,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       cruise @6;
       turn @7;
       override @8;
+      primed @9;  # a mapped stop/signal is ahead: no lift at speed
     }
   }
 }

@@ -15,6 +15,7 @@ import numpy as np
 from openpilot.cereal import custom, log
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
+from openpilot.sunnypilot.selfdrive.controls.lib.long_assist_map import EMPTY as MAP_EMPTY, Kind, MapAhead
 
 State = custom.LongitudinalPlanSP.LongAssist.State
 LaneChangeState = log.LaneChangeState
@@ -57,6 +58,13 @@ A_CURVE_DECEL = 1.2
 A_CURVE_MAX = 2.0
 CURVE_V_MIN = 3.0        # plan points slower than this give unreliable curvature
 CURVE_RANGE = 120.
+
+# map: mapd curve targets cap gently (the vision path takes over within its range); hazards prime
+A_MAP_CURVE_MAX = 1.0
+HAZARD_MATCH = 25.       # m, a model stop this close to a mapped stop/signal is trusted at once
+STOP_ONSET_PRIMED = 0.15
+PRIME_V = 5.             # m/s, above this no lift toward a mapped stop/signal
+A_LIFT_PRIMED = 1.0      # launch cap while still inside a mapped intersection
 
 # turns
 TURN_KAPPA = 0.02        # 1/m, R < 50 m within TURN_LOOKAHEAD_T with a blinker on
@@ -128,6 +136,8 @@ class LongAssist:
     self.clear_stop = False
     self.v_curve = 0.
     self.v_target = 0.
+    self.hazard_dist = -1.
+    self.hazard_kind = Kind.none
 
   def apply(self, a_e2e: float, should_stop_e2e: bool) -> tuple[float, bool]:
     if self.mode >= Mode.full and self.a_lift > max(a_e2e, 0.):
@@ -137,13 +147,16 @@ class LongAssist:
       a_e2e = min(a_e2e, self.a_brake)
     return a_e2e, should_stop_e2e
 
-  def update(self, model, lead_one, CS, enabled: bool, v_cruise: float, v_limit: float, healthy: bool) -> None:
+  def update(self, model, lead_one, CS, enabled: bool, v_cruise: float, v_limit: float, healthy: bool,
+             map_ahead: MapAhead = MAP_EMPTY) -> None:
     if self.mode == Mode.off or not enabled:
       self.reset()
       return
 
     v_ego = CS.vEgo
     self.odom += v_ego * DT_MDL
+    self.hazard_dist, self.hazard_kind = map_ahead.hazard_dist, map_ahead.hazard_kind
+    primed = self.hazard_dist >= 0.
 
     x = np.array(model.position.x)
     v = np.maximum(np.array(model.velocity.x), 0.)
@@ -213,18 +226,21 @@ class LongAssist:
       d = float(np.median(recent)) - self.odom
       self.stop_dist = d
       behind_lead = lead is not None and d > lead[0] - 12.
+      at_hazard = primed and abs(d - self.hazard_dist) < HAZARD_MATCH
       d_eff = d - STOP_BUF - v_ego * TAU
       if v_ego < 2. and d - STOP_BUF < 2.:
         a_stop = -float(np.clip(0.8 * v_ego, 0.3, 1.0))
         a_req = -a_stop
       else:
         a_req = v_ego ** 2 / (2 * d_eff) if d_eff > 0.5 else np.inf
-        if a_req > STOP_ONSET:
+        if a_req > (STOP_ONSET_PRIMED if at_hazard else STOP_ONSET):
           a_stop = max(-STOP_OVERBRAKE * a_req, A_MIN)
       if a_stop is not None and not behind_lead:
-        if a_req > DILEMMA_ACCEL and self.stop_frames <= DILEMMA_FRAMES:
+        # a stop sign, give-way or crossing has no yellow phase, so a late stop there is still braked for
+        dilemma_possible = not at_hazard or self.hazard_kind == Kind.signal
+        if dilemma_possible and a_req > DILEMMA_ACCEL and self.stop_frames <= DILEMMA_FRAMES:
           a_stop = None
-        elif self.stop_frames < CORROBORATE_FRAMES:
+        elif not at_hazard and self.stop_frames < CORROBORATE_FRAMES:
           a_stop = max(a_stop, UNCORROBORATED_BRAKE)
     else:
       self.stop_frames = 0
@@ -248,6 +264,12 @@ class LongAssist:
       a_req = float(np.max((v_ego ** 2 - np.minimum(v_c, v_ego) ** 2) / (2 * (reach + v_ego))))
       if a_req > STOP_ONSET:
         a_curve = -min(a_req, A_CURVE_MAX)
+    if map_ahead.curve_dist.size:
+      reach = np.maximum(map_ahead.curve_dist - v_ego * TAU, 0.)
+      self.v_curve = float(min(self.v_curve, np.min(np.sqrt(map_ahead.curve_v ** 2 + 2 * A_CURVE_DECEL * reach))))
+      a_req = float(np.max((v_ego ** 2 - np.minimum(map_ahead.curve_v, v_ego) ** 2) / (2 * (reach + v_ego))))
+      if a_req > STOP_ONSET:
+        a_curve = min(a_curve if a_curve is not None else 0., -min(a_req, A_MAP_CURVE_MAX))
 
     # --- turn hand-off: once the path bends into the turn, the model owns it
     k_near = float(np.max(kappa[t <= TURN_LOOKAHEAD_T]))
@@ -288,9 +310,10 @@ class LongAssist:
     lift_ok = (self.conf_ok and not (CS.gasPressed or CS.brakePressed) and not self.turning and
                model.meta.laneChangeState == LaneChangeState.off and not intent_decel and
                self.stop_frames == 0 and self.cutout_block == 0 and self.a_brake is None and
-               (v_ego > V_STOP or v_plan > LAUNCH_PLAN_V))
+               (v_ego > V_STOP or v_plan > LAUNCH_PLAN_V) and not (primed and v_ego > PRIME_V))
     self.lift_weight = min(self.lift_weight + 1. / LIFT_FADE_FRAMES, 1.) if lift_ok else 0.
-    a_lift = np.clip((v_t - v_ego) / LIFT_TAU, 0., np.interp(v_ego, A_LIFT_BP, A_LIFT_V)) * self.lift_weight
+    a_lift_max = min(np.interp(v_ego, A_LIFT_BP, A_LIFT_V), A_LIFT_PRIMED if primed else np.inf)
+    a_lift = np.clip((v_t - v_ego) / LIFT_TAU, 0., a_lift_max) * self.lift_weight
     self.a_lift = float(min(a_lift, self.a_lift + J_LIFT * DT_MDL))
     self.clear_stop = self.a_lift > CLEAR_STOP_ACCEL
 
@@ -303,4 +326,4 @@ class LongAssist:
     elif self.a_lift > 0.:
       self.state = State.launch if v_ego < 5. else State.cruise
     else:
-      self.state = State.standby
+      self.state = State.primed if primed else State.standby

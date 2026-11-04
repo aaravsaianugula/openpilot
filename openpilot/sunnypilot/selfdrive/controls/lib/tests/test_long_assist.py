@@ -7,8 +7,10 @@ from openpilot.cereal import log
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.long_assist import (
-  LongAssist, Mode, State, plan_stop_distance, A_MIN, UNCORROBORATED_BRAKE, CORROBORATE_FRAMES, DILEMMA_FRAMES,
+  LongAssist, Mode, State, plan_stop_distance, A_MIN, A_MAP_CURVE_MAX, UNCORROBORATED_BRAKE, CORROBORATE_FRAMES,
+  DILEMMA_FRAMES,
 )
+from openpilot.sunnypilot.selfdrive.controls.lib.long_assist_map import EMPTY, Kind, MapAhead
 
 T = np.array(ModelConstants.T_IDXS)
 
@@ -46,9 +48,13 @@ def make_cs(v, gas=False, blinker=False):
   return SimpleNamespace(vEgo=v, gasPressed=gas, brakePressed=False, leftBlinker=blinker, rightBlinker=False)
 
 
-def run(la, frames, model, lead=None, cs=None, v_cruise=30., v_limit=0.):
+def run(la, frames, model, lead=None, cs=None, v_cruise=30., v_limit=0., map_ahead=EMPTY):
   for _ in range(frames):
-    la.update(model, lead or make_lead(), cs, True, v_cruise, v_limit, True)
+    la.update(model, lead or make_lead(), cs, True, v_cruise, v_limit, True, map_ahead)
+
+
+def hazard(dist, kind):
+  return MapAhead(np.zeros(0), np.zeros(0), dist, kind)
 
 
 class TestPlanStopDistance:
@@ -163,3 +169,28 @@ class TestLongAssist:
   def test_zero_lift_never_cancels_model_brake(self):
     assert self.la.a_lift == 0.
     assert self.la.apply(-0.3, True) == (-0.3, True)
+
+  def test_map_curve_brakes_gently(self):
+    curve = MapAhead(np.array([150., 200.]), np.array([8., 8.]), -1., Kind.none)
+    run(self.la, 3, make_model(25.), cs=make_cs(25.), map_ahead=curve)
+    assert self.la.state == State.curve
+    assert self.la.a_brake == -A_MAP_CURVE_MAX
+    assert self.la.v_curve < 25.
+
+  def test_stop_sign_trusted_at_once_even_when_late(self):
+    m = make_model(20., stop_at=40.)
+    run(self.la, 4, m, cs=make_cs(20.), map_ahead=hazard(42., Kind.stop))
+    assert self.la.a_brake is not None and self.la.a_brake < -3.0  # no dilemma skip, no -1.5 cap
+
+  def test_signal_keeps_dilemma_rule(self):
+    run(self.la, 5, make_model(20., stop_at=40.), cs=make_cs(20.), map_ahead=hazard(42., Kind.signal))
+    assert self.la.a_brake is None
+
+  def test_primed_blocks_lift_at_speed_caps_launch(self):
+    run(self.la, 40, make_model(10., accel=0.3), cs=make_cs(10.), v_cruise=20., map_ahead=hazard(100., Kind.signal))
+    assert self.la.a_lift == 0. and self.la.state == State.primed
+
+    la = LongAssist()
+    la.mode = Mode.full
+    run(la, 60, make_model(0., accel=1.0), cs=make_cs(0.), v_cruise=20., map_ahead=hazard(15., Kind.signal))
+    assert 0.9 < la.a_lift <= 1.0
