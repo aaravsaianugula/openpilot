@@ -14,6 +14,7 @@ from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.hardware.hw import Paths
 from openpilot.selfdrive.modeld.helpers import chestnut_present
+from openpilot.selfdrive.modeld import laptop
 
 # SET ME TO THE EXACT JSON VERSION WE SET IN SUNNYPILOT_MODELS REPO
 REQUIRED_JSON_VERSION = 21
@@ -171,7 +172,8 @@ def get_active_model_runner(params: Params | None = None, force_check: bool = Fa
   if cached_runner_type is not None and not force_check:
     return cached_runner_type
   runner_type = custom.ModelManagerSP.Runner.stock
-  if active_bundle := get_active_bundle(params):
+  # a laptop GPU runs every big model through stock modeld, whatever runner the chestnut build uses
+  if not laptop.link_up() and (active_bundle := get_active_bundle(params)):
     runner_type = active_bundle.runner.raw
 
   if cached_runner_type != runner_type:

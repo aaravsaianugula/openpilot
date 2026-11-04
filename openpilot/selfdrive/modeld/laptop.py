@@ -23,8 +23,6 @@ HOST, PORT = "192.168.250.2", 8390
 FRAME = struct.Struct("<I")  # seq: client -> server, then each feed input at its layout() offset
 REPLY = struct.Struct("<I")  # seq: server -> client, followed by the float32 outputs
 FRAME_TIMEOUT = 0.1  # a late frame drops to the small model, like a chestnut fault
-# comma's newest chestnut model published as ONNX (later ones ship as AMD binaries only)
-DEFAULT_ONNX = ("6fee5937923c74848df4a63f6239eb6331c6274dd4bdb7a5d6ec0388a8b543d5", 766018462, "Cinque Terre v2 (Sep 14, 2026)")
 FEED = ("new_img", "desire", "traffic_convention", "action_t")  # what this modeld fills each frame
 ALIGN = 128  # the laptop GPU reads each input in place, so each starts aligned
 

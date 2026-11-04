@@ -17,7 +17,7 @@ if (-not (Test-Path "$env:SystemRoot\System32\vcruntime140_1.dll")) {  # onnxrun
   Start-Process "$env:TEMP\vc_redist.x64.exe" "/install /quiet /norestart" -Wait
 }
 if (-not (Test-Path "$root\venv")) { & $py -m venv "$root\venv" }
-& "$root\venv\Scripts\python.exe" -m pip install -q --upgrade numpy "onnxruntime-gpu[cuda,cudnn]"
+& "$root\venv\Scripts\python.exe" -m pip install -q --upgrade numpy onnx "onnxruntime-gpu[cuda,cudnn]"  # onnx rebuilds pre-Sep-14 exports
 if ($LASTEXITCODE) { throw "pip install failed" }
 
 # only the comma's end of the USB link may reach the server
@@ -31,7 +31,7 @@ powercfg /setdcvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
 powercfg /change standby-timeout-ac 0
 powercfg /setactive SCHEME_CURRENT
 
-# code, then the default model fetched and checked against the CPU (several minutes the first time)
+# code, then every chestnut model comma published weights for, fetched and checked against the CPU (a while the first time)
 Invoke-WebRequest "https://raw.githubusercontent.com/aaravsaianugula/openpilot/$Branch/.elantra/laptop_gpu/start.ps1" -OutFile "$root\start.ps1"
 & "$root\start.ps1" -Branch $Branch -Prepare
 if ($LASTEXITCODE) { throw "model check failed, see above" }

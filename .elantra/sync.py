@@ -177,6 +177,10 @@ OVERLAY_MODIFIED = [
     "openpilot/common/hardware/usb.py",
     "openpilot/selfdrive/modeld/modeld.py",
     "openpilot/sunnypilot/modeld_v2/modeld.py",
+    # With a laptop on the aux port every big model runs through stock modeld, and the comma skips
+    # downloading chestnut binaries the laptop cannot use (1.7 GB each on a /data that runs ~90% full).
+    "openpilot/sunnypilot/models/helpers.py",
+    "openpilot/sunnypilot/models/manager.py",
 ]
 
 # Paths that legitimately move between builds without being overlay files. The submodule gitlink
