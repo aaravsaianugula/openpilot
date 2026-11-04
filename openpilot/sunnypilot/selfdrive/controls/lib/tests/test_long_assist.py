@@ -7,8 +7,8 @@ from openpilot.cereal import log
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.long_assist import (
-  LongAssist, Mode, State, plan_stop_distance, A_MIN, A_MAP_CURVE_MAX, CORROBORATE_FRAMES, DILEMMA_FRAMES,
-  STOP_CAP_START,
+  LongAssist, Mode, State, plan_stop_distance, A_MIN, A_MAP_CURVE_MAX, BRAKE_DELIVERY, CORROBORATE_FRAMES,
+  DILEMMA_FRAMES, STOP_CAP_START,
 )
 from openpilot.sunnypilot.selfdrive.controls.lib.long_assist_map import EMPTY, Kind, MapAhead
 
@@ -99,9 +99,9 @@ class TestLongAssist:
     run(self.la, 4 + CORROBORATE_FRAMES - 2, m, cs=make_cs(15.))
     assert self.la.a_brake is None  # a flicker of a few frames never brakes
     run(self.la, 2, m, cs=make_cs(15.))
-    assert abs(self.la.a_brake + STOP_CAP_START) < 0.15
+    assert abs(self.la.a_brake + STOP_CAP_START / BRAKE_DELIVERY) < 0.15
     run(self.la, 20, m, cs=make_cs(15.))
-    assert -3.0 < self.la.a_brake < -STOP_CAP_START - 0.5
+    assert A_MIN < self.la.a_brake < -STOP_CAP_START / BRAKE_DELIVERY - 0.5
     assert self.la.state == State.stop
 
   def test_flicker_never_brakes(self):
@@ -119,7 +119,7 @@ class TestLongAssist:
     m = make_model(20., kappa=lambda x: np.where(x > 100., 0.015, 0.))
     run(self.la, 3, m, cs=make_cs(20.))
     assert self.la.state == State.curve
-    assert -1.5 < self.la.a_brake < -0.5
+    assert -1.5 / BRAKE_DELIVERY < self.la.a_brake < -0.5
     assert self.la.v_curve < 20.
     run(self.la, 3, make_model(20., kappa=lambda x: np.where(x > 100., 0.01, 0.), lane_change=True), cs=make_cs(20.))
     assert self.la.state != State.curve
@@ -162,7 +162,8 @@ class TestLongAssist:
     assert not la.clear_stop and la.a_lift < 0.2
 
   def test_closed_loop_stop_with_stuck_model(self):
-    # The model plans a stop at X_STOP but its own action only asks for -0.3 m/s^2.
+    # The model plans a stop at X_STOP but its own action only asks for -0.3 m/s^2, and the car delivers
+    # BRAKE_DELIVERY of whatever it is asked, 0.5 s late -- both measured on this car.
     X_STOP, v, pos = 90., 15., 0.
     delay = deque([0.] * int(0.5 / DT_MDL), maxlen=int(0.5 / DT_MDL))
     a_min = 0.
@@ -170,7 +171,7 @@ class TestLongAssist:
       m = make_model(v, stop_at=X_STOP - pos, desired_accel=-0.3)
       self.la.update(m, make_lead(), make_cs(v), True, 30., 0., True)
       a_cmd, _ = self.la.apply(-0.3, False)
-      a_act = delay[0]
+      a_act = delay[0] * (BRAKE_DELIVERY if delay[0] < 0. else 1.)
       delay.append(a_cmd)
       a_min = min(a_min, a_act)
       v = max(v + a_act * DT_MDL, 0.)
@@ -189,7 +190,7 @@ class TestLongAssist:
     curve = MapAhead(np.array([150., 200.]), np.array([8., 8.]), -1., Kind.none)
     run(self.la, 3, make_model(25.), cs=make_cs(25.), map_ahead=curve)
     assert self.la.state == State.curve
-    assert self.la.a_brake == -A_MAP_CURVE_MAX
+    assert self.la.a_brake == -A_MAP_CURVE_MAX / BRAKE_DELIVERY
     assert self.la.v_curve < 25.
 
   def test_stop_sign_trusted_at_once_even_when_late(self):
