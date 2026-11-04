@@ -39,6 +39,8 @@ LFS_ENDPOINTS = ["https://huggingface.co/sunnypilot/sunnypilot-lfs.git/info/lfs"
 SKIP = 4  # MODEL_RUN_FREQ / MODEL_CONTEXT_FREQ: the history keeps every 4th frame
 MAX_DIFF = 0.05  # |gpu - cpu| / (1 + |cpu|): fp16 rounding gives ~0.015, a broken backend was off by ~150
 SESSION_TIMEOUT = 10  # a comma that goes this long without a frame is gone
+# one graph launch per frame (4x faster, no jitter); NHWC convs with the bias fused in: 11% faster, same gate diff
+CUDA_EP = {"enable_cuda_graph": "1", "cudnn_conv_algo_search": "EXHAUSTIVE", "prefer_nhwc": "1", "fuse_conv_bias": "1"}
 TYPES = {"tensor(float)": "float32", "tensor(float16)": "float16", "tensor(uint8)": "uint8"}
 _preparing: set[str] = set()
 
@@ -60,7 +62,8 @@ def onnx_path(oid: str) -> Path:
 
 def prepared() -> dict[str, dict]:
   """oid -> {"onnx", "name", "diff"} for every model checked on this GPU."""
-  return {ok.stem: json.loads(ok.read_text()) for ok in (CACHE / ".git/lfs/objects").glob("*/*/*.ok")}
+  oks = {ok.stem: json.loads(ok.read_text()) for ok in (CACHE / ".git/lfs/objects").glob("*/*/*.ok")}
+  return {oid: p for oid, p in oks.items() if p.get("ep") == CUDA_EP}  # a check under other kernels does not count
 
 
 def wrap_history(src: Path) -> Path:
@@ -148,7 +151,7 @@ class Model:
       ort.preload_dlls()  # CUDA and cuDNN from the nvidia pip wheels
     opts = ort.SessionOptions()
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-    self.sess = ort.InferenceSession(str(onnx), opts, providers=[("CUDAExecutionProvider", {"enable_cuda_graph": "1", "cudnn_conv_algo_search": "EXHAUSTIVE"})])  # one graph launch per frame: 4x faster, no jitter
+    self.sess = ort.InferenceSession(str(onnx), opts, providers=[("CUDAExecutionProvider", CUDA_EP)])
     if self.sess.get_providers()[0] != "CUDAExecutionProvider":
       raise RuntimeError(f"no CUDA on this laptop: onnxruntime offers {self.sess.get_providers()}")
     self.dev = "CUDA"
@@ -232,7 +235,7 @@ def check(model: Model, onnx: Path, steps: int = 2) -> float:
 def prepare(oid: str, size: int, name: str) -> Path:
   """The checked, servable ONNX for this GPU, fetching, rebuilding and checking it if needed."""
   ok = onnx_path(oid).with_suffix(".ok")
-  if not ok.is_file():
+  if oid not in prepared():
     lfs.fetch(CACHE, oid, size, endpoints=LFS_ENDPOINTS)
     import onnxruntime as ort
     onnx = onnx_path(oid)
@@ -242,7 +245,7 @@ def prepare(oid: str, size: int, name: str) -> Path:
     print(f"{name}: worst relative diff vs CPU {diff:.4f} (pass <= {MAX_DIFF})", flush=True)
     if not diff <= MAX_DIFF:
       raise RuntimeError(f"{name} is wrong on this GPU: relative diff {diff} > {MAX_DIFF}")
-    ok.write_text(json.dumps({"onnx": onnx.name, "name": name, "diff": diff}))
+    ok.write_text(json.dumps({"onnx": onnx.name, "name": name, "diff": diff, "ep": CUDA_EP}))
   return onnx_path(oid).with_name(json.loads(ok.read_text())["onnx"])
 
 
