@@ -320,7 +320,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     confidence @2 :Float32;
     confidencePlan @3 :Float32;
     confidenceLead @4 :Float32;
-    stopDistance @5 :Float32;  # m to the latched model stop point, -1 when none
+    stopDistance @5 :Float32;  # m to the stop target (model stop point, or STOP_GAP behind a stopping lead), -1 when none
     brakeActive @6 :Bool;
     aBrake @7 :Float32;
     aLift @8 :Float32;
