@@ -28,11 +28,11 @@ Add-Type -Name P -Namespace LG -MemberDefinition @'
 '@
 $bestPerf = [guid]"ded574b5-45a0-4f42-8737-46345c09c238"  # Balanced is 00000000-0000-0000-0000-000000000000
 
-function Get-Ac($sub, $name) {  # AC index of a power setting in the active scheme, or $null when this machine lacks it
-  $m = powercfg /query SCHEME_CURRENT $sub $name | Select-String "Current AC Power Setting Index: 0x([0-9a-f]+)"
+function Get-Ac($sub, $name) {  # AC index of a power setting in the active scheme (/qh: lid action is hidden), or $null when this machine lacks it
+  $m = powercfg /qh SCHEME_CURRENT $sub $name | Select-String "Current AC Power Setting Index: 0x([0-9a-f]+)"
   if ($m) { [Convert]::ToInt32($m.Matches[0].Groups[1].Value, 16) }
 }
-function Set-Ac($sub, $name, $v) { if ($null -ne $v) { powercfg /setacvalueindex SCHEME_CURRENT $sub $name $v } }
+function Set-Ac($sub, $name, $v) { if ($v -is [int] -or $v -is [long]) { powercfg /setacvalueindex SCHEME_CURRENT $sub $name $v } }
 
 function Enter-Linked {
   if (-not (Test-Path $saved)) {  # a crash mid-link must not overwrite the originals with the linked values
