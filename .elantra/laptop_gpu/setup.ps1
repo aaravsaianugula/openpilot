@@ -1,6 +1,6 @@
 # One-time laptop GPU setup on Windows 11 with an NVIDIA GPU, in an Administrator PowerShell. Safe to re-run.
 #   irm https://raw.githubusercontent.com/aaravsaianugula/openpilot/master/.elantra/laptop_gpu/setup.ps1 -OutFile $env:TEMP\lg.ps1; & $env:TEMP\lg.ps1
-param([string]$Branch = "master")
+param([string]$Branch = "master", [string]$Local)  # -Local <repo root>: use its files instead of GitHub (deploy before pushing)
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"  # Windows PowerShell downloads crawl with the progress bar on
 $root = "$env:ProgramData\laptop_gpu"
@@ -21,24 +21,23 @@ if (-not (Test-Path "$root\venv")) { & $py -m venv "$root\venv" }
 if ($LASTEXITCODE) { throw "pip install failed" }
 
 # only the comma's end of the USB link may reach the server
-if (-not (Get-NetFirewallRule -Name LaptopGpu -ErrorAction SilentlyContinue)) {
-  New-NetFirewallRule -Name LaptopGpu -DisplayName "Laptop GPU (comma)" -Direction Inbound -Program $py -Protocol TCP -LocalPort 8390 -RemoteAddress 192.168.250.1 -Action Allow | Out-Null
-}
-
-# stay awake on the charger and with the lid shut: the laptop rides in the car
-powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
-powercfg /setdcvalueindex SCHEME_CURRENT SUB_BUTTONS LIDACTION 0
-powercfg /change standby-timeout-ac 0
-powercfg /setactive SCHEME_CURRENT
+# (the adapter does not exist yet: start.ps1 adds -InterfaceAlias when the link comes up)
+Remove-NetFirewallRule -Name LaptopGpu -ErrorAction SilentlyContinue
+New-NetFirewallRule -Name LaptopGpu -DisplayName "Laptop GPU (comma)" -Direction Inbound -Program "$root\venv\Scripts\python.exe" -Protocol TCP -LocalPort 8390 -RemoteAddress 192.168.250.1 -Action Allow | Out-Null
 
 # code, then every chestnut model comma published weights for, fetched and checked against the CPU (a while the first time)
-Invoke-WebRequest "https://raw.githubusercontent.com/aaravsaianugula/openpilot/$Branch/.elantra/laptop_gpu/start.ps1" -OutFile "$root\start.ps1"
-& "$root\start.ps1" -Branch $Branch -Prepare
+if ($Local) { Copy-Item "$Local\.elantra\laptop_gpu\start.ps1" "$root\start.ps1" -Force }
+else { Invoke-WebRequest "https://raw.githubusercontent.com/aaravsaianugula/openpilot/$Branch/.elantra/laptop_gpu/start.ps1" -OutFile "$root\start.ps1" }
+& "$root\start.ps1" -Branch $Branch -Prepare -Local $Local
 if ($LASTEXITCODE) { throw "model check failed, see above" }
 
-# start at logon: keeps the code current, the link addressed and the server running
+# start at logon and whenever a network connects (the comma link); a second start while one runs is ignored
 $action = New-ScheduledTaskAction -Execute powershell.exe -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$root\start.ps1`" -Branch $Branch"
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0
-Register-ScheduledTask LaptopGpu -Action $action -Trigger (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME) -Settings $settings -RunLevel Highest -User $env:USERNAME -Force | Out-Null
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0 -MultipleInstances IgnoreNew
+$onNetwork = Get-CimClass -ClassName MSFT_TaskEventTrigger -Namespace Root/Microsoft/Windows/TaskScheduler | New-CimInstance -ClientOnly
+$onNetwork.Enabled = $true
+$onNetwork.Subscription = '<QueryList><Query Id="0" Path="Microsoft-Windows-NetworkProfile/Operational"><Select Path="Microsoft-Windows-NetworkProfile/Operational">*[System[EventID=10000]]</Select></Query></QueryList>'
+$triggers = (New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME), $onNetwork
+Register-ScheduledTask LaptopGpu -Action $action -Trigger $triggers -Settings $settings -RunLevel Highest -User $env:USERNAME -Force | Out-Null
 Start-ScheduledTask LaptopGpu
 "laptop GPU ready: plug the comma's aux USB-C port into this laptop. Log: $root\server.log"
