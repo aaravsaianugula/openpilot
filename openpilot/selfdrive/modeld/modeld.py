@@ -304,6 +304,21 @@ def main(demo=False):
     model = laptop.load(small_model, params) or model
   assert model is not None
   params.put_bool("ChestnutLoading", False)
+
+  # Laptop GPU plugged in after startup: probe the link, connect off-thread, swap at a frame boundary.
+  # Never re-promoted after a fallback: once the laptop (or a chestnut) has failed, the small model drives to the end of the drive.
+  laptop_probe_ok = not CHESTNUT and small_model is not None
+  laptop_next_probe = time.monotonic() + 5.
+  laptop_conn: list = []  # [(sock, hello)] or [None] from the connect thread
+  laptop_thread: threading.Thread | None = None
+  laptop_lagging = False
+
+  def laptop_connect():
+    try:
+      laptop_conn.append(laptop.connect())
+    except Exception:
+      cloudlog.exception("laptop gpu connect failed")
+      laptop_conn.append(None)
   cloudlog.warning(f"models loaded in {time.monotonic() - st:.1f}s, modeld starting")
 
   config_realtime_process(7, 54)
@@ -424,6 +439,28 @@ def main(demo=False):
       'action_t': np.array([lat_action_t, long_action_t], dtype=np.float32),
     }
 
+    if laptop_probe_ok and model is small_model and not sm['carControl'].latActive:  # never swap models mid-steer
+      try:
+        if laptop_thread is None and time.monotonic() >= laptop_next_probe:
+          laptop_next_probe = time.monotonic() + 5.
+          if laptop.link_up():
+            laptop_thread = threading.Thread(target=laptop_connect, daemon=True)
+            laptop_thread.start()
+        elif laptop_conn:
+          conn = laptop_conn.pop()
+          laptop_thread = None
+          laptop_next_probe = time.monotonic() + 30.  # after a failed load, don't hammer the laptop
+          if conn is not None:
+            try:
+              model = laptop.LaptopModel(small_model, *conn)
+              params.put_bool("ChestnutActive", True)
+              cloudlog.warning(f"laptop gpu: {conn[1]['model']} on {conn[1]['dev']}")
+            except Exception:
+              conn[0].close()
+              cloudlog.exception("laptop gpu setup failed")
+      except Exception:
+        cloudlog.exception("laptop gpu probe failed")
+
     mt1 = time.perf_counter()
     try:
       send_chestnut = (chestnut_state is not None and
@@ -436,13 +473,21 @@ def main(demo=False):
       cloudlog.exception("big model failed, fall back to small")
       params.put_bool("ChestnutActive", False)
       assert small_model is not None
+      if isinstance(model, laptop.LaptopModel):
+        model.sock.close()
       model = small_model
+      laptop_probe_ok = False
       if chestnut_state is not None:
         chestnut_state.big = False
       run_count = 0
       model_output = None
     mt2 = time.perf_counter()
     model_execution_time = mt2 - mt1
+
+    lagging = isinstance(model, laptop.LaptopModel) and model.lagging
+    if lagging != laptop_lagging:
+      laptop_lagging = lagging
+      params.put_bool("LaptopGpuLagging", lagging)
 
     if model_output is not None:
       modelv2_send = messaging.new_message('modelV2')

@@ -198,6 +198,9 @@ class SelfdriveD:
     if self.big_model_loading:
       self.events.add(EventName.bigModelLoading)
 
+    if self.params.get_bool("LaptopGpuLagging"):
+      self.events_sp.add(custom.OnroadEventSP.EventName.laptopGpuLagging)
+
     big_active = self.params.get("ChestnutActive")
     chestnut_present = self.sm['deviceState'].chestnutPresent
     model_unavailable = big_active is True and self.sm.seen['modelV2'] and not self.sm.alive['modelV2']

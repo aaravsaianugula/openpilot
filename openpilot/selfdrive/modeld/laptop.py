@@ -15,6 +15,7 @@ import socket
 import struct
 import subprocess
 import time
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +24,10 @@ HOST, PORT = "192.168.250.2", 8390
 FRAME = struct.Struct("<I")  # seq: client -> server, then each feed input at its layout() offset
 REPLY = struct.Struct("<I")  # seq: server -> client, followed by the float32 outputs
 FRAME_TIMEOUT = 0.1  # a late frame drops to the small model, like a chestnut fault
+LAG_MEAN = 0.045  # rolling-mean round trip above this warns the driver
+LAG_FRAME = 0.05  # this many frames in a row above it fall back
+LAG_FRAMES = 3
+LAG_WINDOW = 20  # frames, 1 s at 20 Hz
 FEED = ("new_img", "desire", "traffic_convention", "action_t")  # what this modeld fills each frame
 ALIGN = 128  # the laptop GPU reads each input in place, so each starts aligned
 
@@ -102,6 +107,21 @@ def ensure_link() -> bool:
   return link_up()
 
 
+class Watchdog:
+  """Per-frame round-trip latency: .lagging on a high rolling mean, raises after consecutive slow frames."""
+  def __init__(self):
+    self.window: deque[float] = deque(maxlen=LAG_WINDOW)
+    self.slow = 0
+    self.lagging = False
+
+  def frame(self, dt: float) -> None:
+    self.window.append(dt)
+    self.slow = self.slow + 1 if dt > LAG_FRAME else 0
+    if self.slow >= LAG_FRAMES:
+      raise RuntimeError(f"laptop gpu slow: {LAG_FRAMES} frames over {LAG_FRAME * 1e3:.0f} ms")
+    self.lagging = len(self.window) == LAG_WINDOW and sum(self.window) / LAG_WINDOW > LAG_MEAN
+
+
 class LaptopModel:
   chestnut = True  # modeld treats it as the big model: modelV2.big, and any failure falls back to the small model
 
@@ -115,6 +135,7 @@ class LaptopModel:
     self.parser = Parser()
     self.prev_desire = np.zeros(ModelConstants.DESIRE_LEN, dtype=np.float32)
     self.seq = 0
+    self.watchdog = Watchdog()
     offsets, size = layout(hello["feed"])
     self.tx = bytearray(size)
     self.slots = {name: np.ndarray(shape, dtype=dtype, buffer=self.tx, offset=offsets[name]) for name, shape, dtype in hello["feed"]}
@@ -122,6 +143,10 @@ class LaptopModel:
     warped = small.run_warp(**small.warp_inputs).numpy()
     if warped.size != self.slots['new_img'].size or warped.dtype != self.slots['new_img'].dtype:
       raise RuntimeError(f"comma warp gives {warped.dtype}{warped.shape}, laptop model takes {self.slots['new_img'].dtype}{self.slots['new_img'].shape}")
+
+  @property
+  def lagging(self) -> bool:
+    return self.watchdog.lagging
 
   def run(self, bufs, transforms, inputs, after_enqueue=None) -> dict[str, np.ndarray]:
     s = self.small
@@ -139,6 +164,7 @@ class LaptopModel:
     self.slots['action_t'][...] = inputs['action_t']
 
     self.seq += 1
+    t0 = time.perf_counter()
     FRAME.pack_into(self.tx, 0, self.seq)
     self.sock.sendall(self.tx)
     if after_enqueue is not None:
@@ -147,6 +173,7 @@ class LaptopModel:
     seq, = REPLY.unpack(self.rx)
     model_output = np.empty(self.output_bytes // 4, dtype=np.float32)
     recv_into(self.sock, memoryview(model_output).cast('B'))
+    self.watchdog.frame(time.perf_counter() - t0)
     if seq != self.seq or not np.all(np.isfinite(model_output)):
       raise RuntimeError(f"laptop sent a bad frame (seq {seq} != {self.seq} or not finite)")
     outputs = self.parser.parse_outputs({k: model_output[np.newaxis, v] for k, v in self.output_slices.items()})
@@ -155,14 +182,12 @@ class LaptopModel:
     return outputs
 
 
-def load(small, params):
-  """The laptop's model for this drive, or None to keep the small one."""
-  from openpilot.common.swaglog import cloudlog
-  bundle = params.get("ModelManager_ActiveBundleChestnut") or {}
-  params.put_bool("ChestnutLoading", True)
-  model = None
+def connect() -> tuple[socket.socket, dict]:
+  """Handshake with the laptop server (blocks up to ~65 s); raises on any problem."""
+  from openpilot.common.params import Params
+  bundle = Params().get("ModelManager_ActiveBundleChestnut") or {}
+  sock = socket.create_connection((HOST, PORT), timeout=5)
   try:
-    sock = socket.create_connection((HOST, PORT), timeout=5)
     sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     send_msg(sock, {"ref": bundle.get("ref"), "name": bundle.get("display_name")})
     sock.settimeout(60)  # loading a cached model onto the laptop GPU
@@ -172,7 +197,24 @@ def load(small, params):
     if sorted(name for name, _, _ in hello["feed"]) != sorted(FEED):
       raise RuntimeError(f"laptop model takes {[n for n, _, _ in hello['feed']]}, this modeld fills {FEED}")
     sock.settimeout(FRAME_TIMEOUT)
-    model = LaptopModel(small, sock, hello)
+    return sock, hello
+  except BaseException:
+    sock.close()
+    raise
+
+
+def load(small, params):
+  """The laptop's model for this drive, or None to keep the small one."""
+  from openpilot.common.swaglog import cloudlog
+  params.put_bool("ChestnutLoading", True)
+  model = None
+  try:
+    sock, hello = connect()
+    try:
+      model = LaptopModel(small, sock, hello)
+    except BaseException:
+      sock.close()
+      raise
     cloudlog.warning(f"laptop gpu: {hello['model']} on {hello['dev']}")
   except Exception:
     cloudlog.exception("laptop gpu unavailable, small model drives")
