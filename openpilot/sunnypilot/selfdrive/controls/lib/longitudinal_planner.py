@@ -7,7 +7,7 @@ See the LICENSE.md file in the root directory for more details.
 
 import platform
 
-from openpilot.cereal import messaging, custom
+from openpilot.cereal import messaging, custom, log
 from opendbc.car import structs
 from openpilot.common.constants import CV
 from openpilot.common.gps import get_gps_location_service
@@ -94,6 +94,7 @@ class LongitudinalPlannerSP:
         map_ahead = self.map_ctx.ahead(gps.latitude, gps.longitude, gps.bearingDeg, gps.speed, gps.hasFix and gps_fresh)
       healthy = sm.all_checks(service_list=['modelV2', 'carState', 'radarState']) if real_sm else True
       v_limit = self.resolver.speed_limit_final if self.resolver.speed_limit_valid else 0.
+      self.long_assist.wet = sm['selfdriveState'].personality == log.LongitudinalPersonality.standard
       self.long_assist.update(sm['modelV2'], sm['radarState'].leadOne, CS, long_enabled and not long_override,
                               self.output_v_target, v_limit, healthy, map_ahead)
 

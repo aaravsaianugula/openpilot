@@ -30,13 +30,41 @@ class Mode(IntEnum):
 
 
 A_MIN = -3.5             # ACCEL_MIN, panda clamp
-TAU = 0.7                # s, actuator 0.5 + model/CAN latency 0.2; the brake ramps in, so no jerk term
-# The car delivers ~0.8x the braking it is commanded: 38 min of engaged logs, aEgo 0.75 s after the command,
-# 0.69-0.86x across every bin from -0.5 to -3.5 (acceleration 0.85-1.0x). Plan, actuators and CAN output agree,
-# so the shortfall is in the car, and Hyundai longcontrol has kiV = 0, so nothing closes it. Requests below are
-# physical decelerations; they are divided by this before reaching the planner.
-# shortcut: one constant, upgrade to an online estimate if it varies with load, grade or weather in later logs.
-BRAKE_DELIVERY = 0.8
+TAU = 0.7                # s, actuator 0.5 + model/CAN latency 0.2, brakes already on
+TAU_ONSET = 1.1          # s from coasting: brakes in ~1.1 s after a -0.3..-1 request, 0.4-0.6 s after -2.4..-3.5 (18 onsets
+                         # 2026-11-08/09); the engaging request (BRAKE_ENGAGE_V) sits between
+
+# Brake actuation (19 routes 2026-11-07..09). The SCC only uses the friction brakes once asked for more than
+# BRAKE_ENGAGE_V; below that the powertrain alone slows us, however long it is asked. Steady requests at 9-20 m/s:
+# -0.3 -> -0.24..-0.33, -0.5 -> -0.30..-0.41, -0.8 -> -0.42..-0.57, -1.1 -> -0.49..-0.81, -1.55 -> -1.55. Once on, the
+# brakes track 1:1 (-0.54 -> -0.58, -0.84 -> -0.90, -1.25 -> -1.35) until released. 248 t=1101: a lead braking to a
+# stop, LA asked -0.4 building to -1.7 over 5 s and got -0.35..-0.5, then the brakes came in and peaked at -3.9; that
+# is the late-hard-then-crawl stop. Requests below (and the planner's target, see LongAssist.actuate) are physical
+# decelerations: a need past the powertrain asks firmly enough to bring the brakes in, then follows the need.
+A_COAST = 0.3            # m/s^2 the powertrain delivers without the brakes
+BRAKE_ENGAGE_BP = [3., 8., 12.]
+BRAKE_ENGAGE_V = [0.8, 1.2, 1.5]
+A_ENGAGE = 0.6           # need of our own brake (stop, lead, curve) that brings the brakes in
+A_ENGAGE_ANY = 1.0       # any planner need: below it the MPC's following stays on the powertrain. Closed loop on the
+                         # measured plant, bringing them in at 0.6 for the MPC turned steady following into a +-1.4 cycle
+ENGAGE_SEEN = 0.6        # m/s^2 of decel past the powertrain: the brakes are on
+ENGAGE_WAIT = 1.0        # s at the engage request without them coming in before asking a little more
+J_ENGAGE = 3.0           # m/s^3 ramp of the extra request; the car's own response lags ~1 s
+J_ENGAGE_OFF = 2.0
+CRAWL_DELIVERY_BP = [1., 3.]
+CRAWL_DELIVERY_V = [0.6, 1.0]  # below 2 m/s ~0.6x and idle creep (2026-11-06)
+
+# wet roads: the "standard" distance setting. Same following distance as aggressive; launches and lift gentler,
+# brakes brought in earlier and smaller, stops planned with more latency margin
+WET_ACCEL = 0.8
+WET_JERK = 0.7
+A_ENGAGE_WET = 0.45
+WET_TAU_MARGIN = 0.3
+
+# following distance (MPC t_follow, aggressive and wet). Road test 2026-11-09: too far back below 40 mph; engaged
+# gaps matched the MPC's 1.25 s + 6 m (20-30 mph 20 m, 30-40 mph 25.6 m). Stock 1.25 s from 45 mph up.
+T_FOLLOW_BP = [0., 9., 13.4, 17.9, 20.]
+T_FOLLOW_V = [0.85, 0.9, 1.0, 1.15, 1.25]
 
 # model stop point
 V_STOP = 0.5             # m/s, plan speed treated as stopped
@@ -60,9 +88,15 @@ DILEMMA_FRAMES = 10
 # stopped cars while longcontrol bounced between stopping and pid at 0.3 m/s.
 STOP_GAP = 5.0           # m behind a stopped lead
 A_STOP_ON_BP = [2., 8.]
-A_STOP_ON_V = [0.6, 1.2]  # required decel that starts the profile: hold speed until then
+# required decel that starts the profile. Road test 2026-11-09: holding speed until 1.2 then braking (made harder by
+# the brakes coming in late, see A_COAST) felt late and hard; now it coasts from A_STOP_COAST and brakes from here
+A_STOP_ON_V = [0.5, 0.7]
+A_STOP_ON_V_WET = [0.4, 0.5]
+A_STOP_COAST = 0.2       # need that lifts off: the powertrain's A_COAST, no brakes, no latch
 A_STOP_EMERG = 2.5       # a need this big is braked at once, no onset ramp
 J_STOP_ON = 1.5          # m/s^3 onset ramp
+STOP_RAMP_T = 0.8        # s, a bigger need found late ramps in this fast, up to J_STOP_ON_MAX: at J_STOP_ON a stopped car
+J_STOP_ON_MAX = 2.5      # found at 78 m from 14.6 m/s (1.7 needed) escalated to -3.1 on the measured plant
 V_STOP_FIN = 2.0         # m/s, below this, near the target, the profile never asks less than A_STOP_FIN
 A_STOP_FIN = 0.8
 S_STOP_FIN = 3.0         # m short of the target where the firm finish and hold start; farther back the stock
@@ -82,6 +116,7 @@ LEAD_LOW_V_MAX = 1.5
 TTC_SAFETY = 2.0         # s, the only brake kept during a turn
 CUTOUT_BLOCK_FRAMES = int(1.5 / DT_MDL)
 LEAD_MIN_FRAMES = 3      # replay: 1-2 frame lead-accel spikes became 0.2-0.5 s brake taps
+LEAD_JUMP = 15.          # m, a lead stop this much nearer than the recent median (a cut-in) is taken at once
 
 # curves
 A_LAT_BP = [0., 8., 15., 25., 35.]
@@ -108,16 +143,27 @@ TURN_EXIT_FRAMES = int(1.0 / DT_MDL)
 # lift. 230 engaged gas presses (2026-10..11): 181 while following at a 1.63 s gap (driver alone: 1.6 s city,
 # 1.1-1.4 s highway), 23 at launch (driver: 0-8 m/s at 1.3 m/s^2, up to ~1.9 in the first 2 s). Faster lift response
 # and the aggressive gap covered 39 of them in shadow vs 26; following tighter is the MPC personality's job.
-LIFT_TAU = 2.5
-A_LIFT_BP = [0., 5., 8., 20.]
-A_LIFT_V = [1.5, 1.5, 1.2, 0.8]
-J_LIFT = 1.5
-LIFT_FADE_FRAMES = int(0.5 / DT_MDL)
+# Road test 2026-11-09: in motion it sped up in bursts and slowly. Replay of 5 drives: the lift dropped to 0 at once
+# 21x/min when a gate flickered (plan confidence 19% of frames, model intent 12%, mapped signal 6%, cut-out 5%) and
+# came back over 0.5 s; a 2.5 s approach was slow near the target. Now soft gates ramp it down, hard ones cut it.
+LIFT_TAU = 1.6
+A_LIFT_BP = [0., 5., 8., 20., 30.]
+A_LIFT_V = [1.5, 1.5, 1.3, 1.0, 0.7]
+J_LIFT = 2.0
+J_LIFT_DOWN = 2.0
 GAP_GAIN = 0.15
-T_FOLLOW_LIFT = 1.25    # aggressive personality
+# the lift only catches up a gap the MPC would also close: aimed 1 m outside the MPC's 6 m + t_follow * v. Aimed 2 m
+# inside it (LEAD_S0), it spent every bit of accel the MPC allowed and steady following cycled +-0.9 on the plant
+LIFT_GAP_S0 = 7.
+# Following a lead the MPC paces, the model's mild braking is mostly it keeping its own ~1.6-1.9 s gap (engaged gaps
+# matched it), which held us back whenever the lead pulled away: there only its hard braking cuts the lift
+FOLLOW_RANGE = 60.
+FOLLOW_CLOSING = 1.0     # m/s, closing faster than this is not steady following
 INTENT_T = 2.0
 INTENT_DECEL_DV = -0.5
 E2E_BRAKING = -0.3
+INTENT_HARD_DV = -1.5    # the plan slows this much by INTENT_T, or the model brakes this hard: lift cut at once
+E2E_BRAKING_HARD = -0.8
 LAUNCH_PLAN_V = 1.0
 CLEAR_STOP_ACCEL = 0.3
 J_BRAKE_RELEASE = 2.0
@@ -156,7 +202,7 @@ def plan_stop_distance(t: np.ndarray, x: np.ndarray, v: np.ndarray) -> float | N
   return None
 
 
-def lead_decel(d: float, v_ego: float, v_l: float, a_l: float) -> float:
+def lead_decel(d: float, v_ego: float, v_l: float, a_l: float, tau: float = TAU) -> float:
   """Least constant deceleration, starting after TAU, that keeps LEAD_S0 behind the lead's predicted path.
 
   The lead keeps its braking for up to LEAD_BRAKE_T (stopping if it reaches zero), then holds its speed.
@@ -172,8 +218,8 @@ def lead_decel(d: float, v_ego: float, v_l: float, a_l: float) -> float:
   v_f = v_l + a_l * tb
   x = d - LEAD_S0 + v_l * tt + a_l * tt ** 2 / 2 + v_f * (LEAD_T - tt)
   overrun = v_ego * LEAD_T - x            # how far past the buffer holding our speed would take us
-  u = LEAD_T - TAU
-  room = x - v_ego * TAU
+  u = LEAD_T - tau
+  room = x - v_ego * tau
   with np.errstate(divide='ignore', invalid='ignore'):
     a_moving = 2 * overrun / u ** 2         # still rolling at that time
     a_stopped = np.where(room > 0., v_ego ** 2 / (2 * room), np.inf)  # stopped before it
@@ -198,10 +244,10 @@ def lead_stop_point(d: float, v_l: float, a_l: float, at_rest: bool = False) -> 
   return None
 
 
-def stop_decel(s: float, v_ego: float, a_ego: float) -> float:
-  """Constant decel, from the end of the latency, that stops in s. The car keeps its current decel through TAU."""
+def stop_decel(s: float, v_ego: float, a_ego: float, tau: float = TAU) -> float:
+  """Constant decel, from the end of the latency, that stops in s. The car keeps its current decel through tau."""
   a0 = max(-a_ego, 0.)
-  t0 = min(TAU, v_ego / a0) if a0 > 0. else TAU
+  t0 = min(tau, v_ego / a0) if a0 > 0. else tau
   v_tau = max(v_ego - a0 * t0, 0.)
   room = s - (v_ego + v_tau) / 2 * t0
   if v_tau < 0.1:
@@ -212,6 +258,7 @@ def stop_decel(s: float, v_ego: float, a_ego: float) -> float:
 class LongAssist:
   def __init__(self):
     self.mode = Mode.off
+    self.wet = False  # the planner sets it from the distance setting each frame
     self.reset()
 
   def reset(self) -> None:
@@ -222,7 +269,6 @@ class LongAssist:
     self.prev_plan: tuple[np.ndarray, np.ndarray] | None = None
     self.c_plan = 1.
     self.conf_ok = False
-    self.lift_weight = 0.
     self.turning = False
     self.turn_exit = 0
     self.had_lead = False
@@ -233,7 +279,10 @@ class LongAssist:
     self.stop_target_miss = 0
     self.hold = False
     self.launching = False
-    self.launch_lift = False
+    self.lead_stop_hist: deque = deque(maxlen=STOP_MEDIAN_N)
+    self.brakes_on = False
+    self.engage_t = 0.
+    self.a_extra = 0.
 
     self.state = State.off
     self.confidence = 0.
@@ -256,6 +305,37 @@ class LongAssist:
     if self.mode >= Mode.brake and self.hold:
       should_stop_e2e = True  # stopping state at crawl: this car creeps through small decels in pid
     return a_e2e, should_stop_e2e
+
+  def mpc_t_follow(self, v_ego: float, personality) -> float | None:
+    """The lead MPC's time gap for aggressive and wet (standard); None keeps the stock personality gap."""
+    if self.mode < Mode.full or personality == log.LongitudinalPersonality.relaxed:
+      return None
+    return float(np.interp(v_ego, T_FOLLOW_BP, T_FOLLOW_V))
+
+  def actuate(self, a_target: float, v_ego: float, a_ego: float) -> float:
+    """The command that makes this car deliver the planner's final target (see A_COAST). Never less braking than
+    planned: a need past the powertrain adds an engaging request until the brakes are on, then follows the need."""
+    if self.mode < Mode.brake or self.state == State.off:
+      return a_target
+    need = -a_target
+    extra = 0.
+    if need <= A_COAST - 0.1:
+      self.brakes_on = False
+      self.engage_t = 0.
+    elif v_ego < BRAKE_ENGAGE_BP[0]:
+      self.brakes_on = True  # slow, the brakes answer at once (2-5 m/s: -1.12 -> -1.06); below 2 m/s ~0.6x
+      extra = need - need / float(np.interp(v_ego, CRAWL_DELIVERY_BP, CRAWL_DELIVERY_V))
+    elif not self.brakes_on and (need > A_ENGAGE_ANY or (self.a_brake is not None and a_target >= self.a_brake - 1e-3 and
+                                                          need > (A_ENGAGE_WET if self.wet else A_ENGAGE))):
+      self.engage_t += DT_MDL
+      level = float(np.interp(v_ego, BRAKE_ENGAGE_BP, BRAKE_ENGAGE_V)) + min(0.4 * max(self.engage_t - ENGAGE_WAIT, 0.), 0.5)
+      extra = min(need - level, 0.)
+    self.brakes_on = self.brakes_on or (need > A_COAST and a_ego < -ENGAGE_SEEN)
+    if extra < self.a_extra:
+      self.a_extra = max(extra, self.a_extra - J_ENGAGE * DT_MDL)
+    else:
+      self.a_extra = min(extra, self.a_extra + J_ENGAGE_OFF * DT_MDL) if need > A_COAST - 0.1 else 0.
+    return float(max(a_target + self.a_extra, A_MIN))
 
   def update(self, model, lead_one, CS, enabled: bool, v_cruise: float, v_limit: float, healthy: bool,
              map_ahead: MapAhead = MAP_EMPTY) -> None:
@@ -300,6 +380,7 @@ class LongAssist:
       d, v_l, a_l = lead
       if v_ego > v_l:
         ttc = d / (v_ego - v_l)
+    tau = (TAU if self.brakes_on or CS.aEgo < -ENGAGE_SEEN else TAU_ONSET) + (WET_TAU_MARGIN if self.wet else 0.)
     # every lead hypothesis (camera radar point, model lead) is a possible obstacle: the most demanding one
     # brakes. Closest-wins picked a vision lead at 58 m doing 13 m/s over a stopped radar car at 79 m.
     # A lead coming to rest is a stop target (the stop profile below); a moving one is followed with lead_decel,
@@ -310,7 +391,7 @@ class LongAssist:
     for ld in leads:
       x_l = lead_stop_point(*ld, at_rest=v_ego < 0.1)
       if x_l is None:
-        a_req = max(a_req, lead_decel(ld[0], v_ego, ld[1], ld[2]))
+        a_req = max(a_req, lead_decel(ld[0], v_ego, ld[1], ld[2], tau))
       else:
         lead_stops.append(x_l)
     if a_req > STOP_ONSET:
@@ -321,6 +402,12 @@ class LongAssist:
     self.lead_stop_frames = self.lead_stop_frames + 1 if lead_stops else 0
     if self.lead_stop_frames < LEAD_MIN_FRAMES:
       lead_stops = []
+    # world-frame median: a vision lead's range jumps 5-10 m frame to frame (24d t=655: 59 -> 49 m asked -3.4)
+    self.lead_stop_hist.append(self.odom + min(lead_stops) if lead_stops else None)
+    recent = [s for s in self.lead_stop_hist if s is not None]
+    if lead_stops and len(recent) >= 3:
+      x_med = float(np.median(recent)) - self.odom
+      lead_stops = [min(lead_stops) if min(lead_stops) < x_med - LEAD_JUMP else x_med]
 
     # --- confidence
     cur = np.interp(T_CMP, t, v)
@@ -408,22 +495,24 @@ class LongAssist:
       self.turn_exit = self.turn_exit - 1 if k_near < TURN_KAPPA_EXIT else TURN_EXIT_FRAMES
       self.turning = self.turn_exit > 0
 
-    # --- stop profile toward the nearest stop target: hold speed until the required decel reaches the onset,
-    # ramp in, track the constant decel that stops there, never fade into a creep, hold at standstill
+    # --- stop profile toward the nearest stop target: lift off once a little is needed, brake from the onset (ramp
+    # in, track the constant decel that stops there), never fade into a creep, hold at standstill
     targets = [x_l - STOP_GAP for x_l in lead_stops] + ([s_model] if s_model is not None else [])
     s_stop = min(targets) if targets else None
     self.stop_dist = -1. if s_stop is None else s_stop
     self.stop_target_miss = 0 if s_stop is not None else self.stop_target_miss + 1
     a_stop = None
     if s_stop is not None:
-      a_req = stop_decel(s_stop, v_ego, CS.aEgo)
+      a_req = stop_decel(s_stop, v_ego, CS.aEgo, tau)
       if v_ego < STOP_LOW_V:
         a_req = min(a_req, A_STOP_LOW_V)
       near = v_ego < V_STOP_FIN and s_stop < v_ego ** 2 / (2 * A_STOP_FIN) + S_STOP_FIN
-      onset = a_req >= np.interp(v_ego, A_STOP_ON_BP, A_STOP_ON_V) or near
+      onset = a_req >= np.interp(v_ego, A_STOP_ON_BP, A_STOP_ON_V_WET if self.wet else A_STOP_ON_V) or near
       self.stop_latched = self.stop_latched or (onset and v_ego > V_STOP)
       if self.stop_latched:
         a_stop = -max(a_req, A_STOP_FIN) if near else -a_req
+      elif a_req >= A_STOP_COAST and v_ego > V_STOP:
+        a_stop = -min(a_req, A_COAST)
     elif self.stop_target_miss > STOP_MISS_MAX:
       self.stop_latched = False
     hold = self.stop_latched and (self.hold or (v_ego < V_HOLD and s_stop is not None and s_stop < S_STOP_FIN))
@@ -438,10 +527,11 @@ class LongAssist:
       requests[stop_state] = min(a_stop, requests.get(stop_state) or 0.)
     requests = {k: a for k, a in requests.items() if a is not None}
     brake_state = min(requests, key=requests.get) if requests else None
-    a_brake = max(requests[brake_state] / BRAKE_DELIVERY, A_MIN) if requests else None
+    a_brake = max(requests[brake_state], A_MIN) if requests else None
     if a_brake is not None and -requests[brake_state] < A_STOP_EMERG:
-      prev = self.a_brake if self.a_brake is not None else min(CS.aEgo, 0.) / BRAKE_DELIVERY
-      a_brake = max(a_brake, prev - J_STOP_ON * DT_MDL / BRAKE_DELIVERY)
+      prev = self.a_brake if self.a_brake is not None else min(CS.aEgo, 0.)
+      j_on = float(np.clip(-a_brake / STOP_RAMP_T, J_STOP_ON, J_STOP_ON_MAX)) * (WET_JERK if self.wet else 1.)
+      a_brake = max(a_brake, prev - j_on * DT_MDL)
     if self.a_brake is not None and not released_at_rest:
       released = self.a_brake + J_BRAKE_RELEASE * DT_MDL
       if a_brake is None:
@@ -459,26 +549,30 @@ class LongAssist:
     pulling_away = self.launching and all(v_l > max(v_ego, V_LEAD_STOPPED) for _, v_l, _ in leads)
     if lead is not None and not pulling_away:
       d, v_l, a_l = lead
-      v_t = min(v_t, v_l + GAP_GAIN * (d - LEAD_S0 - T_FOLLOW_LIFT * v_ego)) if a_l > -0.2 else min(v_t, v_ego)
+      gap = LIFT_GAP_S0 + float(np.interp(v_ego, T_FOLLOW_BP, T_FOLLOW_V)) * v_ego
+      v_t = min(v_t, v_l + GAP_GAIN * (d - gap)) if a_l > -0.2 else min(v_t, v_ego)
     self.v_target = float(v_t)
 
     v_plan = float(np.interp(INTENT_T, t, v))
-    intent_decel = v_plan - v_ego < INTENT_DECEL_DV or model.action.desiredAcceleration < E2E_BRAKING
-    hard_ok = (self.conf_ok and not (CS.gasPressed or CS.brakePressed) and not self.turning and
-               not lane_change and not intent_decel and
-               self.stop_frames == 0 and (self.cutout_block == 0 or self.launching) and self.a_brake is None and
-               (v_ego > V_STOP or v_plan > LAUNCH_PLAN_V))
-    # a launch is the model's own go at that signal: no mapped-signal cap or block until V_LAUNCH_END
-    lift_ok = hard_ok and not (primed and v_ego > PRIME_V and not self.launching)
-    self.lift_weight = min(self.lift_weight + 1. / LIFT_FADE_FRAMES, 1.) if lift_ok else 0.
+    da = model.action.desiredAcceleration
+    intent_decel = v_plan - v_ego < INTENT_DECEL_DV or da < E2E_BRAKING
+    intent_hard = v_plan - v_ego < INTENT_HARD_DV or da < E2E_BRAKING_HARD
+    # hard gates cut the lift at once: the driver, a brake or stop of ours, a turn, the model braking hard, rest
+    hard_ok = (not (CS.gasPressed or CS.brakePressed) and not self.turning and not intent_hard and
+               self.stop_frames == 0 and self.a_brake is None and (v_ego > V_STOP or v_plan > LAUNCH_PLAN_V))
+    # soft gates ramp it down: plan confidence, a lane change, mild model intent, a cut-out, a mapped stop/signal at
+    # speed (a launch is the model's own go at that signal: no mapped-signal cap or block until V_LAUNCH_END)
+    following = lead is not None and lead[0] < FOLLOW_RANGE and lead[1] > v_ego - FOLLOW_CLOSING
+    soft_ok = (self.conf_ok and not lane_change and not (intent_decel and not following) and
+               (self.cutout_block == 0 or self.launching) and not (primed and v_ego > PRIME_V and not self.launching))
     if self.launching:
-      a_lift_max, j_up = float(np.interp(v_ego, A_LAUNCH_BP, A_LAUNCH_V)), J_LAUNCH
+      a_lift_max, j_up, j_down = float(np.interp(v_ego, A_LAUNCH_BP, A_LAUNCH_V)), J_LAUNCH, J_LAUNCH
     else:
-      a_lift_max, j_up = min(np.interp(v_ego, A_LIFT_BP, A_LIFT_V), A_LIFT_PRIMED if primed else np.inf), J_LIFT
-    a_lift = min(float(np.clip((v_t - v_ego) / LIFT_TAU, 0., a_lift_max) * self.lift_weight), self.a_lift + j_up * DT_MDL)
-    self.launch_lift = self.launching or (self.launch_lift and self.a_lift > 0.)
-    if hard_ok and self.launch_lift:
-      a_lift = max(a_lift, self.a_lift - J_LAUNCH * DT_MDL)  # a launch's lift ramps down for soft limits, never steps
+      a_lift_max, j_up, j_down = min(np.interp(v_ego, A_LIFT_BP, A_LIFT_V), A_LIFT_PRIMED if primed else np.inf), J_LIFT, J_LIFT_DOWN
+    if self.wet:
+      a_lift_max, j_up = a_lift_max * WET_ACCEL, j_up * WET_JERK
+    target = float(np.clip((v_t - v_ego) / LIFT_TAU, 0., a_lift_max)) if soft_ok else 0.
+    a_lift = float(np.clip(target, self.a_lift - j_down * DT_MDL, self.a_lift + j_up * DT_MDL)) if hard_ok else 0.
     self.a_lift = a_lift
     self.clear_stop = self.a_lift > CLEAR_STOP_ACCEL
 
