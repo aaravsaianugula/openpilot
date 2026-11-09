@@ -8,7 +8,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.long_assist import (
   LongAssist, Mode, State, lead_decel, plan_stop_distance, stop_decel, A_MIN, A_MAP_CURVE_MAX, A_STOP_EMERG, BRAKE_DELIVERY,
-  CORROBORATE_FRAMES, DILEMMA_FRAMES, J_STOP_ON, STOP_GAP, STOP_ONSET,
+  A_LAUNCH_BP, A_LAUNCH_V, CORROBORATE_FRAMES, DILEMMA_FRAMES, J_STOP_ON, STOP_GAP, STOP_ONSET,
 )
 from openpilot.sunnypilot.selfdrive.controls.lib.long_assist_map import EMPTY, Kind, MapAhead
 
@@ -213,14 +213,15 @@ class TestLongAssist:
     run(self.la, 5, make_model(20., stop_at=40.), cs=make_cs(20.), map_ahead=hazard(42., Kind.signal))
     assert self.la.a_brake is None
 
-  def test_primed_blocks_lift_at_speed_caps_launch(self):
+  def test_primed_blocks_lift_at_speed_not_launch(self):
     run(self.la, 40, make_model(10., accel=0.3), cs=make_cs(10.), v_cruise=20., map_ahead=hazard(100., Kind.signal))
     assert self.la.a_lift == 0. and self.la.state == State.primed
 
+    # a launch is the model's own go at that signal: not capped (2026-11-07/08 road test)
     la = LongAssist()
     la.mode = Mode.full
     run(la, 60, make_model(0., accel=1.0), cs=make_cs(0.), v_cruise=20., map_ahead=hazard(15., Kind.signal))
-    assert 0.9 < la.a_lift <= 1.0
+    assert la.a_lift == A_LAUNCH_V[0]
 
 
 class TestLeadDecel:
@@ -265,7 +266,8 @@ class Car:
     self.delay.append(self.out)
     deliver = np.interp(self.v, [1., 3.], [0.6, 0.8]) if cmd < 0. else 1.
     creep = 0. if self.stopping and self.v == 0. else 0.4 * max(0., 1. - self.v / 2.)  # 238 t=569: crept at -2 + StopReq
-    self.a = deliver * cmd + creep
+    # a positive request is tracked on the total: idle creep only shows below it (238 t=752: 0.2-0.3 asked, 0.5 got)
+    self.a = deliver * cmd + creep if cmd < 0. else max(cmd, creep)
     self.v = max(self.v + self.a * DT_MDL, 0.)
     self.x += self.v * DT_MDL
 
@@ -355,3 +357,127 @@ class TestClosedLoopStops:
       self.la.update(make_model(0., accel=1.0), make_lead(True, float(gap), 2.0, 1.0), make_cs(0.), True, 30., 0., True)
     assert not self.la.hold and self.la.a_brake is None
     assert self.la.apply(1.0, False) == (1.0, False)
+
+
+def mpc_like(v, gap, v_l, a_l):
+  """Stand-in for the lead MPC (aggressive): pulls toward its 6 m + 1.25 s comfort distance and the lead's speed. Fit to
+  its logged launches behind a car pulling away (238 t=752, 22a t=770): 0.15-0.2 at first, 0.5-0.75 after 2 s."""
+  desired = 6. + 1.25 * v + (v ** 2 - v_l ** 2) / (2 * 2.5)
+  return float(np.clip(0.1 * (gap - desired) + 0.2 * (v_l - v) + 0.25 * max(a_l, 0.), -3.5, 2.0))
+
+
+def model_launch_da(t_go):
+  # the model's own launch on 2026-11 drives: ~0.3-0.9 m/s^2 over the first 2 s
+  return float(np.clip(0.4 * t_go, 0., 0.8))
+
+
+def launch(la, lead=None, seconds=12., v_cruise=15., green=1.0, map_ahead=EMPTY, lag_v0=0.15, a_noise=0.):
+  """Closed loop from rest. lead=(gap, accel, t_move): a stopped lead that pulls away at t_move. The planner is
+  min(MPC stand-in, cruise, LA-applied e2e) with shouldStop = any; the model's plan lags our speed by lag_v0.
+  a_noise: the radar's aLeadK reads this for the lead's first 1 s of motion (logged: -0.1..-0.4 at walking pace)."""
+  car = Car(0.)
+  car.stopping = True
+  a_cruise, lead_x, lead_v, lead_a = 0., 1e3, 30., 0.
+  ml_v = 0.
+  if lead is not None:
+    lead_x, lead_a_go, t_move = lead
+    lead_v = 0.
+  log = []
+  for k in range(int(seconds / DT_MDL)):
+    t = k * DT_MDL
+    if lead is not None:
+      lead_a = lead_a_go if t >= t_move else 0.
+      lead_v += lead_a * DT_MDL
+      lead_x += lead_v * DT_MDL
+      ml_v += (lead_v - ml_v) * DT_MDL / 0.2  # logged launches: the model's lead speed trails the radar's 0.1-0.2 s
+    gap = lead_x - car.x
+    t_go = t - green if lead is None else t - t_move - 0.3
+    go = t_go > 0.
+    da = model_launch_da(t_go) if go else -0.05
+    v0 = max(car.v - lag_v0, 0.)
+    m = make_model(v0, accel=1.0 if go else 0., desired_accel=da,
+                   lead=(float(gap), float(ml_v), float(lead_a)) if lead is not None else None)
+    a_read = a_noise if a_noise and lead is not None and 0. < t - t_move < 1.0 else lead_a
+    radar = make_lead(lead is not None, float(gap), float(lead_v), float(a_read))
+    la.update(m, radar, make_cs(car.v, a=car.a), True, v_cruise, 0., True, map_ahead)
+    a_e2e, ss_e2e = la.apply(da, car.v < 0.3 and da < 0.1)
+    a_mpc = mpc_like(car.v, gap, lead_v, lead_a) if lead is not None else 2.0
+    a_cruise = float(np.clip(np.clip(v_cruise - car.v, -0.5, 2.0), a_cruise - 1.6 * DT_MDL, a_cruise + 1.6 * DT_MDL))
+    a_t = min(a_mpc, a_cruise, a_e2e)
+    ss = ss_e2e or any(car.v < 0.3 and a < 0.1 for a in (a_mpc, a_cruise))
+    car.step(a_t, ss)
+    log.append((t, car.v, car.a, a_t, a_mpc, a_e2e, gap, la.hold))
+  return np.array(log)
+
+
+def launch_stats(log, t0):
+  t, v, a = log[:, 0], log[:, 1], log[:, 2]
+  move = t[np.flatnonzero((t >= t0) & (v >= 0.3))[0]]
+  t8 = t[np.flatnonzero(v >= 8.)[0]] - move
+  a2 = a[(t >= move) & (t <= move + 2.)].max()
+  return move - t0, t8, a2
+
+
+class TestClosedLoopLaunch:
+  def setup_method(self):
+    self.la = LongAssist()
+    self.la.mode = Mode.full
+
+  def check_smooth(self, log):
+    moving = (log[:-1, 1] > 0.05) & (log[1:, 1] > 0.05)  # at rest the plant's accel is not physical
+    jerk = np.abs(np.diff(log[:, 2]))[moving] / DT_MDL
+    assert jerk.max() <= 3.0, f"jerk {jerk.max():.1f}"
+
+  def test_no_lead_green_light(self):
+    # driver: 0-8 m/s in 6.2 s, first-2 s peak 1.88; before this fix lift built over ~1 s and the model paced the rest
+    log = self.run_check(launch(self.la, green=1.0), 1.0)
+    assert log[:, 1].max() <= 15. + 1e-6
+
+  def test_no_lead_at_mapped_signal(self):
+    # most launches are at mapped signals: lift was capped at 1.0 there and cut to 0 above 5 m/s
+    self.run_check(launch(self.la, green=1.0, map_ahead=hazard(8., Kind.signal)), 1.0)
+
+  def run_check(self, log, t0):
+    delay, t8, a2 = launch_stats(log, t0)
+    assert delay < 1.1, f"moved {delay:.2f} s after the plan went"  # 0.5 s actuator delay + 0.5 s jerk ramp to 0.3 m/s
+    assert t8 < 6.5, f"0-8 m/s in {t8:.1f} s"
+    assert 1.3 <= a2 <= 1.8, f"first-2 s peak {a2:.2f}"
+    self.check_smooth(log)
+    return log
+
+  def test_lead_pulls_away_noisy_alead(self):
+    # a car pulling away reads a noisy negative aLeadK at walking pace: that was a stop point a metre on, and LA held
+    # us at the line until it read >= 0
+    self.test_lead_pulls_away(a_noise=-0.4)
+
+  def test_lead_pulls_away(self, a_noise=0.):
+    # LA's own stop behind a lead, then the car pulls away at 1.5 m/s^2: the hold lets go as soon as it moves, LA never
+    # paces the launch (the MPC does) and never asks more than it
+    stop = drive_to_lead(self.la, 5.3, 18., 5.6, -1.4, creeping_base, seconds=20.)
+    assert self.la.hold
+    log = launch(self.la, lead=(float(stop[-1, 1]), 1.5, 1.0), a_noise=a_noise)
+    t, v, a_t, a_mpc, a_e2e, gap, hold = log[:, 0], log[:, 1], log[:, 3], log[:, 4], log[:, 5], log[:, 6], log[:, 7]
+    assert np.all(a_t <= a_mpc + 1e-9)
+    assert v[t < 1.0].max() < 0.05 and hold[t < 1.0].all()  # held until the lead moves
+    released = t[np.flatnonzero(hold == 0)[0]]
+    assert released < 1.0 + 0.6  # the lead reads > 0.5 m/s after 0.35 s, then the 3-frame miss
+    # from release on, LA (and the slower model under it) never paces below min(MPC, launch profile)
+    paced = (t > released + 0.6) & (v < 8.)
+    assert np.all(a_e2e[paced] >= np.minimum(a_mpc[paced], np.interp(v[paced], A_LAUNCH_BP, A_LAUNCH_V)) - 1e-6)
+    assert gap.min() >= 4.0
+    self.check_smooth(log)
+
+  def test_lead_launch_then_stop_again(self):
+    # stop-and-go: after the launch the lead brakes to a stop again; LA still stops behind it as before
+    la = self.la
+    log = launch(la, lead=(5., 1.5, 1.0), seconds=9.)
+    car_v, gap = log[-1, 1], log[-1, 6]
+    lead_v = 1.5 * 8.
+    assert car_v > 5.
+    TestClosedLoopStops.check_stop(None, drive_to_lead(la, car_v, gap, lead_v, -2.0, creeping_base, seconds=25.))
+
+  def test_spurious_stop_at_launch_ignored(self):
+    # the model's own speed reads < V_STOP for ~0.5 s after we pass it while its plan accelerates: not a stop
+    for v in np.arange(0., 1.5, 0.05):
+      self.la.update(make_model(max(v - 0.2, 0.), accel=1.0, desired_accel=0.5), make_lead(), make_cs(v), True, 15., 0., True)
+      assert self.la.stop_frames == 0 and self.la.a_brake is None

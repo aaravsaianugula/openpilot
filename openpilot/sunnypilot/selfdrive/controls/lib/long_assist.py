@@ -122,6 +122,18 @@ LAUNCH_PLAN_V = 1.0
 CLEAR_STOP_ACCEL = 0.3
 J_BRAKE_RELEASE = 2.0
 
+# launch: from rest until V_LAUNCH_END. Road test 2026-11-07/08: launches too slow with and without a lead. Replay of
+# 114 recorded launches: the lift took ~1 s to build and was then capped at 1.0 at mapped signals, cut above 5 m/s with
+# a signal within 150 m, blocked for 1.5 s by every flicker of a weak model lead, and behind a lead the gap law asked
+# ~0.3; the model's own speed reads < V_STOP for ~0.5 s after we pass it, which looked like a stop at 0 m (blocked lift,
+# sometimes latched a -1.9 brake). Driver: 0-8 m/s in 6.2 s, mean 1.28, first-2 s peak 1.88.
+A_LAUNCH_BP = [0., 5., 8.]
+A_LAUNCH_V = [1.6, 1.6, 1.2]  # meets A_LIFT_V at V_LAUNCH_END
+J_LAUNCH = 2.5                # m/s^3, also the ramp-down of a launch's lift for soft reasons; the car's SCC allows 3 in pid
+V_LAUNCH_END = 8.
+LAUNCH_GO_T = 5.              # s, a plan back above LAUNCH_PLAN_V by then is a launch, not a stop
+LAUNCH_STOP_NEAR = 1.         # m, only a stop this close can be the model's lagging speed estimate
+
 # confidence
 C_ON = 0.7
 C_OFF = 0.5
@@ -172,12 +184,16 @@ def lead_decel(d: float, v_ego: float, v_l: float, a_l: float) -> float:
   return min(req, LEAD_LOW_V_MAX) if v_ego < LEAD_LOW_V else min(req, 50.)
 
 
-def lead_stop_point(d: float, v_l: float, a_l: float) -> float | None:
-  """Where the lead comes to rest if it keeps braking for up to LEAD_BRAKE_T, None if it keeps moving."""
+def lead_stop_point(d: float, v_l: float, a_l: float, at_rest: bool = False) -> float | None:
+  """Where the lead comes to rest if it keeps braking for up to LEAD_BRAKE_T, None if it keeps moving.
+
+  At rest only a lead that is stopped now counts: a car pulling away reads a noisy -0.1..-0.4 a_l at walking pace,
+  which extrapolated to a stop a metre or two on and held us at the line.
+  """
   v_l, a_l = max(v_l, 0.), min(a_l, 0.)
   if v_l < V_LEAD_STOPPED:
     return d
-  if a_l < 0. and v_l / -a_l <= LEAD_BRAKE_T:
+  if a_l < 0. and v_l / -a_l <= LEAD_BRAKE_T and not at_rest:
     return d + v_l ** 2 / (2 * -a_l)
   return None
 
@@ -216,6 +232,8 @@ class LongAssist:
     self.stop_latched = False
     self.stop_target_miss = 0
     self.hold = False
+    self.launching = False
+    self.launch_lift = False
 
     self.state = State.off
     self.confidence = 0.
@@ -247,6 +265,9 @@ class LongAssist:
 
     v_ego = CS.vEgo
     self.odom += v_ego * DT_MDL
+    # from rest until V_LAUNCH_END; a brake while rolling makes it ordinary driving again
+    self.launching = ((self.launching or v_ego < V_STOP) and v_ego < V_LAUNCH_END and
+                      not (self.a_brake is not None and v_ego > V_STOP))
     self.hazard_dist, self.hazard_kind = map_ahead.hazard_dist, map_ahead.hazard_kind
     primed = self.hazard_dist >= 0.
 
@@ -287,7 +308,7 @@ class LongAssist:
     a_req = 0.
     lead_stops = []
     for ld in leads:
-      x_l = lead_stop_point(*ld)
+      x_l = lead_stop_point(*ld, at_rest=v_ego < 0.1)
       if x_l is None:
         a_req = max(a_req, lead_decel(ld[0], v_ego, ld[1], ld[2]))
       else:
@@ -322,6 +343,9 @@ class LongAssist:
 
     # --- model stop point, latched in world frame so a late brake cannot make it chase away
     d_obs = plan_stop_distance(t, x, v) if v_ego > V_STOP else None
+    if (self.launching and d_obs is not None and d_obs < LAUNCH_STOP_NEAR and
+        np.interp(LAUNCH_GO_T, t, v) > LAUNCH_PLAN_V):
+      d_obs = None  # the plan's own speed still reads < V_STOP just after we pass it, while the plan accelerates
     self.stop_hist.append(None if d_obs is None else self.odom + d_obs)
     obs = [s for s in self.stop_hist if s is not None]
     s_model = None
@@ -430,21 +454,32 @@ class LongAssist:
     v_t = min(v_cruise, self.v_curve)
     if v_limit > 0.:
       v_t = min(v_t, v_limit)
-    if lead is not None:
+    # launching behind leads that all pull away, the lead MPC (min() in the planner) paces us: the gap law follows the
+    # lead's current speed and asked ~0.3 m/s^2 for the first 2 s of 80 recorded launches behind a lead
+    pulling_away = self.launching and all(v_l > max(v_ego, V_LEAD_STOPPED) for _, v_l, _ in leads)
+    if lead is not None and not pulling_away:
       d, v_l, a_l = lead
       v_t = min(v_t, v_l + GAP_GAIN * (d - LEAD_S0 - T_FOLLOW_LIFT * v_ego)) if a_l > -0.2 else min(v_t, v_ego)
     self.v_target = float(v_t)
 
     v_plan = float(np.interp(INTENT_T, t, v))
     intent_decel = v_plan - v_ego < INTENT_DECEL_DV or model.action.desiredAcceleration < E2E_BRAKING
-    lift_ok = (self.conf_ok and not (CS.gasPressed or CS.brakePressed) and not self.turning and
+    hard_ok = (self.conf_ok and not (CS.gasPressed or CS.brakePressed) and not self.turning and
                not lane_change and not intent_decel and
-               self.stop_frames == 0 and self.cutout_block == 0 and self.a_brake is None and
-               (v_ego > V_STOP or v_plan > LAUNCH_PLAN_V) and not (primed and v_ego > PRIME_V))
+               self.stop_frames == 0 and (self.cutout_block == 0 or self.launching) and self.a_brake is None and
+               (v_ego > V_STOP or v_plan > LAUNCH_PLAN_V))
+    # a launch is the model's own go at that signal: no mapped-signal cap or block until V_LAUNCH_END
+    lift_ok = hard_ok and not (primed and v_ego > PRIME_V and not self.launching)
     self.lift_weight = min(self.lift_weight + 1. / LIFT_FADE_FRAMES, 1.) if lift_ok else 0.
-    a_lift_max = min(np.interp(v_ego, A_LIFT_BP, A_LIFT_V), A_LIFT_PRIMED if primed else np.inf)
-    a_lift = np.clip((v_t - v_ego) / LIFT_TAU, 0., a_lift_max) * self.lift_weight
-    self.a_lift = float(min(a_lift, self.a_lift + J_LIFT * DT_MDL))
+    if self.launching:
+      a_lift_max, j_up = float(np.interp(v_ego, A_LAUNCH_BP, A_LAUNCH_V)), J_LAUNCH
+    else:
+      a_lift_max, j_up = min(np.interp(v_ego, A_LIFT_BP, A_LIFT_V), A_LIFT_PRIMED if primed else np.inf), J_LIFT
+    a_lift = min(float(np.clip((v_t - v_ego) / LIFT_TAU, 0., a_lift_max) * self.lift_weight), self.a_lift + j_up * DT_MDL)
+    self.launch_lift = self.launching or (self.launch_lift and self.a_lift > 0.)
+    if hard_ok and self.launch_lift:
+      a_lift = max(a_lift, self.a_lift - J_LAUNCH * DT_MDL)  # a launch's lift ramps down for soft limits, never steps
+    self.a_lift = a_lift
     self.clear_stop = self.a_lift > CLEAR_STOP_ACCEL
 
     if CS.gasPressed:
