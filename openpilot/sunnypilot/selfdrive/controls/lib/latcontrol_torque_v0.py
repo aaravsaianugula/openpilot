@@ -9,6 +9,7 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.common.pid import PIDController
 
+from openpilot.sunnypilot.selfdrive.controls.lib.lat_accel_factor_schedule import scaled_kp_interp
 from openpilot.sunnypilot.selfdrive.controls.lib.latcontrol_torque_ext import LatControlTorqueExt
 
 # At higher speeds (25+mph) we can assume:
@@ -40,7 +41,13 @@ class LatControlTorque(LatControl):
     self.torque_params = CP.lateralTuning.torque.as_builder()
     self.torque_from_lateral_accel = CI.torque_from_lateral_accel()
     self.lateral_accel_from_torque = CI.lateral_accel_from_torque()
-    self.pid = PIDController([INTERP_SPEEDS, KP_INTERP], KI, KD, rate=1/self.dt)
+    # CN7: the stock KP rises 25x from highway to 3.5 m/s while the plant only weakens 2.8x, so
+    # the low-speed loop gain is ~9x the highway's and a routine 0.17 m/s^2 error saturates the
+    # command. That chatter is why the delivered torque never reaches the ceiling it can reach.
+    # Computed once, here, so the gain stays a pure function of speed. Other cars get the stock
+    # table back unchanged. See lat_accel_factor_schedule.py.
+    self.pid = PIDController([INTERP_SPEEDS, scaled_kp_interp(INTERP_SPEEDS, KP_INTERP, CP.carFingerprint)],
+                             KI, KD, rate=1/self.dt)
     self.update_limits()
     self.steering_angle_deadzone_deg = self.torque_params.steeringAngleDeadzoneDeg
     self.lat_accel_request_buffer_len = int(LAT_ACCEL_REQUEST_BUFFER_SECONDS / self.dt)
