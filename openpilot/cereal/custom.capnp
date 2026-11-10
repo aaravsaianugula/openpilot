@@ -327,8 +327,10 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     clearStop @9 :Bool;
     vCurve @10 :Float32;
     vTarget @11 :Float32;
-    hazardDistance @12 :Float32;  # m to the nearest mapped stop/signal/give-way/crossing ahead, -1 when none
+    hazardDistance @12 :Float32;  # m to the stop line of the mapped stop/signal/give-way/crossing on our approach, -1 when none
     hazardKind @13 :UInt8;  # long_assist_map.Kind
+    hazardCert @14 :UInt8;  # long_assist_map.Cert: how sure the map is that this approach stops
+    mapStop @15 :Bool;  # committed to stopping at that line (stop sign, or a signal the model is stopping for)
 
     enum State {
       off @0;

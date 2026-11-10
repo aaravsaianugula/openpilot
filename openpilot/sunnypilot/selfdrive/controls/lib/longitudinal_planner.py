@@ -91,7 +91,9 @@ class LongitudinalPlannerSP:
           self.map_ctx.set_targets(self.mem_params.get("MapTargetVelocities"))
         gps = sm[self.gps_location_service]
         gps_fresh = 0 < sm.logMonoTime['modelV2'] - sm.logMonoTime[self.gps_location_service] < 2e9
-        map_ahead = self.map_ctx.ahead(gps.latitude, gps.longitude, gps.bearingDeg, gps.speed, gps.hasFix and gps_fresh)
+        yaw = sm['modelV2'].orientationRate.z
+        map_ahead = self.map_ctx.ahead(gps.latitude, gps.longitude, gps.bearingDeg, gps.speed, gps.hasFix and gps_fresh,
+                                       gps.horizontalAccuracy, yaw[0] if len(yaw) else 0., DT_MDL)
       healthy = sm.all_checks(service_list=['modelV2', 'carState', 'radarState']) if real_sm else True
       v_limit = self.resolver.speed_limit_final if self.resolver.speed_limit_valid else 0.
       self.long_assist.wet = sm['selfdriveState'].personality == log.LongitudinalPersonality.standard
@@ -175,5 +177,7 @@ class LongitudinalPlannerSP:
     longAssist.vTarget = float(la.v_target)
     longAssist.hazardDistance = float(la.hazard_dist)
     longAssist.hazardKind = int(la.hazard_kind)
+    longAssist.hazardCert = int(la.hazard_cert)
+    longAssist.mapStop = la.map_commit
 
     pm.send('longitudinalPlanSP', plan_sp_send)

@@ -10,13 +10,14 @@ from openpilot.sunnypilot.selfdrive.controls.lib.long_assist import (
   LongAssist, Mode, State, lead_decel, plan_stop_distance, stop_decel, A_MIN, A_MAP_CURVE_MAX, A_STOP_EMERG,
   A_LAUNCH_BP, A_LAUNCH_V, CORROBORATE_FRAMES, DILEMMA_FRAMES, J_STOP_ON, STOP_GAP, STOP_ONSET, TAU_ONSET,
   BRAKE_ENGAGE_BP, BRAKE_ENGAGE_V, J_ENGAGE, J_LIFT_DOWN, J_STOP_ON_MAX, LIFT_GAP_S0, T_FOLLOW_BP, T_FOLLOW_V, WET_ACCEL,
+  MAP_ON_FRAMES, SIGNAL_GO_FRAMES,
 )
-from openpilot.sunnypilot.selfdrive.controls.lib.long_assist_map import EMPTY, Kind, MapAhead
+from openpilot.sunnypilot.selfdrive.controls.lib.long_assist_map import EMPTY, Cert, Kind, MapAhead
 
 T = np.array(ModelConstants.T_IDXS)
 
 
-def make_model(v0, stop_at=None, accel=0., kappa=None, lead=None, desired_accel=0., lane_change=False):
+def make_model(v0, stop_at=None, accel=0., kappa=None, lead=None, desired_accel=0., lane_change=False, path_y=None):
   if stop_at is not None:
     a = v0 ** 2 / (2 * max(stop_at, 0.1))
     ts = v0 / a if a > 0 else 0.
@@ -32,6 +33,8 @@ def make_model(v0, stop_at=None, accel=0., kappa=None, lead=None, desired_accel=
   m.velocity.x = v.tolist()
   k = np.zeros_like(T) if kappa is None else kappa(x)
   m.orientationRate.z = (k * v).tolist()
+  if path_y is not None:
+    m.position.y = path_y(x).tolist()
   if lead is not None:
     ld = m.init('leadsV3', 1)[0]
     ld.prob = 0.9
@@ -45,8 +48,9 @@ def make_lead(present=False, d=0., v=0., a=0., radar=True):
   return log.RadarState.LeadData.new_message(present=present, dRel=d, vLead=v, aLeadK=a, radar=radar)
 
 
-def make_cs(v, gas=False, blinker=False, a=0.):
-  return SimpleNamespace(vEgo=v, aEgo=a, gasPressed=gas, brakePressed=False, leftBlinker=blinker, rightBlinker=False)
+def make_cs(v, gas=False, blinker=False, a=0., buttons=()):
+  return SimpleNamespace(vEgo=v, aEgo=a, gasPressed=gas, brakePressed=False, leftBlinker=blinker, rightBlinker=False,
+                         buttonEvents=[SimpleNamespace(type=b, pressed=True) for b in buttons])
 
 
 def run(la, frames, model, lead=None, cs=None, v_cruise=30., v_limit=0., map_ahead=EMPTY):
@@ -536,7 +540,7 @@ class TestActuate:
   def test_never_less_braking_than_planned(self):
     rng = np.random.default_rng(0)
     self.la.a_brake = -1.
-    for a, v, ae in zip(rng.uniform(-3.5, 1., 500), rng.uniform(0., 30., 500), rng.uniform(-3., 1., 500)):
+    for a, v, ae in zip(rng.uniform(-3.5, 1., 500), rng.uniform(0., 30., 500), rng.uniform(-3., 1., 500), strict=True):
       assert self.la.actuate(float(a), float(v), float(ae)) <= a + 1e-9
 
   def test_crawl_compensated(self):
@@ -622,3 +626,170 @@ class TestClosedLoopFollow:
     la.mode = Mode.brake
     log_ = drive_to_lead(la, 20.7, 78.7, 19.0, -0.8, lambda v, gap: -0.3, seconds=45.)
     TestClosedLoopStops.check_stop(None, log_, a_min=-2.4)
+
+
+def mapped(d, kind=Kind.stop, cert=Cert.sure, hid=7, y=0.):
+  return MapAhead(np.zeros(0), np.zeros(0), float(d), kind, cert, hid, y)
+
+
+def drive_to_line(la, v0, line, kind, cert, model, seconds=45., gas_at=None, resume_at=None, blinker=False):
+  """Close the loop toward a mapped stop line `line` m ahead on our approach. model(v, d_line) -> (plan, shouldStop) is
+  the stock model; the planner is min(model, LA) with shouldStop = any. gas_at=(t0, t1): the driver's gas (override
+  resets LA); resume_at: a resume press."""
+  car = Car(v0)
+  log = []
+  for k in range(int(seconds / DT_MDL)):
+    tt = k * DT_MDL
+    d_line = line - car.x
+    m, ss = model(car.v, d_line)
+    gas = gas_at is not None and gas_at[0] <= tt < gas_at[1]
+    buttons = ('accelCruise',) if resume_at is not None and abs(tt - resume_at) < DT_MDL / 2 else ()
+    la.update(m, make_lead(), make_cs(car.v, gas=gas, a=car.a, blinker=blinker, buttons=buttons), not gas, 30., 0., True,
+              mapped(d_line, kind, cert) if d_line > -4. else EMPTY)
+    a_t, ss = la.apply(m.action.desiredAcceleration, ss)
+    if gas:
+      car.step(1.0, False)
+    else:
+      car.step(la.actuate(a_t, car.v, car.a), ss)
+    log.append((car.v, d_line, car.a, a_t, la.hold, la.a_brake if la.a_brake is not None else 0.))
+  return np.array(log)
+
+
+def ignores_sign(v, d):
+  # the model drives through the stop sign; at rest it wants to go
+  return (make_model(v, accel=1.0, desired_accel=0.5), False) if v < 0.5 else (make_model(v), False)
+
+
+def red_light(v, d):
+  # 249 t=469 / 24a t=582: the model brakes gently from ~190 m (its plan slowing ~1.5 m/s^2, its action -0.6), shows the
+  # stop itself only from ~110 m, and its own decel then comes late (0.7x what the stop needs)
+  if d > 190.:
+    return make_model(v), False
+  if d > 110.:
+    return make_model(v, accel=-1.5, desired_accel=-0.6), False
+  need = v ** 2 / (2 * max(d - 1., 1.))
+  return make_model(v, stop_at=max(d - 1., 0.5), desired_accel=-float(min(0.7 * need, 3.5))), v < 0.5
+
+
+class TestIntersections:
+  def setup_method(self):
+    self.la = LongAssist()
+    self.la.mode = Mode.full
+
+  def check_line_stop(self, log, a_min=-2.2):
+    v, d, a = log[:, 0], log[:, 1], log[:, 2]
+    stop = np.flatnonzero(v < 0.05)
+    assert stop.size, "ran it"
+    k = stop[0]
+    assert 0. <= d[k] <= 3.5, f"stopped {d[k]:.1f} m before the line"
+    assert a[:k].min() >= a_min, f"peak {a[:k].min():.2f}"
+    assert np.sum((v[:k] > 0.05) & (v[:k] < 1.5)) * DT_MDL < 2.5
+    return k
+
+  def test_stop_sign_full_stop_hold_until_resume(self):
+    # a mapped stop sign the model never sees, from 35 mph: one decel started early enough for the brakes, a full stop
+    # at the line, held while the model wants to go, away on resume and not stopped again
+    log = drive_to_line(self.la, 15.6, 220., Kind.stop, Cert.sure, ignores_sign, seconds=45., resume_at=38.)
+    k = self.check_line_stop(log)
+    v, d, a = log[:, 0], log[:, 1], log[:, 2]
+    assert d[np.flatnonzero(a < -0.5)[0]] > 80.
+    r = int(38. / DT_MDL)
+    assert v[k:r].max() < 0.05 and log[k + 5:r, 4].all()
+    assert v[-1] > 1.
+
+  def test_stop_sign_gas_goes_without_a_second_stop(self):
+    log = drive_to_line(self.la, 15.6, 220., Kind.stop, Cert.sure, ignores_sign, seconds=40., gas_at=(30., 30.6))
+    self.check_line_stop(log)
+    v = log[:, 0]
+    assert v[int(31. / DT_MDL):].min() > 0.3 and v[-1] > 2.
+
+  def test_stop_sign_wet_starts_earlier(self):
+    onset = {}
+    for wet in (False, True):
+      la = LongAssist()
+      la.mode = Mode.full
+      la.wet = wet
+      log = drive_to_line(la, 15.6, 220., Kind.stop, Cert.sure, ignores_sign, seconds=40.)
+      self.check_line_stop(log, a_min=-2.0 if wet else -2.2)
+      onset[wet] = log[np.flatnonzero(log[:, 2] < -0.4)[0], 1]
+    assert onset[True] >= onset[False]
+
+  def test_red_light_committed_early_one_smooth_decel(self):
+    log = drive_to_line(self.la, 19., 260., Kind.signal, Cert.sure, red_light, seconds=40.)
+    k = self.check_line_stop(log, a_min=-2.0)
+    v, d, a = log[:, 0], log[:, 1], log[:, 2]
+    assert d[np.flatnonzero(log[:, 5] < -0.3)[0]] > 170.  # committed when the model first slows for it
+    assert d[np.flatnonzero(a < -0.6)[0]] > 120.          # the brakes are on long before the model's own stop
+    assert v[k:].max() < 0.05                              # held at the red (the plan does not go)
+    # the model alone (LA shadow): powertrain only until its own late braking, then much harder or through the line
+    base = LongAssist()
+    base.mode = Mode.shadow
+    b = drive_to_line(base, 19., 260., Kind.signal, Cert.sure, red_light, seconds=40.)
+    kb = np.flatnonzero(b[:, 0] < 0.05)
+    assert not kb.size or b[kb[0], 1] < 0. or b[:, 2].min() < a.min() - 0.8
+
+  def test_late_yellow_left_to_the_model(self):
+    # the model first shows a stop at the signal 44 m out at 18 m/s (~6.7 m/s^2 needed): LA neither slams nor adds later
+    m = make_model(18., stop_at=44., desired_accel=-2.)
+    for _ in range(40):
+      self.la.update(m, make_lead(), make_cs(18.), True, 30., 0., True, mapped(45., Kind.signal))
+      assert self.la.a_brake is None
+    assert self.la.map_go and not self.la.map_commit
+    assert self.la.apply(-2., False)[0] == -2.  # the model's own braking still goes through
+
+  def test_green_light_never_brakes(self):
+    log = drive_to_line(self.la, 17., 200., Kind.signal, Cert.sure, lambda v, d: (make_model(v), False), seconds=14.)
+    assert (log[:, 5] == 0.).all() and log[:, 0].min() > 16.
+
+  def test_light_turns_green_releases(self):
+    slowing = make_model(18., accel=-1.5, desired_accel=-0.6)
+    run(self.la, 30, slowing, cs=make_cs(18.), map_ahead=mapped(150., Kind.signal))
+    assert self.la.map_commit and self.la.a_brake is not None and self.la.a_brake < 0.
+    run(self.la, SIGNAL_GO_FRAMES + 25, make_model(18., accel=0.3), cs=make_cs(18.), map_ahead=mapped(140., Kind.signal))
+    assert not self.la.map_commit and self.la.a_brake is None
+
+  def test_moving_car_ahead_slowing_is_not_a_red_light(self):
+    # the model slows for a car ahead before the signal (22a/23a/249: lights that changed as the queue moved): the
+    # MPC follows the car, LA does not stop at the line
+    slowing = make_model(18., accel=-1.5, desired_accel=-0.6)
+    run(self.la, 40, slowing, lead=make_lead(True, 50., 12., -0.5), cs=make_cs(18.), map_ahead=mapped(150., Kind.signal))
+    assert not self.la.map_commit
+
+  def test_side_street_or_unsure_sign_needs_the_model(self):
+    run(self.la, 40, make_model(15.), cs=make_cs(15.), map_ahead=mapped(60., cert=Cert.ambiguous))
+    assert self.la.a_brake is None and not self.la.map_commit
+    run(self.la, 5, make_model(15., stop_at=59.), cs=make_cs(15.), map_ahead=mapped(60., cert=Cert.ambiguous))
+    assert self.la.a_brake is not None  # the model stopping at that line is trusted at once
+
+  def test_path_turns_off_before_the_line(self):
+    turn = make_model(15., path_y=lambda x: np.where(x > 50., -(x - 50.) ** 2 / 15., 0.))
+    run(self.la, 40, turn, cs=make_cs(15., blinker=True), map_ahead=mapped(120.))
+    assert not self.la.map_commit and self.la.a_brake is None
+
+  def test_committed_stop_sign_braked_through_the_turn(self):
+    # stopping at the sign before turning right there: the path bends in the first second, the blinker is on
+    curving = make_model(6., kappa=lambda x: np.full_like(x, 0.03))
+    run(self.la, MAP_ON_FRAMES + 10, curving, cs=make_cs(6., blinker=True), map_ahead=mapped(25.))
+    assert self.la.turning and self.la.map_commit and self.la.a_brake is not None and self.la.a_brake < -0.3
+
+  def test_model_stop_held_at_rest(self):
+    # a stop only the model shows (no lead, no map): at rest its shouldStop drops and it asks a creep while its plan
+    # still stops; LA holds until the plan goes (it used to let go 0.2 s after stopping, 249 t=587)
+    la = LongAssist()
+    la.mode = Mode.brake
+    car = Car(10.)
+    for k in range(int(30. / DT_MDL)):
+      d = 40. - car.x
+      going = k * DT_MDL > 25.
+      if going:
+        m, da = make_model(car.v, accel=1.0), 1.0
+      elif car.v > 0.5:
+        m, da = make_model(car.v, stop_at=max(d, 0.5)), -0.3
+      else:
+        m, da = make_model(0., accel=0.05), 0.15
+      la.update(m, make_lead(), make_cs(car.v, a=car.a), True, 30., 0., True)
+      a_t, ss = la.apply(da, False)
+      car.step(la.actuate(a_t, car.v, car.a), ss)
+      if 15. < k * DT_MDL < 25.:
+        assert car.v < 0.05 and la.hold
+    assert car.v > 0.5 and not la.hold
