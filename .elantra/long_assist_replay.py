@@ -51,7 +51,6 @@ def label(ep: dict, frames: list[dict]) -> str:
 
 
 def human_stops(frames: list[dict]) -> list[dict]:
-  from openpilot.sunnypilot.selfdrive.controls.lib.long_assist import BRAKE_DELIVERY
   out = []
   for i in range(1, len(frames)):
     if not (frames[i]["v"] < V_STOPPED <= frames[i - 1]["v"] and frames[i]["brk"]):
@@ -69,8 +68,8 @@ def human_stops(frames: list[dict]) -> list[dict]:
       "a_driver": round(-on["v"] ** 2 / (2 * max(dist, 1.)), 2),
       "la_lead_s": round(on["t"] - la[0]["t"], 1) if la else None,  # > 0: Long Assist before the driver
       "la_state": la[0]["state"] if la else "",
-      "la_at_onset": round(on["a_brake"] * BRAKE_DELIVERY, 2) if on["brake_active"] else 0.,
-      "la_max": round(min(f["a_brake"] for f in la) * BRAKE_DELIVERY, 2) if la else 0.,
+      "la_at_onset": round(on["a_brake"], 2) if on["brake_active"] else 0.,
+      "la_max": round(min(f["a_brake"] for f in la), 2) if la else 0.,
       "la_stop_dist": round(on["stop_dist"], 1),
       "lead": round(on["lead_d"], 1),
     })

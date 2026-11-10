@@ -16,7 +16,7 @@ import numpy as np
 from openpilot.cereal import custom, log
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
-from openpilot.sunnypilot.selfdrive.controls.lib.long_assist_map import EMPTY as MAP_EMPTY, Kind, MapAhead
+from openpilot.sunnypilot.selfdrive.controls.lib.long_assist_map import EMPTY as MAP_EMPTY, Cert, Kind, MapAhead
 
 State = custom.LongitudinalPlanSP.LongAssist.State
 LaneChangeState = log.LaneChangeState
@@ -130,9 +130,37 @@ CURVE_RANGE = 120.
 
 # map: mapd curve targets cap gently (the vision path takes over within its range); hazards prime
 A_MAP_CURVE_MAX = 1.0
-HAZARD_MATCH = 25.       # m, a model stop this close to a mapped stop/signal is trusted at once
+HAZARD_MATCH = 25.       # m, a model stop this close to a mapped stop line is that line: trusted at once
 PRIME_V = 5.             # m/s, above this no lift toward a mapped stop/signal
+PRIME_RANGE = 150.       # m, priming only this close (the map reports stops from HAZARD_RANGE for an early decel)
 A_LIFT_PRIMED = 1.0      # launch cap while still inside a mapped intersection
+
+# mapped stop signs and signals on our approach (long_assist_map). Replay of 218 mapped-signal approaches in 40 drives
+# (2026-10..11): at the 11 red lights met first in line the model braked from ~180 m but gently (-0.3..-1 until ~100 m,
+# where this car's brakes stay off) and its plan showed the stop ~110 m out or never; LA waited for that plan stop, and
+# the driver took over 14-98 m out braking to -2.6..-4.8. The plan stopping at the mapped line, or (no moving car before
+# the line) its end decel extrapolating to a stop within SIGNAL_EXTRAP of the line while the model brakes, caught 7 of
+# them at a median 155 m; it fired at 8 of 129 greens, 5 of them with the plan itself stopping at the line (lights that
+# changed as we came up): the model's go releases those. A mapped stop sign on our approach is a full stop at the line
+# whether or not the model sees it, then a hold until gas or resume.
+MAP_LINE_BUF = 1.        # m short of a mapped line
+# required decel that starts the brakes for a mapped line (A_STOP_ON_V for others). Drivers first in line at red lights
+# braked from a need of ~1.0-1.6 (8 manual stops); at the lead profile's 0.7 a stop sign from 35 mph took 26 s at -0.64
+A_MAP_STOP_ON_V = [0.6, 1.0]
+A_MAP_STOP_ON_V_WET = [0.45, 0.75]
+MAP_ON_FRAMES = 3        # a stop sign's approach matched this long before it is committed to
+MAP_LOST_FRAMES = int(1. / DT_MDL)
+MAP_LINE_N = 9           # world-frame median of the line (GPS)
+A_MAP_STOP_MAX = 2.5     # a mapped line the model does not see is never braked harder: a map error must not slam
+SIGNAL_EXTRAP = 40.      # m
+SIGNAL_DA = -0.5
+SIGNAL_DA_FRAMES = 3
+SIGNAL_GO_FRAMES = int(0.5 / DT_MDL)
+DILEMMA_MAP = 2.5        # a signal stop needing more than this when the model first shows it: a late yellow, the model's call
+S_SERVED = 6.            # m, at rest this close to a stop sign's line: the stop is made
+S_HOLD = 5.              # m, a stop target farther than this does not hold us (a lead moved on short of a stop line)
+PATH_TOL = 8.            # m, the model's path passes this far from a mapped line (we turn off before it): not ours
+RESUME_BUTTONS = ('accelCruise', 'resumeCruise')
 
 # turns
 TURN_KAPPA = 0.02        # 1/m, R < 50 m within TURN_LOOKAHEAD_T with a blinker on
@@ -259,6 +287,9 @@ class LongAssist:
   def __init__(self):
     self.mode = Mode.off
     self.wet = False  # the planner sets it from the distance setting each frame
+    # a stop sign we have stopped at: kept through the reset a gas press causes, so it is not stopped for again
+    self.map_served = -1
+    self.map_served_lost = 0
     self.reset()
 
   def reset(self) -> None:
@@ -283,6 +314,7 @@ class LongAssist:
     self.brakes_on = False
     self.engage_t = 0.
     self.a_extra = 0.
+    self.map_clear()
 
     self.state = State.off
     self.confidence = 0.
@@ -295,6 +327,84 @@ class LongAssist:
     self.v_target = 0.
     self.hazard_dist = -1.
     self.hazard_kind = Kind.none
+    self.hazard_cert = Cert.ambiguous
+
+  def map_clear(self) -> None:
+    self.map_id = -1
+    self.map_kind = Kind.none
+    self.map_cert = Cert.ambiguous
+    self.map_lines: deque = deque(maxlen=MAP_LINE_N)
+    self.map_on = 0
+    self.map_lost = 0
+    self.map_commit = False
+    self.map_go = False
+    self.map_go_frames = 0
+    self.sig_da_frames = 0
+    self.map_d_line: float | None = None
+    self.map_only = False
+
+  def map_stop(self, m: MapAhead, v_ego: float, a_ego: float, tau: float, t, x, v, y, d_model: float | None, leads,
+               da: float, CS) -> float | None:
+    """Stop target (m) for the mapped stop sign or red light on our approach, None when there is none to stop for."""
+    hid = m.hazard_id if m.hazard_dist >= 0. and m.hazard_kind != Kind.none else -1
+    if self.map_served >= 0:
+      self.map_served_lost = 0 if hid == self.map_served else self.map_served_lost + 1
+      if self.map_served_lost > MAP_LOST_FRAMES:
+        self.map_served = -1
+    if hid >= 0 and hid != self.map_id:
+      self.map_clear()
+      self.map_id = hid
+    if hid >= 0:
+      self.map_lost = 0
+      self.map_on += 1
+      self.map_kind, self.map_cert = m.hazard_kind, m.hazard_cert
+      self.map_lines.append(self.odom + m.hazard_dist)
+    else:
+      self.map_lost += 1
+      if self.map_lost > MAP_LOST_FRAMES or self.map_id < 0:  # passed it or turned off; a short GPS gap keeps the line
+        self.map_clear()
+        return None
+    d_line = float(np.median(self.map_lines)) - self.odom
+    self.map_d_line = d_line
+    agree = d_model is not None and abs(d_model - d_line) < HAZARD_MATCH
+    if not self.map_commit and hid >= 0 and len(y) == len(x) and 0. < d_line < x[-1] and \
+       abs(float(np.interp(d_line, x, y)) - m.hazard_y) > max(PATH_TOL, 0.15 * d_line):
+      return None  # the model's path leaves this road before the line
+    need = stop_decel(d_line - MAP_LINE_BUF, v_ego, a_ego, tau) if d_line > MAP_LINE_BUF else np.inf
+
+    if self.map_kind == Kind.stop and self.map_cert >= Cert.likely:
+      resume = any(be.pressed and str(be.type) in RESUME_BUTTONS for be in getattr(CS, 'buttonEvents', ()))
+      if self.map_id == self.map_served and (not self.map_commit or resume):
+        self.map_commit = False
+        return None
+      if not self.map_commit and not self.hold and v_ego < V_HOLD and d_line < S_SERVED:
+        self.map_served = self.map_id  # already at the line (the driver stopped, then engaged)
+        return None
+      self.map_commit = self.map_commit or self.map_on >= MAP_ON_FRAMES
+      if self.map_commit and v_ego < V_HOLD and d_line < S_SERVED:
+        self.map_served = self.map_id
+    elif self.map_kind == Kind.signal:
+      # where the plan stops: its own stop point, else its end decel carried on (its 10 s often ends before the line)
+      a_end = (v[-1] - v[-4]) / (t[-1] - t[-4])
+      ext = d_model if d_model is not None else float(x[-1] + v[-1] ** 2 / (2 * -a_end)) if a_end < -0.3 else np.inf
+      self.sig_da_frames = self.sig_da_frames + 1 if da < SIGNAL_DA else 0
+      lead_moving = any(d_l < d_line + 5. and v_l > 3. for d_l, v_l, _ in leads)
+      stopping = agree or (not lead_moving and v_ego > 3. and abs(ext - d_line) < SIGNAL_EXTRAP and self.sig_da_frames >= SIGNAL_DA_FRAMES)
+      if v_ego > V_STOP:
+        going = ext > d_line + 2 * SIGNAL_EXTRAP and da > E2E_BRAKING
+      else:
+        going = float(np.interp(LAUNCH_GO_T, t, v)) > LAUNCH_PLAN_V
+      if self.map_commit:
+        self.map_go_frames = self.map_go_frames + 1 if going else 0
+        self.map_commit = self.map_go_frames < SIGNAL_GO_FRAMES  # the light turned green
+      elif stopping and not self.map_go:
+        self.map_go = need > DILEMMA_MAP  # a late yellow: go, as the model decides
+        self.map_commit = not self.map_go
+        self.map_go_frames = 0
+    if not self.map_commit or d_line < -MAP_LINE_BUF:
+      return None
+    self.map_only = not agree
+    return d_model - STOP_BUF if agree else d_line - MAP_LINE_BUF
 
   def apply(self, a_e2e: float, should_stop_e2e: bool) -> tuple[float, bool]:
     if self.mode >= Mode.full and self.a_lift > max(a_e2e, 0.):
@@ -348,8 +458,8 @@ class LongAssist:
     # from rest until V_LAUNCH_END; a brake while rolling makes it ordinary driving again
     self.launching = ((self.launching or v_ego < V_STOP) and v_ego < V_LAUNCH_END and
                       not (self.a_brake is not None and v_ego > V_STOP))
-    self.hazard_dist, self.hazard_kind = map_ahead.hazard_dist, map_ahead.hazard_kind
-    primed = self.hazard_dist >= 0.
+    self.hazard_dist, self.hazard_kind, self.hazard_cert = map_ahead.hazard_dist, map_ahead.hazard_kind, map_ahead.hazard_cert
+    primed = 0. <= self.hazard_dist < PRIME_RANGE
 
     x = np.array(model.position.x)
     v = np.maximum(np.array(model.velocity.x), 0.)
@@ -429,34 +539,51 @@ class LongAssist:
       self.c_lead = 1.
 
     # --- model stop point, latched in world frame so a late brake cannot make it chase away
-    d_obs = plan_stop_distance(t, x, v) if v_ego > V_STOP else None
-    if (self.launching and d_obs is not None and d_obs < LAUNCH_STOP_NEAR and
-        np.interp(LAUNCH_GO_T, t, v) > LAUNCH_PLAN_V):
+    going = float(np.interp(LAUNCH_GO_T, t, v)) > LAUNCH_PLAN_V
+    if v_ego > V_STOP:
+      d_obs = plan_stop_distance(t, x, v)
+    elif self.stop_latched and not going and self.stop_hist and self.stop_hist[-1] is not None:
+      # the plan's stop is not looked for below V_STOP, so a latched stop dropped at rest (249 t=587: only the model's
+      # own shouldStop held the car): it now holds until the model goes
+      d_obs = self.stop_hist[-1] - self.odom
+    else:
+      d_obs = None
+    if self.launching and d_obs is not None and d_obs < LAUNCH_STOP_NEAR and going:
       d_obs = None  # the plan's own speed still reads < V_STOP just after we pass it, while the plan accelerates
     self.stop_hist.append(None if d_obs is None else self.odom + d_obs)
     obs = [s for s in self.stop_hist if s is not None]
     s_model = None
+    d_model = None
     stop_spread = 0.
     self.stop_miss = 0 if d_obs is not None else self.stop_miss + 1
     if len(obs) >= STOP_MIN_OBS and self.stop_miss <= STOP_MISS_MAX:
       recent = obs[-STOP_MEDIAN_N:]
       self.stop_frames += 1
       stop_spread = float(np.std(recent))
-      d = float(np.median(recent)) - self.odom
+      d_model = float(np.median(recent)) - self.odom
+    else:
+      self.stop_frames = 0
+
+    # --- the mapped stop sign or signal on our approach
+    s_map = self.map_stop(map_ahead, v_ego, CS.aEgo, tau, t, x, v, np.array(model.position.y), d_model, leads,
+                          model.action.desiredAcceleration, CS)
+
+    if d_model is not None:
+      d = d_model
       behind_lead = lead is not None and d > lead[0] - 12.
-      at_hazard = primed and abs(d - self.hazard_dist) < HAZARD_MATCH
+      at_hazard = self.hazard_dist >= 0. and abs(d - self.hazard_dist) < HAZARD_MATCH
       a_req = stop_decel(d - STOP_BUF, v_ego, CS.aEgo)
       # a stop sign, give-way or crossing has no yellow phase, so a late stop there is still braked for
       dilemma_possible = not (behind_lead or at_hazard) or self.hazard_kind == Kind.signal
       # a mapped stop, or a stopped lead the camera radar also sees, needs no waiting
       corroborated = at_hazard or (behind_lead and lead_one.present and lead_one.radar)
       held = self.stop_frames - (0 if corroborated else CORROBORATE_FRAMES)
-      if not ((dilemma_possible and a_req > DILEMMA_ACCEL and self.stop_frames <= DILEMMA_FRAMES) or held < 0):
+      # a late yellow at a mapped signal stays the model's call: not braked for once DILEMMA_FRAMES pass either
+      late_yellow = self.map_go and self.map_d_line is not None and abs(d - self.map_d_line) < HAZARD_MATCH
+      if not (late_yellow or (dilemma_possible and a_req > DILEMMA_ACCEL and self.stop_frames <= DILEMMA_FRAMES) or held < 0):
         # behind a lead the model plans its stop 8-10 m back at a queue (2026-11-05: stopped 11 m short, the
         # driver gassed up); the lead only moves on, so STOP_GAP behind where it is now is always safe
         s_model = max(d - STOP_BUF, lead[0] - STOP_GAP) if behind_lead else d - STOP_BUF
-    else:
-      self.stop_frames = 0
 
     c_plan = self.c_plan * float(np.exp(-(stop_spread / 1.5) ** 2))
     self.confidence = c_plan ** 0.4 * self.c_lead ** 0.3 * (1. if healthy else 0.)
@@ -473,7 +600,7 @@ class LongAssist:
       reach = np.maximum(x[valid] - v_ego * TAU, 0.)
       self.v_curve = float(min(self.v_curve, np.min(np.sqrt(v_c ** 2 + 2 * A_CURVE_DECEL * reach))))
       # at least 1 s to shed speed, so being slightly fast mid-curve is not a hard brake
-      a_req = float(np.max((v_ego ** 2 - np.minimum(v_c, v_ego) ** 2) / (2 * (reach + v_ego))))
+      a_req = float(np.max((v_ego ** 2 - np.minimum(v_c, v_ego) ** 2) / (2 * np.maximum(reach + v_ego, 0.1))))
       if a_req > CURVE_ONSET:
         a_curve = -min(a_req, float(np.interp(v_ego, A_CURVE_MAX_BP, A_CURVE_MAX_V)))
     if map_ahead.curve_dist.size:
@@ -497,8 +624,9 @@ class LongAssist:
 
     # --- stop profile toward the nearest stop target: lift off once a little is needed, brake from the onset (ramp
     # in, track the constant decel that stops there), never fade into a creep, hold at standstill
-    targets = [x_l - STOP_GAP for x_l in lead_stops] + ([s_model] if s_model is not None else [])
+    targets = [x_l - STOP_GAP for x_l in lead_stops] + [s for s in (s_model, s_map) if s is not None]
     s_stop = min(targets) if targets else None
+    map_target = s_map is not None and s_stop == s_map
     self.stop_dist = -1. if s_stop is None else s_stop
     self.stop_target_miss = 0 if s_stop is not None else self.stop_target_miss + 1
     a_stop = None
@@ -506,8 +634,11 @@ class LongAssist:
       a_req = stop_decel(s_stop, v_ego, CS.aEgo, tau)
       if v_ego < STOP_LOW_V:
         a_req = min(a_req, A_STOP_LOW_V)
+      if map_target and self.map_only:
+        a_req = min(a_req, A_MAP_STOP_MAX)
       near = v_ego < V_STOP_FIN and s_stop < v_ego ** 2 / (2 * A_STOP_FIN) + S_STOP_FIN
-      onset = a_req >= np.interp(v_ego, A_STOP_ON_BP, A_STOP_ON_V_WET if self.wet else A_STOP_ON_V) or near
+      on_v = (A_MAP_STOP_ON_V_WET if self.wet else A_MAP_STOP_ON_V) if map_target else (A_STOP_ON_V_WET if self.wet else A_STOP_ON_V)
+      onset = a_req >= np.interp(v_ego, A_STOP_ON_BP, on_v) or near
       self.stop_latched = self.stop_latched or (onset and v_ego > V_STOP)
       if self.stop_latched:
         a_stop = -max(a_req, A_STOP_FIN) if near else -a_req
@@ -515,7 +646,8 @@ class LongAssist:
         a_stop = -min(a_req, A_COAST)
     elif self.stop_target_miss > STOP_MISS_MAX:
       self.stop_latched = False
-    hold = self.stop_latched and (self.hold or (v_ego < V_HOLD and s_stop is not None and s_stop < S_STOP_FIN))
+    hold = self.stop_latched and (s_stop is None or s_stop < S_HOLD) and \
+      (self.hold or (v_ego < V_HOLD and s_stop is not None and s_stop < S_STOP_FIN))
     released_at_rest = self.hold and not hold
     self.hold = hold
     stop_state = State.lead if lead_stops and s_stop == min(lead_stops) - STOP_GAP else State.stop
@@ -523,7 +655,8 @@ class LongAssist:
     # --- brake: lowest request wins; onset ramps at J_STOP_ON from the current decel (2026-11-05: 1.2-1.6 m/s^2
     # steps when a lead was found), except a need of A_STOP_EMERG or more; release is rate limited
     requests = {State.lead: a_lead, State.curve: a_curve} if not self.turning else {State.lead: a_lead} if ttc < TTC_SAFETY else {}
-    if a_stop is not None and (not self.turning or ttc < TTC_SAFETY):
+    # a mapped line still ahead on the approach we are on is stopped at even when the path bends into a turn there
+    if a_stop is not None and (not self.turning or ttc < TTC_SAFETY or map_target):
       requests[stop_state] = min(a_stop, requests.get(stop_state) or 0.)
     requests = {k: a for k, a in requests.items() if a is not None}
     brake_state = min(requests, key=requests.get) if requests else None
