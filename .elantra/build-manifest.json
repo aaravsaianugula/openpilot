@@ -1,0 +1,17 @@
+{
+  "sunnypilot_upstream_sha": "c6e564cdcd68dc6334381ac0d929133b1d824479",
+  "sunnypilot_upstream_date": "2026-11-15",
+  "sunnypilot_upstream_subject": "modeld_v2: native QCOM reads frames in place (#2100)",
+  "upstream_ci_conclusion": "success",
+  "upstream_ci_checked": 42,
+  "upstream_ci_url": "https://github.com/sunnypilot/sunnypilot/commit/c6e564cdcd68dc6334381ac0d929133b1d824479/checks",
+  "opendbc_sha": "a3cf9dc009d7639b4ec2d84d5906302285d36079",
+  "opendbc_repo": "aaravsaianugula/opendbc",
+  "elantra_platforms": [
+    "HYUNDAI_ELANTRA_2024",
+    "HYUNDAI_ELANTRA_HEV_2024"
+  ],
+  "previous_master_sha": "7e524823731628d5a6ef87c2f5b78d78906fe245",
+  "rollback_branch": "master-previous",
+  "synced_at_utc": "2026-11-16T19:06:49Z"
+}
