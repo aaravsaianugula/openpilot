@@ -10,6 +10,7 @@ Constants are first-principles starting points; tune them on shadow logs with .e
 """
 from collections import deque
 from enum import IntEnum
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -33,6 +34,8 @@ A_MIN = -3.5             # ACCEL_MIN, panda clamp
 TAU = 0.7                # s, actuator 0.5 + model/CAN latency 0.2, brakes already on
 TAU_ONSET = 1.1          # s from coasting: brakes in ~1.1 s after a -0.3..-1 request, 0.4-0.6 s after -2.4..-3.5 (18 onsets
                          # 2026-11-08/09); the engaging request (BRAKE_ENGAGE_V) sits between
+TAU_ONSET_BP = [10., 15.]
+TAU_ONSET_V = [TAU_ONSET, 1.9]  # 59 engaging requests 2026-11-14..18: at 14-20 m/s the brakes came in a median 1.9 s later
 
 # Brake actuation (19 routes 2026-11-07..09). The SCC only uses the friction brakes once asked for more than
 # BRAKE_ENGAGE_V; below that the powertrain alone slows us, however long it is asked. Steady requests at 9-20 m/s:
@@ -61,10 +64,11 @@ WET_JERK = 0.7
 A_ENGAGE_WET = 0.45
 WET_TAU_MARGIN = 0.3
 
-# following distance (MPC t_follow, aggressive and wet). Road test 2026-11-09: too far back below 40 mph; engaged
-# gaps matched the MPC's 1.25 s + 6 m (20-30 mph 20 m, 30-40 mph 25.6 m). Stock 1.25 s from 45 mph up.
-T_FOLLOW_BP = [0., 9., 13.4, 17.9, 20.]
-T_FOLLOW_V = [0.85, 0.9, 1.0, 1.15, 1.25]
+# following distance (MPC t_follow, aggressive and wet). Steady following in 26 drives 2026-11-14..18 (driver vs LA,
+# median gap): 4-11 mph 8.0 vs 10.9 m, 11-18 mph 12.0 vs 14.4 m, 25-38 mph 19-21 vs 19-24 m, 56-72 mph 30.6 vs 42.4 m;
+# 39 of 72 engaged gas presses were following a lead at its speed with the MPC holding back (gaps 1.1-1.9 s)
+T_FOLLOW_BP = [0., 9., 13.4, 17.9, 27.]
+T_FOLLOW_V = [0.6, 0.85, 1.0, 1.1, 1.0]
 
 # model stop point
 V_STOP = 0.5             # m/s, plan speed treated as stopped
@@ -103,6 +107,8 @@ S_STOP_FIN = 3.0         # m short of the target where the firm finish and hold 
                          # planner's creep closes in first (238 t=1165: a stop 11 m back made the driver gas up)
 V_HOLD = 0.5             # m/s, a latched stop asserts shouldStop below this and holds it at standstill
 V_LEAD_STOPPED = 0.5     # m/s, a lead predicted to end below this is a stop target
+V_LEAD_CRAWL = 1.5       # m/s, a braking lead predicted to end below this is too (lead_decel's constant decel to a crawling
+                         # lead asked -2.0 at 5 m/s in stop-and-go where the stop profile asks -1.6)
 STOP_LOW_V = 3.0         # m/s, below this a stop is ended at most this hard (creeping up to a car)
 A_STOP_LOW_V = 1.5
 
@@ -117,6 +123,36 @@ TTC_SAFETY = 2.0         # s, the only brake kept during a turn
 CUTOUT_BLOCK_FRAMES = int(1.5 / DT_MDL)
 LEAD_MIN_FRAMES = 3      # replay: 1-2 frame lead-accel spikes became 0.2-0.5 s brake taps
 LEAD_JUMP = 15.          # m, a lead stop this much nearer than the recent median (a cut-in) is taken at once
+
+# lead prediction. 2026-11-14..18 (26 drives, 141 engaged overrides): when a lead slowed (to turn, or braking then going
+# on) LA held our speed 3-5 s while the lead closed from 85-45 m (only a 4 m buffer behind its path counted), then asked
+# -1.5 and the brakes came in 1.5-2 s later: -2.6..-2.9 clamps and the driver braked (27c t=590, 26b t=1785, 26f
+# t=893, 273 t=1068). The driver lifts off as soon as a lead slows (36 of 36 at once) and brakes from ~2 s in at
+# -1.25 (lead slowing), -1.7 (lead turning off or going on), -2.2 (lead stopping).
+A_LEAD_TAU = 0.4         # s, filter of the lead's accel (camera radar aLeadK, else the model's)
+J_LEAD_TAU = 0.5         # s, filter of its jerk
+J_EASE = 0.3             # m/s^3, a braking lead easing off this fast stops braking at -a/j, not LEAD_BRAKE_T
+LEAD_BRAKE_T_MIN = 1.0
+A_LEAD_SLOWING = -0.3    # m/s^2 filtered: the lead is slowing, keep our following gap behind where it is going
+A_LEAD_SLOWING_OFF = -0.1
+COAST_ON = 0.1           # m/s^2 need that lifts off (powertrain only)
+COAST_T = 4.5            # s, a slowing lead this close in time is coasted for whatever the need
+COAST_DV = 2.0           # m/s, ... and heading this far below our speed (a lead easing off at our speed is the MPC's to match:
+                         # coasting it 7-10 s drifted the gap 9 m long, then the lift jumped to +1.0, 26c t=651-675)
+A_LEAD_BRAKE_ON = 0.5    # need past the powertrain: the brakes come in now, while it is still small
+A_LEAD_CMF_MAX = 1.2     # the following gap is kept at most this hard; more is lead_decel's (LEAD_S0) call
+A_LEAD_GO = 0.2          # m/s^2 filtered: the lead is speeding up
+J_BRAKE_RELEASE_GO = 4.0  # brake release once the lead speeds up or leaves
+LEAVE_DY = 1.6           # m from our path at the lead: out of our lane
+LEAVE_DY_MOVING = 0.9    # m, and moving out at LEAVE_RATE
+LEAVE_RATE = 0.35        # m/s
+# the lead MPC keeps STOP_DISTANCE 6 m at rest and paced 17 engaged launches at 0-0.25 m/s^2 while the lead pulled away
+# from 4-5 m (the driver went at once): pulling away at low speed it sees the lead PULL_SHIFT further on
+PULL_SHIFT = 2.0
+PULL_SHIFT_BP = [4., 8.]
+PULL_SHIFT_RATE = 2.0    # m/s
+PULL_SHIFT_DECAY = 0.5   # m/s, handed back slowly: the MPC sees the lead come no closer than it really does
+TAU_LEAD_GO = 0.3        # aLeadTau handed to the MPC for a lead that keeps speeding up (radard: 1.5 below 0.5 m/s^2)
 
 # curves
 A_LAT_BP = [0., 8., 15., 25., 35.]
@@ -174,7 +210,9 @@ TURN_EXIT_FRAMES = int(1.0 / DT_MDL)
 # Road test 2026-11-09: in motion it sped up in bursts and slowly. Replay of 5 drives: the lift dropped to 0 at once
 # 21x/min when a gate flickered (plan confidence 19% of frames, model intent 12%, mapped signal 6%, cut-out 5%) and
 # came back over 0.5 s; a 2.5 s approach was slow near the target. Now soft gates ramp it down, hard ones cut it.
-LIFT_TAU = 1.6
+# 2026-11-14..18: engaged free speed-ups averaged 0.50 m/s^2 (driver 0.79, peak 1.53), and at 30-33 m/s the lift
+# aimed at the speed limit (vT 30) under a 33 m/s set speed, so the model's +0.1..0.2 paced us (9 gas presses)
+LIFT_TAU = 1.0
 A_LIFT_BP = [0., 5., 8., 20., 30.]
 A_LIFT_V = [1.5, 1.5, 1.3, 1.0, 0.7]
 J_LIFT = 2.0
@@ -230,10 +268,10 @@ def plan_stop_distance(t: np.ndarray, x: np.ndarray, v: np.ndarray) -> float | N
   return None
 
 
-def lead_decel(d: float, v_ego: float, v_l: float, a_l: float, tau: float = TAU) -> float:
+def lead_decel(d: float, v_ego: float, v_l: float, a_l: float, tau: float = TAU, t_brake: float = LEAD_BRAKE_T) -> float:
   """Least constant deceleration, starting after TAU, that keeps LEAD_S0 behind the lead's predicted path.
 
-  The lead keeps its braking for up to LEAD_BRAKE_T (stopping if it reaches zero), then holds its speed.
+  The lead keeps its braking for up to t_brake (stopping if it reaches zero), then holds its speed.
   Replay of 10 drives (2026-11-04): the bare relative formula a_l - dv^2/2d extrapolates every brake through
   zero speed (-3.5 asked for a stop needing -2.2), and gating it on closing rate missed a stopped car found
   at 79 m until 0.1 s before the driver braked.
@@ -241,7 +279,7 @@ def lead_decel(d: float, v_ego: float, v_l: float, a_l: float, tau: float = TAU)
   if v_ego < 0.1:
     return 0.
   v_l, a_l = max(v_l, 0.), min(a_l, 0.)
-  tb = min(LEAD_BRAKE_T, v_l / -a_l) if a_l < 0. else 0.
+  tb = min(t_brake, v_l / -a_l) if a_l < 0. else 0.
   tt = np.minimum(LEAD_T, tb)
   v_f = v_l + a_l * tb
   x = d - LEAD_S0 + v_l * tt + a_l * tt ** 2 / 2 + v_f * (LEAD_T - tt)
@@ -251,15 +289,15 @@ def lead_decel(d: float, v_ego: float, v_l: float, a_l: float, tau: float = TAU)
   with np.errstate(divide='ignore', invalid='ignore'):
     a_moving = 2 * overrun / u ** 2         # still rolling at that time
     a_stopped = np.where(room > 0., v_ego ** 2 / (2 * room), np.inf)  # stopped before it
-  a = np.where(u > 0., np.where(a_moving * u <= v_ego, a_moving, a_stopped), np.inf)
+    a = np.where(u > 0., np.where(a_moving * u <= v_ego, a_moving, a_stopped), np.inf)
   req = float(np.max(np.where(overrun > 0., a, 0.)))
   if v_f < 0.1:  # a stopped lead binds where it stopped, even past the time grid
     req = max(req, v_ego ** 2 / (2 * room[-1]) if room[-1] > 0. else np.inf)
   return min(req, LEAD_LOW_V_MAX) if v_ego < LEAD_LOW_V else min(req, 50.)
 
 
-def lead_stop_point(d: float, v_l: float, a_l: float, at_rest: bool = False) -> float | None:
-  """Where the lead comes to rest if it keeps braking for up to LEAD_BRAKE_T, None if it keeps moving.
+def lead_stop_point(d: float, v_l: float, a_l: float, at_rest: bool = False, t_brake: float = LEAD_BRAKE_T) -> float | None:
+  """Where the lead comes to rest if it keeps braking for up to t_brake, None if it keeps moving.
 
   At rest only a lead that is stopped now counts: a car pulling away reads a noisy -0.1..-0.4 a_l at walking pace,
   which extrapolated to a stop a metre or two on and held us at the line.
@@ -267,7 +305,7 @@ def lead_stop_point(d: float, v_l: float, a_l: float, at_rest: bool = False) -> 
   v_l, a_l = max(v_l, 0.), min(a_l, 0.)
   if v_l < V_LEAD_STOPPED:
     return d
-  if a_l < 0. and v_l / -a_l <= LEAD_BRAKE_T and not at_rest:
+  if a_l < 0. and v_l + a_l * t_brake < V_LEAD_CRAWL and not at_rest:  # down to a crawl: the stop profile, not lead_decel
     return d + v_l ** 2 / (2 * -a_l)
   return None
 
@@ -314,6 +352,16 @@ class LongAssist:
     self.brakes_on = False
     self.engage_t = 0.
     self.a_extra = 0.
+    self.lp_d: float | None = None  # lead prediction: range, filtered accel and jerk, offset from our path and its rate
+    self.lp_a = 0.
+    self.lp_j = 0.
+    self.lp_dy: float | None = None
+    self.lp_dy_rate = 0.
+    self.lead_t_brake = LEAD_BRAKE_T
+    self.lead_leaving = False
+    self.lead_slowing = False
+    self.pull_shift = 0.
+    self.follow_hold = False
     self.map_clear()
 
     self.state = State.off
@@ -406,7 +454,63 @@ class LongAssist:
     self.map_only = not agree
     return d_model - STOP_BUF if agree else d_line - MAP_LINE_BUF
 
+  def lead_predict(self, lead_one, model, x: np.ndarray, y: np.ndarray) -> None:
+    """Track the lead (camera radar point, else the model's): filtered accel and jerk, how long its braking lasts, and
+    whether it is leaving our lane (its offset from our planned path)."""
+    ml = model.leadsV3[0] if len(model.leadsV3) else None
+    if lead_one.present:
+      d, a_raw = lead_one.dRel, lead_one.aLeadK
+    elif ml is not None and ml.prob > LEAD_PROB:
+      d, a_raw = ml.x[0], ml.a[0]
+    else:
+      self.lp_d, self.lp_dy, self.lead_leaving, self.lead_t_brake = None, None, False, LEAD_BRAKE_T
+      return
+    if self.lp_d is None or abs(d - self.lp_d) > 5. + 0.1 * d:  # a new lead (a radar/vision swap stays inside this)
+      self.lp_a, self.lp_j, self.lp_dy, self.lp_dy_rate = a_raw, 0., None, 0.
+    else:
+      a_prev = self.lp_a
+      self.lp_a += (a_raw - self.lp_a) * DT_MDL / A_LEAD_TAU
+      self.lp_j += ((self.lp_a - a_prev) / DT_MDL - self.lp_j) * DT_MDL / J_LEAD_TAU
+    self.lp_d = d
+    ml_y = list(getattr(ml, 'y', [])) if ml is not None else []
+    if ml_y and ml.prob > 0.3 and abs(ml.x[0] - d) < 5. + 0.15 * d and len(y) == len(x):
+      dy = ml_y[0] - float(np.interp(ml.x[0], x, y))
+      if self.lp_dy is not None:
+        self.lp_dy_rate += ((dy - self.lp_dy) / DT_MDL - self.lp_dy_rate) * DT_MDL / J_LEAD_TAU
+      self.lp_dy = dy
+    dy, rate = self.lp_dy, self.lp_dy_rate
+    self.lead_leaving = dy is not None and (abs(dy) > LEAVE_DY or (abs(dy) > LEAVE_DY_MOVING and dy * rate > 0. and abs(rate) > LEAVE_RATE))
+    easing = self.lp_a < -0.3 and self.lp_j > J_EASE
+    self.lead_t_brake = float(np.clip(-self.lp_a / self.lp_j, LEAD_BRAKE_T_MIN, LEAD_BRAKE_T)) if easing else LEAD_BRAKE_T
+    # where its braking ends: half this physics, half the model's own lead forecast (lowest speed over its 10 s). On
+    # 714 frames of slowing leads (2026-11-14..18) physics alone came out > 3 m/s too slow 18% of the time (the
+    # brake-then-go leads we clamped for), the model alone > 3 m/s too fast 20%; the blend 4% / 13%
+    ml_v = list(ml.v) if ml is not None and ml.prob > LEAD_PROB and abs(ml.x[0] - d) < 5. + 0.15 * d else []
+    if self.lp_a < -0.3 and ml_v:
+      v_l = lead_one.vLead if lead_one.present else ml_v[0]
+      v_end = 0.5 * max(v_l + self.lp_a * self.lead_t_brake, 0.) + 0.5 * max(min(ml_v) + v_l - ml_v[0], 0.)
+      self.lead_t_brake = float(np.clip((v_l - v_end) / -self.lp_a, LEAD_BRAKE_T_MIN, LEAD_BRAKE_T))
+
+  def mpc_lead(self, radarstate, v_ego: float):
+    """radarState for the lead MPC with this module's lead prediction: a lead that keeps speeding up is extrapolated
+    that way (aLeadTau), braking that eases fades sooner, and a lead pulling away at low speed is seen PULL_SHIFT on."""
+    lead = radarstate.leadOne
+    if self.mode < Mode.full or self.state == State.off or not lead.present or self.lp_d is None:
+      return radarstate
+    tau = lead.aLeadTau
+    if self.lp_a > A_LEAD_GO and lead.aLeadK > 0.:
+      tau = min(tau, TAU_LEAD_GO)
+    elif self.lead_t_brake < LEAD_BRAKE_T and lead.aLeadK < 0.:
+      tau = max(tau, 2. / self.lead_t_brake ** 2)
+    if tau == lead.aLeadTau and self.pull_shift == 0.:
+      return radarstate
+    one = SimpleNamespace(present=True, dRel=lead.dRel + self.pull_shift, vLead=lead.vLead, aLeadK=lead.aLeadK, aLeadTau=tau,
+                          modelProb=lead.modelProb, radar=lead.radar)
+    return SimpleNamespace(leadOne=one, leadTwo=radarstate.leadTwo)
+
   def apply(self, a_e2e: float, should_stop_e2e: bool) -> tuple[float, bool]:
+    if self.mode >= Mode.full and self.follow_hold:
+      a_e2e = max(a_e2e, 0.)
     if self.mode >= Mode.full and self.a_lift > max(a_e2e, 0.):
       a_e2e = self.a_lift
       should_stop_e2e = should_stop_e2e and not self.clear_stop
@@ -479,8 +583,11 @@ class LongAssist:
       ml = model.leadsV3[0]
       leads.append((ml.x[0], ml.v[0], ml.a[0]))
     lead = min(leads, key=lambda ld: ld[0]) if leads else None
+    was_leaving, was_going = self.lead_leaving, self.lp_a > A_LEAD_GO
+    self.lead_predict(lead_one, model, x, np.array(model.position.y))
 
-    if self.had_lead and lead is None:
+    # a lead that turned off or sped away reveals nothing to wait for
+    if self.had_lead and lead is None and not (was_leaving or was_going):
       self.cutout_block = CUTOUT_BLOCK_FRAMES
     self.had_lead = lead is not None
     self.cutout_block = max(self.cutout_block - 1, 0)
@@ -490,22 +597,42 @@ class LongAssist:
       d, v_l, a_l = lead
       if v_ego > v_l:
         ttc = d / (v_ego - v_l)
-    tau = (TAU if self.brakes_on or CS.aEgo < -ENGAGE_SEEN else TAU_ONSET) + (WET_TAU_MARGIN if self.wet else 0.)
+    # from coasting the brakes come in TAU_ONSET after they are first asked for: time already spent asking counts (a
+    # constant TAU_ONSET kept the need escalating while they engaged, then they came in at that need)
+    onset = max(float(np.interp(v_ego, TAU_ONSET_BP, TAU_ONSET_V)) - self.engage_t, TAU)
+    tau = (TAU if self.brakes_on or CS.aEgo < -ENGAGE_SEEN else onset) + (WET_TAU_MARGIN if self.wet else 0.)
     # every lead hypothesis (camera radar point, model lead) is a possible obstacle: the most demanding one
     # brakes. Closest-wins picked a vision lead at 58 m doing 13 m/s over a stopped radar car at 79 m.
     # A lead coming to rest is a stop target (the stop profile below); a moving one is followed with lead_decel,
     # which aims LEAD_S0 behind its predicted path (normal following needs far less, the MPC keeps a time gap).
+    # A slowing lead is also followed at our following gap behind where it is going: lift off at once, bring the brakes
+    # in while little is needed. A lead leaving our lane is neither, unless about to be hit.
     a_lead = None
     a_req = 0.
+    a_cmf = 0.
     lead_stops = []
+    t_brake = self.lead_t_brake
+    # hysteresis: the camera radar's aLeadK wanders +-0.3 behind a steady lead, which toggled the coast on and off
+    self.lead_slowing = self.lp_d is not None and self.lp_a < (A_LEAD_SLOWING_OFF if self.lead_slowing else A_LEAD_SLOWING)
     for ld in leads:
-      x_l = lead_stop_point(*ld, at_rest=v_ego < 0.1)
+      if self.lead_leaving and ttc > TTC_SAFETY:
+        continue
+      x_l = lead_stop_point(*ld, at_rest=v_ego < 0.1, t_brake=t_brake)
       if x_l is None:
-        a_req = max(a_req, lead_decel(ld[0], v_ego, ld[1], ld[2], tau))
+        a_req = max(a_req, lead_decel(ld[0], v_ego, ld[1], ld[2], tau, t_brake))
+        if self.lead_slowing:
+          v_f = max(ld[1] + self.lp_a * t_brake, 0.)
+          s_des = 6. + float(np.interp(v_f, T_FOLLOW_BP, T_FOLLOW_V)) * v_f
+          a_cmf = max(a_cmf, lead_decel(ld[0] - (s_des - LEAD_S0), v_ego, ld[1], self.lp_a, tau, t_brake))
+          if ld[1] < v_ego + 0.5 and ld[0] < COAST_T * v_ego and v_f < v_ego - COAST_DV:
+            a_cmf = max(a_cmf, A_COAST)  # the driver lifts off as soon as a lead up to ~4 s ahead slows
       else:
         lead_stops.append(x_l)
     if a_req > STOP_ONSET:
       a_lead = max(-a_req, A_MIN)
+    if a_cmf > COAST_ON:
+      a_cmf = -min(a_cmf, A_LEAD_CMF_MAX) if a_cmf > A_LEAD_BRAKE_ON else -min(a_cmf, A_COAST)
+      a_lead = a_cmf if a_lead is None else min(a_lead, a_cmf)
     self.lead_frames = self.lead_frames + 1 if a_lead is not None else 0
     if self.lead_frames < LEAD_MIN_FRAMES:
       a_lead = None
@@ -580,7 +707,10 @@ class LongAssist:
       held = self.stop_frames - (0 if corroborated else CORROBORATE_FRAMES)
       # a late yellow at a mapped signal stays the model's call: not braked for once DILEMMA_FRAMES pass either
       late_yellow = self.map_go and self.map_d_line is not None and abs(d - self.map_d_line) < HAZARD_MATCH
-      if not (late_yellow or (dilemma_possible and a_req > DILEMMA_ACCEL and self.stop_frames <= DILEMMA_FRAMES) or held < 0):
+      # the plan stopping behind a lead that is still moving and not predicted to stop is it following that lead
+      # (the MPC's and lead_decel's job); latching a stop there braked to rest behind leads that went on
+      lead_moving = behind_lead and not lead_stops and lead[1] > V_LEAD_STOPPED and not at_hazard
+      if not (lead_moving or late_yellow or (dilemma_possible and a_req > DILEMMA_ACCEL and self.stop_frames <= DILEMMA_FRAMES) or held < 0):
         # behind a lead the model plans its stop 8-10 m back at a queue (2026-11-05: stopped 11 m short, the
         # driver gassed up); the lead only moves on, so STOP_GAP behind where it is now is always safe
         s_model = max(d - STOP_BUF, lead[0] - STOP_GAP) if behind_lead else d - STOP_BUF
@@ -666,17 +796,23 @@ class LongAssist:
       j_on = float(np.clip(-a_brake / STOP_RAMP_T, J_STOP_ON, J_STOP_ON_MAX)) * (WET_JERK if self.wet else 1.)
       a_brake = max(a_brake, prev - j_on * DT_MDL)
     if self.a_brake is not None and not released_at_rest:
-      released = self.a_brake + J_BRAKE_RELEASE * DT_MDL
+      going = lead is None or self.lead_leaving or self.lp_a > A_LEAD_GO or self.lead_t_brake < LEAD_BRAKE_T
+      released = self.a_brake + (J_BRAKE_RELEASE_GO if going and brake_state != State.stop else J_BRAKE_RELEASE) * DT_MDL
       if a_brake is None:
         a_brake = released if released < 0. else None
       else:
         a_brake = min(a_brake, released)
     self.a_brake = a_brake
 
-    # --- lift toward min(cruise, speed limit + offset, curve speed, lead gap)
+    # --- the lead pulling away at low speed: the MPC sees it PULL_SHIFT further on (see mpc_lead)
+    # only launching from rest: a shift that came and went while crawling made the MPC close in, then back off (ping-pong)
+    pulling = self.launching and lead_one.present and lead_one.vLead > max(v_ego + 0.3, V_LEAD_STOPPED) and       self.lp_a > -0.2 and not self.lead_leaving
+    shift = PULL_SHIFT * float(np.interp(v_ego, PULL_SHIFT_BP, [1., 0.])) if pulling else 0.
+    self.pull_shift = float(np.clip(shift, self.pull_shift - PULL_SHIFT_DECAY * DT_MDL, self.pull_shift + PULL_SHIFT_RATE * DT_MDL))
+
+    # --- lift toward min(cruise, curve speed, lead gap). The cruise target already holds the speed limit when speed limit
+    # assist is on; otherwise the set speed is the driver's own choice
     v_t = min(v_cruise, self.v_curve)
-    if v_limit > 0.:
-      v_t = min(v_t, v_limit)
     # launching behind leads that all pull away, the lead MPC (min() in the planner) paces us: the gap law follows the
     # lead's current speed and asked ~0.3 m/s^2 for the first 2 s of 80 recorded launches behind a lead
     pulling_away = self.launching and all(v_l > max(v_ego, V_LEAD_STOPPED) for _, v_l, _ in leads)
@@ -695,7 +831,10 @@ class LongAssist:
                self.stop_frames == 0 and self.a_brake is None and (v_ego > V_STOP or v_plan > LAUNCH_PLAN_V))
     # soft gates ramp it down: plan confidence, a lane change, mild model intent, a cut-out, a mapped stop/signal at
     # speed (a launch is the model's own go at that signal: no mapped-signal cap or block until V_LAUNCH_END)
-    following = lead is not None and lead[0] < FOLLOW_RANGE and lead[1] > v_ego - FOLLOW_CLOSING
+    # closing that the gap law above asks for still counts: cutting the lift for it, then lifting again once slower, cycled
+    # on->off 14.8/min while following (2026-11-14..18 logs; the model asks < -0.3 in 55% of frames closing > 1 m/s)
+    following = lead is not None and lead[0] < FOLLOW_RANGE and \
+      lead[1] > v_ego - FOLLOW_CLOSING - GAP_GAIN * max(lead[0] - LIFT_GAP_S0 - float(np.interp(v_ego, T_FOLLOW_BP, T_FOLLOW_V)) * v_ego, 0.)
     soft_ok = (self.conf_ok and not lane_change and not (intent_decel and not following) and
                (self.cutout_block == 0 or self.launching) and not (primed and v_ego > PRIME_V and not self.launching))
     if self.launching:
@@ -708,6 +847,9 @@ class LongAssist:
     a_lift = float(np.clip(target, self.a_lift - j_down * DT_MDL, self.a_lift + j_up * DT_MDL)) if hard_ok else 0.
     self.a_lift = a_lift
     self.clear_stop = self.a_lift > CLEAR_STOP_ACCEL
+    # following a steady lead the lead MPC (our T_FOLLOW) owns the gap: the model's mild decel wants a longer one, and
+    # handing back to it each time the lift reached its target was the gas/brake ping-pong (old LA 14.8 cuts/min)
+    self.follow_hold = following and hard_ok and soft_ok and not self.lead_slowing and not self.lead_leaving
 
     if CS.gasPressed:
       self.state = State.override

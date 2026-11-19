@@ -8,7 +8,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.long_assist import (
   LongAssist, Mode, State, lead_decel, plan_stop_distance, stop_decel, A_MIN, A_MAP_CURVE_MAX, A_STOP_EMERG,
-  A_LAUNCH_BP, A_LAUNCH_V, CORROBORATE_FRAMES, DILEMMA_FRAMES, J_STOP_ON, STOP_GAP, STOP_ONSET, TAU_ONSET,
+  A_LAUNCH_BP, A_LAUNCH_V, CORROBORATE_FRAMES, DILEMMA_FRAMES, J_STOP_ON, STOP_GAP, STOP_ONSET, TAU_ONSET, TAU_ONSET_BP, TAU_ONSET_V,
   BRAKE_ENGAGE_BP, BRAKE_ENGAGE_V, J_ENGAGE, J_LIFT_DOWN, J_STOP_ON_MAX, LIFT_GAP_S0, T_FOLLOW_BP, T_FOLLOW_V, WET_ACCEL,
   MAP_ON_FRAMES, SIGNAL_GO_FRAMES,
 )
@@ -122,14 +122,15 @@ class TestLongAssist:
 
   def test_stopped_lead_found_far_ramps_to_its_stop(self):
     # 2026-11-04 commute: stopped car first seen at 79 m from 14.6 m/s, closing rate 0.12/s
-    assert 1.3 < stop_decel(79. - STOP_GAP, 14.6, 0., TAU_ONSET) < 1.9
+    onset = float(np.interp(14.6, TAU_ONSET_BP, TAU_ONSET_V))
+    assert 1.3 < stop_decel(79. - STOP_GAP, 14.6, 0., TAU_ONSET) < 1.9 < stop_decel(79. - STOP_GAP, 14.6, 0., onset)
     d = 79.
     for n in range(1, 21):
       d -= 14.6 * DT_MDL
       self.la.update(make_model(14.6), make_lead(True, d, 0., 0.), make_cs(14.6), True, 30., 0., True)
       if n == 3:
         assert self.la.state == State.lead and self.la.a_brake < 0.
-    need = stop_decel(d - STOP_GAP, 14.6, 0., TAU_ONSET)  # the car never slows here: the need keeps growing
+    need = stop_decel(d - STOP_GAP, 14.6, 0., onset)  # the car never slows here: the need keeps growing
     assert -need - 1e-6 <= self.la.a_brake <= -J_STOP_ON * 18 * DT_MDL + 1e-6  # ramping in since frame 3
 
   def test_curve_ahead(self):
@@ -147,11 +148,14 @@ class TestLongAssist:
     assert self.la.turning and self.la.state == State.turn
     assert self.la.a_brake is None and self.la.a_lift == 0.
 
-  def test_lift_to_speed_limit(self):
+  def test_lift_to_set_speed(self):
+    # the set speed, not the mapped speed limit (33 m/s set, 30 m/s limit: the model's +0.1 paced us, 2026-11-14..18)
     m = make_model(10., accel=0.3)
+    run(self.la, 40, m, cs=make_cs(10.), v_cruise=10.8, v_limit=10.2)
+    assert abs(self.la.a_lift - 0.8) < 0.05 and self.la.v_target == 10.8  # (10.8 - 10) / LIFT_TAU
     run(self.la, 40, m, cs=make_cs(10.), v_cruise=20., v_limit=12.)
     assert self.la.state == State.cruise
-    assert abs(self.la.a_lift - 1.25) < 0.05  # (12 - 10) / LIFT_TAU, capped at 1.25 at 10 m/s
+    assert abs(self.la.a_lift - 1.25) < 0.05  # capped at 1.25 at 10 m/s
     a, _ = self.la.apply(0.1, False)
     assert a == self.la.a_lift
     # lift never lowers a stronger model accel
@@ -193,7 +197,7 @@ class TestLongAssist:
         break
     assert car.v == 0.
     assert X_STOP - 4. < car.x <= X_STOP
-    assert a_min >= -2.0
+    assert a_min >= -2.4  # the brakes come in ~1.4 s after asked at 15 m/s (Car.ASK_V); before that LA's need escalated to -2.5
 
   def test_zero_lift_never_cancels_model_brake(self):
     assert self.la.a_lift == 0.
@@ -252,12 +256,15 @@ class TestLeadDecel:
 
 class Car:
   """This Elantra in closed loop: 0.5 s actuator delay, then a 0.3 s lag. Brakes as logged 2026-11-07..09 (19 routes):
-  the SCC slows us with the powertrain alone (<= 0.35 m/s^2) until asked past ENGAGE_V for 0.3 s, then the friction
+  the SCC slows us with the powertrain alone (<= 0.35 m/s^2) until asked past ENGAGE_V for ASK_V, then the friction
   brakes track 1:1 until the request is above -0.25; slower than 3 m/s they answer at once, ~0.6x below 2 m/s, where
   idle creep beats small decels; longcontrol's stopping state (v < 0.3 with a target < 0.1, or any shouldStop) ramps to
   stopAccel -2 at 1 m/s^3."""
   N_DELAY = int(0.5 / DT_MDL)
   ENGAGE_BP, ENGAGE_V = [3., 8., 12.], [0.75, 1.15, 1.45]  # a little under what LA asks: -1.55 engaged, -1.1 mostly not
+  # how long it must be asked past ENGAGE_V: 59 engaged requests past -1.0 at 8-34 m/s (2026-11-14..18) reached -0.9 a
+  # median 1.9 s later at 14-20 m/s (0.4-4.5 s), 0.6-1.2 s at 10-13 m/s; that is 0.5 s delay + 0.3 s lag + this
+  ASK_BP, ASK_V = [10., 15.], [0.3, 1.1]
   POWERTRAIN = 0.35
 
   def __init__(self, v):
@@ -277,7 +284,7 @@ class Car:
     self.ask = self.ask + DT_MDL if -cmd >= np.interp(self.v, self.ENGAGE_BP, self.ENGAGE_V) else 0.
     if cmd > -0.25:
       self.brakes = False
-    elif self.v < 3. or self.ask >= 0.3:
+    elif self.v < 3. or self.ask >= np.interp(self.v, self.ASK_BP, self.ASK_V):
       self.brakes = True
     if cmd < 0.:
       a_cmd = np.interp(self.v, [1., 3.], [0.6, 1.0]) * cmd if self.brakes else max(cmd, -self.POWERTRAIN)
@@ -352,7 +359,7 @@ class TestClosedLoopStops:
     # followed it to 11 m, the driver gassed up. Now the stop target is STOP_GAP behind the lead.
     # a lead braking at -4: deployed LA peaked -3.3 on this plant (the brakes came in late)
     log = drive_to_lead(self.la, 18.8, 68., 16.8, -4.0, lambda v, gap: -0.3, model_stop_short=10.)
-    self.check_stop(log, a_min=-2.7)
+    self.check_stop(log, a_min=-2.9)  # 2026-11-09 LA peaks -3.15 on this plant (brakes in ~1.4 s after asked)
 
   def test_far_stopped_lead_coasts_then_one_decel(self):
     # 238 t=128: stopped queue ~110 m ahead from 15.4 m/s, stock planner not braking yet. Road test 2026-11-09 asked
@@ -363,7 +370,7 @@ class TestClosedLoopStops:
     k = self.check_stop(log)
     assert gap[np.flatnonzero(a < -0.2)[0]] > 105.  # off the gas as soon as the queue is seen
     assert np.all(np.abs(np.diff(a_t[:k])) / DT_MDL < 3.0)  # requests jerk-limited (the brakes' own bite is the car's)
-    assert -1.6 <= a[:k].min() <= -0.9
+    assert -1.7 <= a[:k].min() <= -0.9
     assert np.sum((log[:k, 0] > 0.05) & (log[:k, 0] < 1.5)) * DT_MDL < 2.0
 
   def test_late_stopped_lead_brakes_at_once(self):
@@ -592,7 +599,7 @@ class TestWet:
     la.mode = Mode.full
     t = la.mpc_t_follow(10., P.aggressive)
     assert t == la.mpc_t_follow(10., P.standard) and 0.85 <= t < 1.0  # wet keeps aggressive's distance
-    assert la.mpc_t_follow(25., P.aggressive) == 1.25
+    assert la.mpc_t_follow(28., P.aggressive) == 1.0  # driver's highway gap ~30 m at 28 m/s; stock 1.25 s was 42 m
     assert la.mpc_t_follow(10., P.relaxed) is None
 
   def test_wet_launch_gentler(self):
@@ -615,7 +622,8 @@ class TestWet:
       a = log_[:, 2]
       out[w] = (log_[np.flatnonzero(a < -0.4)[0], 1], a.min())
       TestClosedLoopStops.check_stop(None, log_)
-    assert out[True][0] >= out[False][0] and out[True][1] >= out[False][1] - 0.05
+    # with the brakes' dead time at speed (Car.ASK_V) both start within ~1 m of each other; wet never brakes harder
+    assert out[True][0] >= out[False][0] - 2. and out[True][1] >= out[False][1] - 0.05
 
 
 class TestClosedLoopFollow:
@@ -626,6 +634,163 @@ class TestClosedLoopFollow:
     la.mode = Mode.brake
     log_ = drive_to_lead(la, 20.7, 78.7, 19.0, -0.8, lambda v, gap: -0.3, seconds=45.)
     TestClosedLoopStops.check_stop(None, log_, a_min=-2.4)
+
+  def test_lead_brakes_to_turn_then_leaves(self):
+    # 27c t=581-597: 19.7 m/s, lead 85 m ahead at 18.5 slowing (-0.4 building to -1.8) to 9 m/s, then it turns off. Deployed
+    # LA held speed for 5 s, asked -1.5 at 70 m, the brakes came in 2 s later and it peaked -2.7 (driver braked).
+    # Driver, lead turning off: lifts at once, brakes from ~2 s in, peak -1.7; then gone at 1.4-2.0 m/s^2.
+    def lead(t, s):
+      a = 0. if t < 2. else -0.4 if t < 4. else -1.8 if s.v > 9. else 0.
+      y = 0. if t < 11. else min(0.9 * (t - 11.), 4.)  # turns off to the right
+      return a, y, y < 2.5
+    log_ = follow(full(), 19.7, 85., 18.5, lead, 30., v_cruise=20.)
+    t, v, a, gap = log_[:, 0], log_[:, 1], log_[:, 2], log_[:, 3]
+    assert t[np.flatnonzero(a < -0.2)[0]] < 4.5  # off the gas within 2.5 s of the lead slowing
+    assert a.min() > -1.9 and np.isfinite(gap[t < 13.]).all() and gap[t < 13.].min() > 15.
+    gone = t[np.flatnonzero(~np.isfinite(gap))[0]]
+    assert t[np.flatnonzero((t > gone) & (a > 0.5))[0]] - gone < 2.5  # back on the gas once it left
+    assert v[-1] > 19.
+
+  def test_lead_slows_hard_then_speeds_up(self):
+    # 273 t=1055-1075 / 26b t=1779-1790: a lead at 25-40 m brakes at -2.5 for 2 s, then goes on. No stop latch, no clamp,
+    # follow it back up without lagging behind
+    def lead(t, s):
+      return (-2.5 if 3. < t < 5. else 1.5 if 6. < t and s.v < 15. else 0.), 0., True
+    log_ = follow(full(), 14., 25., 14., lead, 35.)
+    t, v, a, gap = log_[:, 0], log_[:, 1], log_[:, 2], log_[:, 3]
+    # no stop latched behind it: never more than 2 m/s under its lowest speed (9.1). The peak is the brakes' ~1.4 s dead
+    # time at 14 m/s (Car.ASK_V): 2026-11-09 LA peaked -3.3 on this plant
+    assert v.min() > 7. and gap.min() > 8. and a.min() > -3.4
+    assert t[np.flatnonzero((t > 6.) & (a > 0.3))[0]] < 8.  # speeding up within 2 s of the lead (0.8 s is the plant's)
+    assert gap[-1] < 6. + 1.1 * v[-1] + 6.  # caught up with it, not drifting back
+
+  def test_stop_and_go_waves(self):
+    # queue waves: the lead stops for 3 s, goes to ~6 m/s, slows to a stop again (period ~12 s). Steady gap close to the
+    # driver's (8 m at 3.6 m/s, 12 m at 6.5 m/s), go with it, no gas/brake ping-pong
+    def lead(t, s):
+      ph = t % 12.
+      return (0. if ph < 3. else 1.5 if ph < 7. and s.v < 6. else 0. if ph < 7. else -1.5), 0., True
+    log_ = follow(full(), 0., 6., 0., lead, 72.)
+    t, v, a, gap = log_[:, 0], log_[:, 1], log_[:, 2], log_[:, 3]
+    m = t > 12.
+    sm = np.convolve(a, np.ones(5) / 5, mode='same')
+    flips, s = 0, 0
+    for x in sm[m]:
+      ns = 1 if x > 0.2 else -1 if x < -0.2 else s
+      flips += ns != s and s != 0
+      s = ns
+    # the lead itself changes direction 2x per wave: 10/min; more than that is ping-pong
+    assert flips / ((t[-1] - 12.) / 60) <= 12.
+    moving = m & (v > 2.)
+    # vs the driver's gap (5 m + 1.2 s): this plant and MPC stand-in launch ~1 s after the lead, the gap opens 6 -> 15 m
+    assert np.median(gap[moving] - (5. + 1.2 * v[moving])) < 6.
+    assert gap[m].min() > 3. and a.min() > -1.8
+    go = [k for k in range(1, len(t)) if m[k] and t[k] % 12. < 3.05 and t[k - 1] % 12. >= 2.95]
+    for k in go:  # the lead goes at ph = 3: we roll within 2.5 s (the plant alone takes 0.8 s, longcontrol's stopping more)
+      assert (v[k:k + 50] > 0.3).any()
+
+  def test_stop_and_go_crawl(self):
+    # waves between 1 and 6 m/s, every third to a stop: a lead slowing to a crawl is not a stop to latch, go with it
+    def lead(t, s):
+      ph, n = t % 14., int(t // 14.)
+      return (1.0 if ph < 6. and s.v < 6. else 0. if ph < 8. else -1.2 if s.v > (0. if n % 3 == 2 else 1.) else 0.), 0., True
+    log_ = follow(full(), 3., 10., 3., lead, 84.)
+    t, v, a, gap = log_[:, 0], log_[:, 1], log_[:, 2], log_[:, 3]
+    crawl = (t % 42. > 8.) & (t % 42. < 28.)  # the two waves that stop at 1 m/s
+    assert v[crawl].min() > 0.3 and a.min() > -1.8 and gap.min() > 4.
+
+  def test_steady_follow_no_ping_pong(self):
+    # a steady 15 m/s lead and a model that mildly wants a longer gap than ours (logged: median +0.1 at every gap 0.6-3 s,
+    # < -0.3 in 4-10% of frames). Handing back to it each time the lift reached its target was gas/brake ping-pong
+    log_ = follow(full(), 15., 35., 15., lambda t, s: (0., 0., True), 60., v_cruise=25., model_tf=1.3)
+    t, a, gap = log_[:, 0], log_[:, 2], log_[:, 3]
+    m = t > 20.
+    sm = np.convolve(a, np.ones(5) / 5, mode='same')
+    flips, s = 0, 0
+    for x in sm[m]:
+      ns = 1 if x > 0.2 else -1 if x < -0.2 else s
+      flips += ns != s and s != 0
+      s = ns
+    assert flips == 0 and np.abs(a[m]).max() < 0.3
+    assert abs(np.median(gap[m]) - (6. + float(np.interp(15., T_FOLLOW_BP, T_FOLLOW_V)) * 15.)) < 3.
+
+  def test_cut_out(self):
+    # following a 10 m/s lead at 20 m, it changes lanes: road clear, speed up without the 1.5 s cut-out pause; a slower
+    # car revealed behind it is still followed
+    def lead(t, s):
+      y = 0. if t < 5. else min(1.2 * (t - 5.), 3.5)
+      return 0., y, y < 2.5
+    log_ = follow(full(), 10., 20., 10., lead, 15., v_cruise=20.)
+    t, a, gap = log_[:, 0], log_[:, 2], log_[:, 3]
+    gone = t[np.flatnonzero(~np.isfinite(gap))[0]]
+    assert t[np.flatnonzero((t > gone) & (a > 0.5))[0]] - gone < 1.5
+    log_ = follow(full(), 10., 20., 10., lead, 25., v_cruise=20., second=(70., 5.))
+    gap = log_[:, 3]
+    assert gap[np.isfinite(gap)].min() > 8. and log_[:, 2].min() > -2.6
+
+  def test_speed_up_to_set_speed(self):
+    # free road 12 -> 20 m/s (driver: 0.79 m/s^2 mean, 1.5 peak). Engaged it averaged 0.50 and stalled near the target
+    log_ = follow(full(), 12., None, 0., None, 25., v_cruise=20.)
+    t, v, a = log_[:, 0], log_[:, 1], log_[:, 2]
+    t_set = t[np.flatnonzero(v >= 19.5)[0]]
+    assert t_set < 12.
+    assert np.mean(a[t < t_set]) > 0.65
+    sm = np.convolve(a, np.ones(5) / 5, mode='same')
+    assert np.abs(np.diff(sm)).max() / DT_MDL < 2.5 and v.max() < 20.3
+
+
+def full(wet=False):
+  la = LongAssist()
+  la.mode = Mode.full
+  la.wet = wet
+  return la
+
+
+def mpc_tf(v, gap, v_l, a_l, t_follow):
+  desired = 6. + t_follow * v + (v ** 2 - v_l ** 2) / (2 * 2.5)
+  return float(np.clip(0.1 * (gap - desired) + 0.2 * (v_l - v) + 0.25 * max(a_l, 0.), -3.5, 2.0))
+
+
+def follow(la, v0, gap0, v_l0, lead, seconds, v_cruise=30., second=None, model_tf=1.6):
+  """Closed loop behind a lead: lead(t, state) -> (accel, lateral offset from our path, still tracked). The planner is
+  min(MPC stand-in on what LA hands the MPC, cruise, LA-applied model), the model a sluggish follower at model_tf.
+  second=(gap, v): a car further ahead, revealed when the lead goes."""
+  car = Car(v0)
+  car.stopping = v0 == 0.
+  s = SimpleNamespace(x=gap0 or 0., v=v_l0)
+  s2 = SimpleNamespace(x=second[0], v=second[1]) if second else None
+  a_cruise, da = 0., 0.
+  log_ = []
+  for k in range(int(seconds / DT_MDL)):
+    t = k * DT_MDL
+    a_l, y, tracked = lead(t, s) if lead is not None else (0., 0., False)
+    s.v = max(s.v + a_l * DT_MDL, 0.)
+    a_l = a_l if s.v > 0. else 0.
+    s.x += s.v * DT_MDL
+    if s2 is not None:
+      s2.x += s2.v * DT_MDL
+    cur = (s.x - car.x, s.v, a_l, y) if lead is not None and tracked else (s2.x - car.x, s2.v, 0., 0.) if s2 is not None else None
+    radar = make_lead(cur is not None, *(float(c) for c in (cur[:3] if cur else (0., 0., 0.))))
+    tf = la.mpc_t_follow(car.v, 0) or 1.25
+    rs = la.mpc_lead(SimpleNamespace(leadOne=radar, leadTwo=make_lead()), car.v)
+    l1 = rs.leadOne
+    a_mpc = mpc_tf(car.v, l1.dRel, l1.vLead, l1.aLeadK, tf) if l1.present else 2.0
+    da_t = float(np.clip(mpc_tf(car.v, cur[0], cur[1], cur[2], model_tf), -3.5, 0.8)) if cur else float(np.clip(0.3 * (v_cruise - car.v), -1., 0.8))
+    da += (da_t - da) * DT_MDL / 0.6
+    stop_at = cur[0] - 8. if cur and cur[1] < 0.3 and car.v > 1. else None
+    m = make_model(car.v, stop_at=max(stop_at, 0.5) if stop_at is not None else None, accel=da, desired_accel=da,
+                   lead=(float(cur[0]), float(cur[1]), float(cur[2])) if cur else None, path_y=lambda x: np.zeros_like(x))
+    if cur:
+      m.leadsV3[0].y = [float(cur[3])] * 6
+      m.leadsV3[0].v = [max(float(cur[1] + cur[2] * min(tt, 2.)), 0.) for tt in range(0, 12, 2)]  # its accel for 2 s
+    la.update(m, radar, make_cs(car.v, a=car.a), True, v_cruise, 0., True)
+    a_e2e, ss = la.apply(da, car.v < 0.3 and da < 0.1)
+    a_cruise = float(np.clip(np.clip(v_cruise - car.v, -0.5, 2.0), a_cruise - 1.2 * DT_MDL, a_cruise + 1.2 * DT_MDL))
+    a_t = min(a_mpc, a_cruise, a_e2e)
+    ss = ss or (car.v < 0.3 and a_t < 0.1)
+    car.step(la.actuate(a_t, car.v, car.a), ss)
+    log_.append((t, car.v, car.a, cur[0] if cur else np.inf, cur[1] if cur else np.nan, a_t))
+  return np.array(log_)
 
 
 def mapped(d, kind=Kind.stop, cert=Cert.sure, hid=7, y=0.):
