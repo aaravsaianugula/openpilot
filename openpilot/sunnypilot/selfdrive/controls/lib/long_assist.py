@@ -213,8 +213,9 @@ TURN_EXIT_FRAMES = int(1.0 / DT_MDL)
 # 2026-11-14..18: engaged free speed-ups averaged 0.50 m/s^2 (driver 0.79, peak 1.53), and at 30-33 m/s the lift
 # aimed at the speed limit (vT 30) under a 33 m/s set speed, so the model's +0.1..0.2 paced us (9 gas presses)
 LIFT_TAU = 1.0
+LIFT_LEAD_T = 0.5         # s, actuator delay
 A_LIFT_BP = [0., 5., 8., 20., 30.]
-A_LIFT_V = [1.5, 1.5, 1.3, 1.0, 0.7]
+A_LIFT_V = [1.8, 1.6, 1.3, 1.0, 0.7]
 J_LIFT = 2.0
 J_LIFT_DOWN = 2.0
 GAP_GAIN = 0.15
@@ -239,8 +240,13 @@ J_BRAKE_RELEASE = 2.0
 # a signal within 150 m, blocked for 1.5 s by every flicker of a weak model lead, and behind a lead the gap law asked
 # ~0.3; the model's own speed reads < V_STOP for ~0.5 s after we pass it, which looked like a stop at 0 m (blocked lift,
 # sometimes latched a -1.9 brake). Driver: 0-8 m/s in 6.2 s, mean 1.28, first-2 s peak 1.88.
+# 2026-11-19 (280/281, "standard" = wet): no-lead launches sat 1.1 s from the model's go to moving, the lift ramping
+# 0 -> 1.28 (wet 0.8x, jerk 0.7x) while the brake hold soaked it up, then 1.2-1.3 m/s^2; the driver gassed 3 of 4 at
+# 0.8-1.4 s and took 2-3 m/s^2. At rest the lift now starts at A_LAUNCH_START (wet too: no dead time in the rain
+# either), then builds to 2.0 (wet 1.6)
 A_LAUNCH_BP = [0., 5., 8.]
-A_LAUNCH_V = [1.6, 1.6, 1.2]  # meets A_LIFT_V at V_LAUNCH_END
+A_LAUNCH_V = [2.0, 2.0, 1.4]
+A_LAUNCH_START = 1.0          # m/s^2, the lift's first frame at rest: the car moved ~0.4 s after it saw ~1.0
 J_LAUNCH = 2.5                # m/s^3, also the ramp-down of a launch's lift for soft reasons; the car's SCC allows 3 in pid
 V_LAUNCH_END = 8.
 LAUNCH_GO_T = 5.              # s, a plan back above LAUNCH_PLAN_V by then is a launch, not a stop
@@ -843,8 +849,11 @@ class LongAssist:
       a_lift_max, j_up, j_down = min(np.interp(v_ego, A_LIFT_BP, A_LIFT_V), A_LIFT_PRIMED if primed else np.inf), J_LIFT, J_LIFT_DOWN
     if self.wet:
       a_lift_max, j_up = a_lift_max * WET_ACCEL, j_up * WET_JERK
-    target = float(np.clip((v_t - v_ego) / LIFT_TAU, 0., a_lift_max)) if soft_ok else 0.
+    # aimed at where the accel already on its way takes us: with the 0.5 s delay and lag a 2.0 launch overshot set speed
+    target = float(np.clip((v_t - v_ego - LIFT_LEAD_T * max(CS.aEgo, 0.)) / LIFT_TAU, 0., a_lift_max)) if soft_ok else 0.
     a_lift = float(np.clip(target, self.a_lift - j_down * DT_MDL, self.a_lift + j_up * DT_MDL)) if hard_ok else 0.
+    if hard_ok and self.launching and v_ego < V_STOP:  # a ramp at rest only adds dead time under the brake hold
+      a_lift = max(a_lift, min(target, A_LAUNCH_START))
     self.a_lift = a_lift
     self.clear_stop = self.a_lift > CLEAR_STOP_ACCEL
     # following a steady lead the lead MPC (our T_FOLLOW) owns the gap: the model's mild decel wants a longer one, and

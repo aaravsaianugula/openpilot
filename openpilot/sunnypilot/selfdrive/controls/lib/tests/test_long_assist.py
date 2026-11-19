@@ -8,7 +8,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.long_assist import (
   LongAssist, Mode, State, lead_decel, plan_stop_distance, stop_decel, A_MIN, A_MAP_CURVE_MAX, A_STOP_EMERG,
-  A_LAUNCH_BP, A_LAUNCH_V, CORROBORATE_FRAMES, DILEMMA_FRAMES, J_STOP_ON, STOP_GAP, STOP_ONSET, TAU_ONSET, TAU_ONSET_BP, TAU_ONSET_V,
+  A_LAUNCH_BP, A_LAUNCH_START, A_LAUNCH_V, CORROBORATE_FRAMES, DILEMMA_FRAMES, J_STOP_ON, STOP_GAP, STOP_ONSET, TAU_ONSET, TAU_ONSET_BP, TAU_ONSET_V,
   BRAKE_ENGAGE_BP, BRAKE_ENGAGE_V, J_ENGAGE, J_LIFT_DOWN, J_STOP_ON_MAX, LIFT_GAP_S0, T_FOLLOW_BP, T_FOLLOW_V, WET_ACCEL,
   MAP_ON_FRAMES, SIGNAL_GO_FRAMES,
 )
@@ -407,7 +407,7 @@ def launch(la, lead=None, seconds=12., v_cruise=15., green=1.0, map_ahead=EMPTY,
   a_noise: the radar's aLeadK reads this for the lead's first 1 s of motion (logged: -0.1..-0.4 at walking pace)."""
   car = Car(0.)
   car.stopping = True
-  a_cruise, lead_x, lead_v, lead_a = 0., 1e3, 30., 0.
+  a_cruise, lead_x, lead_v, lead_a = 2., 1e3, 30., 0.  # engaged at rest, the planner's a_cruise has long reached 2
   ml_v = 0.
   if lead is not None:
     lead_x, lead_a_go, t_move = lead
@@ -423,7 +423,7 @@ def launch(la, lead=None, seconds=12., v_cruise=15., green=1.0, map_ahead=EMPTY,
     gap = lead_x - car.x
     t_go = t - green if lead is None else t - t_move - 0.3
     go = t_go > 0.
-    da = model_launch_da(t_go) if go else -0.05
+    da = min(model_launch_da(t_go), max(v_cruise - car.v, 0.)) if go else -0.05  # the model does not pass set speed
     v0 = max(car.v - lag_v0, 0.)
     m = make_model(v0, accel=1.0 if go else 0., desired_accel=da,
                    lead=(float(gap), float(ml_v), float(lead_a)) if lead is not None else None)
@@ -460,8 +460,24 @@ class TestClosedLoopLaunch:
 
   def test_no_lead_green_light(self):
     # driver: 0-8 m/s in 6.2 s, first-2 s peak 1.88; before this fix lift built over ~1 s and the model paced the rest
-    log = self.run_check(launch(self.la, green=1.0), 1.0)
-    assert log[:, 1].max() <= 15. + 1e-6
+    log = self.run_check(launch(self.la, green=1.0, seconds=16.), 1.0)
+    # the stand-in model and cruise taper at tau 1 s with no delay compensation, so the plant's 0.8 s delay + lag carries
+    # it ~0.2 m/s past set speed whoever leads; old LA reached 15.3 too, which a 12 s run used to end before
+    assert log[:, 1].max() <= 15.25
+
+  def test_no_lead_launch_starts_firm_wet_too(self):
+    # 280/281 2026-11-19 ("standard" = wet): the lift ramped from 0 at rest (0.7x jerk) to 1.28 and the driver gassed.
+    # Both start firm at rest; wet then builds gentler (0.8x) for the rain
+    for wet, t8_max, a2_min in ((False, 4.5, 1.9), (True, 5.5, 1.55)):
+      la = LongAssist()
+      la.mode = Mode.full
+      la.wet = wet
+      log = launch(la, green=1.0)
+      t, a_e2e = log[:, 0], log[:, 5]
+      go = t[np.flatnonzero(a_e2e >= A_LAUNCH_START)[0]] - 1.0
+      assert go <= 2 * DT_MDL, f"wet={wet}: lift reached {A_LAUNCH_START} {go:.2f} s after the plan went"
+      delay, t8, a2 = launch_stats(log, 1.0)
+      assert delay < 1.0 and t8 < t8_max and a2 >= a2_min, f"wet={wet}: moved {delay:.2f} s, 0-8 m/s {t8:.1f} s, peak {a2:.2f}"
 
   def test_no_lead_at_mapped_signal(self):
     # most launches are at mapped signals: lift was capped at 1.0 there and cut to 0 above 5 m/s
@@ -470,8 +486,8 @@ class TestClosedLoopLaunch:
   def run_check(self, log, t0):
     delay, t8, a2 = launch_stats(log, t0)
     assert delay < 1.25, f"moved {delay:.2f} s after the plan went"  # 0.5 s delay + 0.3 s lag + jerk ramp to 0.3 m/s
-    assert t8 < 6.5, f"0-8 m/s in {t8:.1f} s"
-    assert 1.3 <= a2 <= 1.8, f"first-2 s peak {a2:.2f}"
+    assert t8 < 5.5, f"0-8 m/s in {t8:.1f} s"
+    assert 1.6 <= a2 <= 2.1, f"first-2 s peak {a2:.2f}"
     self.check_smooth(log)
     return log
 
