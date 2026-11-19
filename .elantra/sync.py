@@ -130,6 +130,10 @@ OVERLAY_ADDED = [
     # blob is on sunnypilot's own LFS store. Drop this entry once upstream carries CH or newer,
     # or every sync keeps pinning CH over it.
     "openpilot/selfdrive/modeld/models/driving_supercombo.onnx",
+    # Its name (what sunnylink and the Models screen show) and the name+onnx hash its test checks.
+    # Drop together with the onnx entry, or the label says Cheddar over upstream's model.
+    "openpilot/sunnypilot/models/model_name.py",
+    "openpilot/sunnypilot/models/tests/model_hash",
 ]
 
 # Upstream files we modify. Kept deliberately tiny -- this is the only conflict surface in
