@@ -1,0 +1,17 @@
+{
+  "sunnypilot_upstream_sha": "9489b2f4815c463baa32439a46566f342b4500d3",
+  "sunnypilot_upstream_date": "2026-11-18",
+  "sunnypilot_upstream_subject": "models: retry a failed transfer from its resume state, keep the failure on the row (#2014)",
+  "upstream_ci_conclusion": "in_progress",
+  "upstream_ci_checked": 37,
+  "upstream_ci_url": "https://github.com/sunnypilot/sunnypilot/commit/9489b2f4815c463baa32439a46566f342b4500d3/checks",
+  "opendbc_sha": "3a3b6d8df4fe4a4f44e1b622914c0b5423ef0b11",
+  "opendbc_repo": "aaravsaianugula/opendbc",
+  "elantra_platforms": [
+    "HYUNDAI_ELANTRA_2024",
+    "HYUNDAI_ELANTRA_HEV_2024"
+  ],
+  "previous_master_sha": "60bf37bc6690d44e953aef47890f514d38f3b725",
+  "rollback_branch": "master-previous",
+  "synced_at_utc": "2026-11-19T01:31:16Z"
+}
