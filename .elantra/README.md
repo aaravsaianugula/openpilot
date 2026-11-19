@@ -91,10 +91,14 @@ Everything this branch adds on top of upstream, and nothing more:
   decision logic, pure: no pyray, no cereal, an injected clock
 - `openpilot/selfdrive/ui/sunnypilot/mici/onroad/steer_headroom_bar.py` — the widget itself,
   a subclass of upstream's `TorqueBar`
+- `openpilot/selfdrive/modeld/models/driving_supercombo.onnx` — the stock small driving model, an LFS
+  pointer pinned to comma's Cheddar (CH) until sunnypilot ships it; drop it from the overlay then
 
 *Upstream files we touch — 31 added lines and 1 removed across five files, deliberately tiny,
 since this is the only conflict surface in the design:*
 - `.gitmodules` — opendbc URL → our fork
+- `openpilot/selfdrive/modeld/modeld.py` — one line, comma's low-speed curvature floor (2.5 m/s) that
+  ships with CH
 - `opendbc_repo` — the gitlink
 - `openpilot/common/params_keys.h` — three params
 - `openpilot/system/updated/updated.py` — publishes the build manifest (read-only; no new

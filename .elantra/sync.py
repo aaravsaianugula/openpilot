@@ -125,6 +125,11 @@ OVERLAY_ADDED = [
     # in OVERLAY_MODIFIED below: registering this without the call site leaves a module
     # nothing imports, and registering the call site without this breaks the fetch outright.
     "openpilot/sunnypilot/models/elantra_catalog.py",
+    # The stock small driving model, pinned to comma's Cheddar (CH, openpilot b3ab22efe1) until
+    # sunnypilot ships it. An LFS pointer, so it is restored wholesale rather than patched; the
+    # blob is on sunnypilot's own LFS store. Drop this entry once upstream carries CH or newer,
+    # or every sync keeps pinning CH over it.
+    "openpilot/selfdrive/modeld/models/driving_supercombo.onnx",
 ]
 
 # Upstream files we modify. Kept deliberately tiny -- this is the only conflict surface in
@@ -150,6 +155,9 @@ OVERLAY_MODIFIED = [
     # in the cache every reader uses. Unregistered, the rebuild restores the stock fetcher
     # and our models disappear from the Models screen with no error at all.
     "openpilot/sunnypilot/models/fetcher.py",
+    # One line, paired with the CH pin above: comma's low-speed curvature floor for its current
+    # models (openpilot 0c40995cd7, max(1.0 -> 2.5, v_ego)), already in sunnypilot's modeld_v2.
+    "openpilot/selfdrive/modeld/modeld.py",
 ]
 
 # Paths that legitimately move between builds without being overlay files. The submodule gitlink
